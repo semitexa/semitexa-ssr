@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>{% block title %}{{ title|default('Syntexa') }}{% endblock %}</title>
+    <style>
+      .layout{display:grid;grid-template-columns:280px 1fr 280px;gap:24px}
+    </style>
+    {% block head_extra %}{% endblock %}
+  </head>
+  <body>
+    <header>
+      {% block header %}{{ header|default('')|raw }}{% endblock %}
+    </header>
+    <nav class="breadcrumbs">
+      {% block breadcrumbs %}{{ breadcrumbs|default('')|raw }}{% endblock %}
+    </nav>
+    <div class="layout">
+      <aside>
+        {% block sidebar_left %}{{ sidebar_left|default('')|raw }}{% endblock %}
+      </aside>
+      <main>
+        {% block main %}{{ main|default(content|default(''))|raw }}{% endblock %}
+      </main>
+      <aside>
+        {% block sidebar_right %}{{ sidebar_right|default('')|raw }}{% endblock %}
+      </aside>
+    </div>
+    <footer>
+      {% block footer %}{{ footer|default('')|raw }}{% endblock %}
+    </footer>
+  </body>
+</html>
+
+

@@ -1,0 +1,29 @@
+{
+    "name": "semitexa/module-core-frontend",
+    "description": "Semitexa Core Frontend (SSR) module with Twig rendering",
+    "type": "semitexa-module",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Semitexa",
+            "email": "support@semitexa.local"
+        }
+    ],
+    "require": {
+        "php": "^8.4",
+        "twig/twig": "^3.10"
+    },
+    "autoload": {
+        "psr-4": {
+            "Semitexa\\Frontend\\": "src/"
+        }
+    },
+    "extra": {
+        "semitexa-module": {
+            "name": "core-frontend",
+            "description": "Server-Side Rendering capabilities using Twig"
+        }
+    }
+}
+
+

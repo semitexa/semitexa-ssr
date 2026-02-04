@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>{% block title %}{{ title|default('Syntexa') }}{% endblock %}</title>
+    {% block head_extra %}{% endblock %}
+  </head>
+  <body>
+    <header>
+      {% block header %}{{ header|default('')|raw }}{% endblock %}
+    </header>
+    <nav class="breadcrumbs">
+      {% block breadcrumbs %}{{ breadcrumbs|default('')|raw }}{% endblock %}
+    </nav>
+    <main>
+      {% block main %}{{ main|default(content|default(''))|raw }}{% endblock %}
+    </main>
+    <footer>
+      {% block footer %}{{ footer|default('')|raw }}{% endblock %}
+    </footer>
+  </body>
+</html>
+
+

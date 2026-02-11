@@ -61,8 +61,13 @@ class TwigFactory
             }
         }
 
-        foreach (self::discoverProjectLayoutPaths() as $module => $path) {
+        // Project module templates (fallback); then theme overrides (same alias, checked first)
+        $projectPaths = self::discoverProjectLayoutPaths();
+        foreach ($projectPaths as $module => $path) {
             $loader->addPath($path, self::layoutAlias($module));
+        }
+        foreach (self::discoverThemePaths() as $module => $themePath) {
+            $loader->addPath($themePath, self::layoutAlias($module));
         }
 
         $cacheDir = self::getWritableCacheDir();
@@ -143,6 +148,27 @@ class TwigFactory
         return 'project-layouts-' . $module;
     }
 
+    /**
+     * Discover theme override paths: src/theme/{ModuleName}.
+     * Templates here override the same names in project-layouts-{Module}.
+     * Add these after project paths so Twig checks theme first.
+     */
+    private static function discoverThemePaths(): array
+    {
+        $projectRoot = LayoutLoader::getProjectRoot();
+        $themeRoot = $projectRoot . '/src/theme';
+        if (!is_dir($themeRoot)) {
+            return [];
+        }
+        $paths = [];
+        $dirs = glob($themeRoot . '/*', GLOB_ONLYDIR) ?: [];
+        foreach ($dirs as $dir) {
+            $module = basename($dir);
+            $paths[$module] = realpath($dir) ?: $dir;
+        }
+        return $paths;
+    }
+
     private static function registerFunctions(): void
     {
         if (!(self::$twig instanceof TwigEnvironment)) {
@@ -156,12 +182,12 @@ class TwigFactory
                  * @param array<string, mixed> $context
                  */
                 function (array $context, string $slot, array $extraContext = []): string {
-                    $handle = $context['layout_handle'] ?? null;
-                    if (!$handle) {
+                    $pageHandle = $context['page_handle'] ?? $context['layout_handle'] ?? null;
+                    if ($pageHandle === null || $pageHandle === '') {
                         return '';
                     }
-
-                    return LayoutSlotRegistry::render($handle, $slot, $context, $extraContext);
+                    $layoutFrame = $context['layout_frame'] ?? null;
+                    return LayoutSlotRegistry::render($pageHandle, $slot, $context, $extraContext, $layoutFrame);
                 },
                 ['needs_context' => true, 'is_safe' => ['html']]
             ));

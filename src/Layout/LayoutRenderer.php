@@ -21,15 +21,17 @@ class LayoutRenderer
                 . '</p></main></body></html>';
         }
         try {
+            $baseContext = [
+                'layout_handle' => $handle,
+                'page_handle' => $handle,
+                'layout_module' => $layout['module'],
+            ];
+            if (isset($context['layout_frame'])) {
+                $baseContext['layout_frame'] = $context['layout_frame'];
+            }
             return TwigFactory::get()->render(
                 $layout['template'],
-                array_merge(
-                    [
-                        'layout_handle' => $handle,
-                        'layout_module' => $layout['module'],
-                    ],
-                    $context
-                )
+                array_merge($baseContext, $context)
             );
         } catch (\Throwable $e) {
             error_log("Error rendering layout '{$handle}': " . $e->getMessage());

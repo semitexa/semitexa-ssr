@@ -6,25 +6,25 @@
     <style>
       .layout{display:grid;grid-template-columns:280px 1fr;gap:24px}
     </style>
-    {% block head_extra %}{% endblock %}
+    {% block head_extra %}{{ layout_slot('head_extra') }}{% endblock %}
   </head>
   <body>
     <header>
-      {% block header %}{{ header|default('')|raw }}{% endblock %}
+      {% block header %}{{ layout_slot('header') }}{{ header|default('')|raw }}{% endblock %}
     </header>
-    <nav class="breadcrumbs">
-      {% block breadcrumbs %}{{ breadcrumbs|default('')|raw }}{% endblock %}
+    <nav class="breadcrumbs" aria-label="Breadcrumbs">
+      {% block breadcrumbs %}{{ layout_slot('breadcrumbs') }}{{ breadcrumbs|default('')|raw }}{% endblock %}
     </nav>
     <div class="layout">
       <aside>
-        {% block sidebar %}{{ sidebar|default('')|raw }}{% endblock %}
+        {% block sidebar %}{{ layout_slot('sidebar') }}{{ sidebar|default('')|raw }}{% endblock %}
       </aside>
       <main>
-        {% block main %}{{ main|default(content|default(''))|raw }}{% endblock %}
+        {% block main %}{{ layout_slot('main_before') }}{{ main|default(content|default(''))|raw }}{{ layout_slot('main_after') }}{% endblock %}
       </main>
     </div>
     <footer>
-      {% block footer %}{{ footer|default('')|raw }}{% endblock %}
+      {% block footer %}{{ layout_slot('footer') }}{{ footer|default('')|raw }}{{ layout_slot('footer_after') }}{% endblock %}
     </footer>
   </body>
 </html>

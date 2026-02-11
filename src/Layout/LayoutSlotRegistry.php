@@ -8,7 +8,10 @@ use Semitexa\Frontend\View\TwigFactory;
 
 class LayoutSlotRegistry
 {
+    public const GLOBAL_HANDLE = '*';
+
     /**
+     * handle => slot => list of { template, context, priority }
      * @var array<string, array<string, array<int, array{template:string, context:array, priority:int}>>>
      */
     private static array $slots = [];
@@ -17,6 +20,9 @@ class LayoutSlotRegistry
     {
         $handleKey = strtolower($handle);
         $slotKey = strtolower($slot);
+        if (!isset(self::$slots[$handleKey][$slotKey])) {
+            self::$slots[$handleKey][$slotKey] = [];
+        }
         self::$slots[$handleKey][$slotKey][] = [
             'template' => $template,
             'context' => $context,
@@ -25,16 +31,42 @@ class LayoutSlotRegistry
         usort(self::$slots[$handleKey][$slotKey], static fn ($a, $b) => $a['priority'] <=> $b['priority']);
     }
 
-    public static function render(string $handle, string $slot, array $baseContext = [], array $inlineContext = []): string
-    {
-        $entries = self::$slots[strtolower($handle)][strtolower($slot)] ?? [];
+    /**
+     * Render slot content for the given page/layout. Gathers entries for:
+     * - handle '*' (global),
+     * - layoutHandle (if not null),
+     * - pageHandle,
+     * then merges and renders in priority order.
+     */
+    public static function render(
+        string $pageHandle,
+        string $slot,
+        array $baseContext = [],
+        array $inlineContext = [],
+        ?string $layoutHandle = null,
+    ): string {
+        $slotKey = strtolower($slot);
+        $entries = [];
+
+        foreach ([self::GLOBAL_HANDLE, $layoutHandle, $pageHandle] as $h) {
+            if ($h === null || $h === '') {
+                continue;
+            }
+            $handleKey = strtolower($h);
+            $list = self::$slots[$handleKey][$slotKey] ?? [];
+            foreach ($list as $entry) {
+                $entries[] = $entry;
+            }
+        }
+
         if (empty($entries)) {
             return '';
         }
 
+        usort($entries, static fn ($a, $b) => $a['priority'] <=> $b['priority']);
+
         $twig = TwigFactory::get();
         $html = '';
-
         foreach ($entries as $entry) {
             $context = array_merge($baseContext, $entry['context'], $inlineContext);
             $html .= $twig->render($entry['template'], $context);

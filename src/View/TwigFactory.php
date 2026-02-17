@@ -6,6 +6,7 @@ namespace Semitexa\Frontend\View;
 
 use Semitexa\Core\ModuleRegistry;
 use Semitexa\Core\Environment;
+use Semitexa\Core\Util\ProjectRoot;
 use Semitexa\Frontend\Layout\LayoutLoader;
 use Semitexa\Frontend\Layout\LayoutSlotRegistry;
 use Twig\Environment as TwigEnvironment;
@@ -89,7 +90,7 @@ class TwigFactory
 
     private static function getCacheDir(): string
     {
-        return LayoutLoader::getProjectRoot() . '/var/cache/twig';
+        return ProjectRoot::get() . '/var/cache/twig';
     }
 
     /**
@@ -121,7 +122,7 @@ class TwigFactory
      */
     private static function discoverProjectLayoutPaths(): array
     {
-        $projectRoot = LayoutLoader::getProjectRoot();
+        $projectRoot = ProjectRoot::get();
         $modulesRoot = $projectRoot . '/src/modules';
         if (!is_dir($modulesRoot)) {
             return [];
@@ -162,7 +163,7 @@ class TwigFactory
      */
     private static function discoverThemePaths(array $projectPaths, string $activeTheme): array
     {
-        $projectRoot = LayoutLoader::getProjectRoot();
+        $projectRoot = ProjectRoot::get();
         $themeRoot = $projectRoot . '/src/theme';
         if (!is_dir($themeRoot)) {
             return [];

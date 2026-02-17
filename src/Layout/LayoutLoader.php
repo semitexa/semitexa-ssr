@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Semitexa\Frontend\Layout;
 
+use Semitexa\Core\Util\ProjectRoot;
+
 class LayoutLoader
 {
     /**
@@ -24,7 +26,7 @@ class LayoutLoader
 
     private static function findProjectLayout(string $handle): ?array
     {
-        $modulesRoot = self::getProjectRoot() . '/src/modules';
+        $modulesRoot = ProjectRoot::get() . '/src/modules';
         if (!is_dir($modulesRoot)) {
             return null;
         }
@@ -90,52 +92,4 @@ class LayoutLoader
         return 'project-layouts-' . $module;
     }
 
-    /**
-     * Project root (where composer.json and src/modules/ live). Public so TwigFactory can use the same root for namespace resolution.
-     * Does not rely on fixed path depth so it works for both vendor/semitexa/core-frontend and vendor/semitexa/module-core-frontend.
-     */
-    public static function getProjectRoot(): string
-    {
-        static $root = null;
-        if ($root !== null) {
-            return $root;
-        }
-
-        // 1. Try known roots (Docker app at /var/www/html, or CWD when running from project)
-        $candidates = ['/var/www/html'];
-        $cwd = getcwd();
-        if ($cwd !== false && $cwd !== '') {
-            $candidates[] = $cwd;
-        }
-        foreach ($candidates as $dir) {
-            if (is_file($dir . '/composer.json') && is_dir($dir . '/src/modules')) {
-                $root = $dir;
-                return $root;
-            }
-        }
-
-        // 2. Walk up from this file until we find composer.json + src/modules (works for any vendor path depth)
-        $dir = __DIR__;
-        while ($dir !== '/' && $dir !== '') {
-            if (is_file($dir . '/composer.json') && is_dir($dir . '/src/modules')) {
-                $root = $dir;
-                return $root;
-            }
-            $parent = dirname($dir);
-            if ($parent === $dir) {
-                break;
-            }
-            $dir = $parent;
-        }
-
-        // Last resort: /var/www/html only when it is a valid project root (Docker)
-        $dockerRoot = '/var/www/html';
-        if (is_file($dockerRoot . '/composer.json') && is_dir($dockerRoot . '/src/modules')) {
-            $root = $dockerRoot;
-            return $root;
-        }
-
-        $root = $dockerRoot;
-        return $root;
-    }
 }

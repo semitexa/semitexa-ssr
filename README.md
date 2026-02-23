@@ -7,7 +7,7 @@ Server-side rendering for Semitexa using Twig: layouts, slots, and HTML response
 ## Installation
 
 ```bash
-composer require semitexa/module-core-frontend
+composer require semitexa/ssr
 ```
 
 ## What's inside

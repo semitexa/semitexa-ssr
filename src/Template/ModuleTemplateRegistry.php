@@ -1,3 +1,7 @@
+<?php
+
+declare(strict_types=1);
+
 namespace Semitexa\Ssr\Template;
 
 use Semitexa\Core\Environment;
@@ -324,10 +328,10 @@ final class ModuleTemplateRegistry
         self::initialize();
 
         foreach (self::$themePaths as $module => $path) {
-            $template = self::findTemplate($path, $handle);
-            if ($template) {
+            $relative = self::findTemplateRelative($path, $handle);
+            if ($relative !== null) {
                 return [
-                    'template' => $template,
+                    'template' => '@' . self::aliasForModule($module) . '/' . $relative,
                     'module' => $module,
                     'type' => 'theme',
                 ];
@@ -335,10 +339,10 @@ final class ModuleTemplateRegistry
         }
 
         foreach (self::$modulePaths as $module => $config) {
-            $template = self::findTemplate($config['path'], $handle);
-            if ($template) {
+            $relative = self::findTemplateRelative($config['path'], $handle);
+            if ($relative !== null) {
                 return [
-                    'template' => $template,
+                    'template' => '@' . self::aliasForModule($module) . '/' . $relative,
                     'module' => $module,
                     'type' => 'module',
                 ];
@@ -348,23 +352,26 @@ final class ModuleTemplateRegistry
         return null;
     }
 
-    private static function findTemplate(string $dir, string $handle): ?string
+    /**
+     * Returns the relative path to the template file (e.g. "homepage.html.twig" or "layouts/one-column.html.twig")
+     * so the caller can prefix it with the correct Twig namespace (@project-layouts-{Module}).
+     */
+    private static function findTemplateRelative(string $dir, string $handle): ?string
     {
         $direct = $dir . '/' . $handle . '.html.twig';
         if (is_file($direct)) {
-            return '@' . basename($dir) . '/' . $handle . '.html.twig';
+            return $handle . '.html.twig';
         }
 
         $layoutsDir = $dir . '/layouts';
         if (is_dir($layoutsDir)) {
             $directLayout = $layoutsDir . '/' . $handle . '.html.twig';
             if (is_file($directLayout)) {
-                return '@' . basename($dir) . '/layouts/' . $handle . '.html.twig';
+                return 'layouts/' . $handle . '.html.twig';
             }
 
             foreach (glob($layoutsDir . '/*/' . $handle . '.html.twig') as $file) {
-                $relative = str_replace($dir . '/', '', $file);
-                return '@' . basename($dir) . '/' . $relative;
+                return str_replace($dir . '/', '', $file);
             }
         }
 

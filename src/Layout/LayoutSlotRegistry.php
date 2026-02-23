@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace Semitexa\Frontend\Layout;
+namespace Semitexa\Ssr\Layout;
 
-use Semitexa\Frontend\View\TwigFactory;
+use Semitexa\Ssr\Template\ModuleTemplateRegistry;
 
 class LayoutSlotRegistry
 {
@@ -65,7 +65,7 @@ class LayoutSlotRegistry
 
         usort($entries, static fn ($a, $b) => $a['priority'] <=> $b['priority']);
 
-        $twig = TwigFactory::get();
+        $twig = ModuleTemplateRegistry::getTwig();
         $html = '';
         foreach ($entries as $entry) {
             $context = array_merge($baseContext, $entry['context'], $inlineContext);
@@ -74,5 +74,10 @@ class LayoutSlotRegistry
 
         return $html;
     }
-}
 
+    public static function getSlotsForHandle(string $handle): array
+    {
+        $handleKey = strtolower($handle);
+        return self::$slots[$handleKey] ?? [];
+    }
+}

@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace Semitexa\Frontend\Http\Response;
+namespace Semitexa\Ssr\Http\Response;
 
 use Semitexa\Core\Http\Response\GenericResponse;
-use Semitexa\Frontend\View\TwigFactory;
+use Semitexa\Ssr\Template\ModuleTemplateRegistry;
 
 class HtmlResponse extends GenericResponse
 {
@@ -16,14 +16,14 @@ class HtmlResponse extends GenericResponse
 
     public function renderTemplate(string $template, array $context = []): self
     {
-        $html = TwigFactory::get()->render($template, $context);
+        $html = ModuleTemplateRegistry::getTwig()->render($template, $context);
         $this->setContent($html);
         return $this;
     }
 
     public function renderString(string $templateSource, array $context = []): self
     {
-        $twig = TwigFactory::get();
+        $twig = ModuleTemplateRegistry::getTwig();
         $template = $twig->createTemplate($templateSource);
         $html = $template->render($context);
         $this->setContent($html);

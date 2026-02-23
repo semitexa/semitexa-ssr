@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Semitexa\Frontend\Attributes;
+namespace Semitexa\Ssr\Attributes;
 
 use Attribute;
 

@@ -2,15 +2,16 @@
 
 declare(strict_types=1);
 
-namespace Semitexa\Frontend\Layout;
+namespace Semitexa\Ssr\Layout;
 
-use Semitexa\Frontend\View\TwigFactory;
+use Semitexa\Ssr\Template\ModuleTemplateRegistry;
 
 class LayoutRenderer
 {
     public static function renderHandle(string $handle, array $context = []): string
     {
-        $layout = LayoutLoader::loadHandle($handle);
+        $layout = ModuleTemplateRegistry::resolveLayout($handle);
+        
         if ($layout === null) {
             return '<!doctype html><html><head><meta charset="utf-8"><title>'
                 . htmlspecialchars($context['title'] ?? 'Layout missing')
@@ -20,6 +21,7 @@ class LayoutRenderer
                 . htmlspecialchars($handle)
                 . '</p></main></body></html>';
         }
+        
         try {
             $baseContext = [
                 'layout_handle' => $handle,
@@ -29,7 +31,7 @@ class LayoutRenderer
             if (isset($context['layout_frame'])) {
                 $baseContext['layout_frame'] = $context['layout_frame'];
             }
-            return TwigFactory::get()->render(
+            return ModuleTemplateRegistry::getTwig()->render(
                 $layout['template'],
                 array_merge($baseContext, $context)
             );

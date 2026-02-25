@@ -150,6 +150,13 @@ final class ModuleTemplateRegistry
         ]);
 
         self::registerFunctions();
+
+        try {
+            $env = Environment::create();
+            self::$twig->addGlobal('sse_port', $env->swooleSsePort ?? 9503);
+        } catch (\Throwable $e) {
+            self::$twig->addGlobal('sse_port', 9503);
+        }
     }
 
     private static function aliasForModule(string $module): string
@@ -211,7 +218,7 @@ final class ModuleTemplateRegistry
             // slot() - for component slots
             self::$twig->addFunction(new TwigFunction(
                 'slot',
-                function (string $name, array $context = []) {
+                function (array $context, string $name) {
                     return \Semitexa\Ssr\Component\ComponentSlotRenderer::render($name, $context);
                 },
                 ['needs_context' => true, 'is_safe' => ['html']]

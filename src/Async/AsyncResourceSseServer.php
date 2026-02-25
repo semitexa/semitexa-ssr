@@ -25,6 +25,82 @@ final class AsyncResourceSseServer
     /** @var \Swoole\Table|null deliver queue: unique_key -> session_id, worker_id, payload */
     private static ?\Swoole\Table $deliverTable = null;
 
+    /** @var \Swoole\Table|null pending messages when client not connected yet: key -> session_id, payload */
+    private static ?\Swoole\Table $pendingDeliverTable = null;
+
+    private const REDIS_KEY_PREFIX = 'sse:deliver:';
+    /** Single global queue: no session checks, every client gets every message (for debugging) */
+    private const REDIS_KEY_ALL = 'sse:deliver:all';
+
+    private const RABBITMQ_QUEUE_PREFIX = 'sse.deliver.';
+
+    private static function redisKey(string $sessionId): string
+    {
+        return self::REDIS_KEY_PREFIX . trim($sessionId);
+    }
+
+    private static function rabbitQueueName(string $sessionId): string
+    {
+        return self::RABBITMQ_QUEUE_PREFIX . md5(trim($sessionId));
+    }
+
+    /** @var \AMQPChannel|null Lazy-created per worker when RabbitMQ env is set */
+    private static ?\AMQPChannel $amqpChannel = null;
+
+    private static function getRabbitMqChannel(): ?\AMQPChannel
+    {
+        if (self::$amqpChannel !== null) {
+            return self::$amqpChannel;
+        }
+        if (!class_exists(\AMQPConnection::class)) {
+            return null;
+        }
+        $host = getenv('RABBITMQ_HOST') ?: '';
+        if ($host === '') {
+            return null;
+        }
+        try {
+            $conn = new \AMQPConnection([
+                'host' => $host,
+                'port' => (int) (getenv('RABBITMQ_PORT') ?: '5672'),
+                'login' => getenv('RABBITMQ_USER') ?: 'guest',
+                'password' => getenv('RABBITMQ_PASSWORD') ?: 'guest',
+                'vhost' => getenv('RABBITMQ_VHOST') ?: '/',
+            ]);
+            $conn->connect();
+            self::$amqpChannel = new \AMQPChannel($conn);
+            return self::$amqpChannel;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /** @var object|null Predis\Client when Redis is used for cross-worker deliver */
+    private static ?object $redis = null;
+
+    private static function getRedis(): ?object
+    {
+        if (self::$redis !== null) {
+            return self::$redis;
+        }
+        $host = getenv('REDIS_HOST') ?: '';
+        if ($host === '' || !class_exists(\Predis\Client::class)) {
+            return null;
+        }
+        try {
+            $port = (int) (getenv('REDIS_PORT') ?: 6379);
+            self::$redis = new \Predis\Client([
+                'scheme' => 'tcp',
+                'host' => $host,
+                'port' => $port,
+            ]);
+            return self::$redis;
+        } catch (\Throwable $e) {
+            self::$redis = null;
+            return null;
+        }
+    }
+
     public static function handle(Request $request, Response $response): bool
     {
         $path = $request->server['path_info'] ?? '';
@@ -33,7 +109,7 @@ final class AsyncResourceSseServer
             $path = parse_url($uri, PHP_URL_PATH) ?: '/';
         }
 
-        if ($path === '/__semitexa_sse') {
+        if ($path === '/__semitexa_sse' || $path === '/sse') {
             self::handleSse($request, $response);
             return true;
         }
@@ -50,7 +126,7 @@ final class AsyncResourceSseServer
         $response->header('X-Accel-Buffering', 'no');
         $response->header('Access-Control-Allow-Origin', '*');
 
-        $sessionId = $request->get['session_id'] ?? uniqid('sse_', true);
+        $sessionId = trim((string) ($request->get['session_id'] ?? uniqid('sse_', true)));
 
         self::$sessions[$sessionId] = [
             'response' => $response,
@@ -63,17 +139,56 @@ final class AsyncResourceSseServer
             self::$sessionWorkerTable->set($key, ['worker_id' => $workerId]);
         }
 
+        // Declare RabbitMQ queue for this session so deliver() from any worker/server can publish
+        $rabbitQueueName = null;
+        $channel = self::getRabbitMqChannel();
+        if ($channel !== null) {
+            try {
+                $rabbitQueueName = self::rabbitQueueName($sessionId);
+                $queue = new \AMQPQueue($channel);
+                $queue->setName($rabbitQueueName);
+                $queue->setFlags(\defined('AMQP_DURABLE') ? AMQP_DURABLE : 2);
+                $queue->declareQueue();
+            } catch (\Throwable $e) {
+                $rabbitQueueName = null;
+            }
+        }
+
         if (!isset(self::$queues[$sessionId])) {
             self::$queues[$sessionId] = [];
         }
 
-        // Flush buffer first (messages that arrived before client connected)
+        // Flush local buffer for this session only
+        $bufferCount = 0;
         if (isset(self::$buffer[$sessionId])) {
             foreach (self::$buffer[$sessionId] as $data) {
                 self::writeSse($response, $data);
+                $bufferCount++;
             }
             unset(self::$buffer[$sessionId]);
         }
+
+        // Flush pending table for this session only
+        $pendingCount = 0;
+        if (self::$pendingDeliverTable !== null) {
+            $toDel = [];
+            foreach (self::$pendingDeliverTable as $pendingKey => $row) {
+                if (trim((string) $row['session_id']) === $sessionId) {
+                    $data = json_decode((string) $row['payload'], true);
+                    if (is_array($data)) {
+                        self::writeSse($response, $data);
+                        $pendingCount++;
+                    }
+                    $toDel[] = $pendingKey;
+                }
+            }
+            foreach ($toDel as $k) {
+                self::$pendingDeliverTable->del($k);
+            }
+        }
+
+        // Flush RabbitMQ queue for this session (messages from any worker/server)
+        self::drainRabbitMqQueueForSession($sessionId, $response);
 
         // Send initial event so the client receives something immediately (fixes "Connecting..." stuck
         // and ensures response is flushed; some proxies don't send headers until first byte).
@@ -92,17 +207,23 @@ final class AsyncResourceSseServer
             if (!$closed && self::$deliverTable !== null && self::$httpServer !== null) {
                 $currentWorkerId = self::getCurrentWorkerId();
                 $toDel = [];
+                $deliverCount = 0;
                 foreach (self::$deliverTable as $deliverKey => $row) {
-                    if ((int) $row['worker_id'] === $currentWorkerId && (string) $row['session_id'] === $sessionId) {
+                    if ((int) $row['worker_id'] === $currentWorkerId && trim((string) $row['session_id']) === $sessionId) {
                         $data = json_decode((string) $row['payload'], true);
                         if (is_array($data) && self::writeSse($response, $data)) {
                             $toDel[] = $deliverKey;
+                            $deliverCount++;
                         }
                     }
                 }
                 foreach ($toDel as $k) {
                     self::$deliverTable->del($k);
                 }
+            }
+
+            if (!$closed) {
+                self::drainRabbitMqQueueForSession($sessionId, $response);
             }
 
             if ($closed) {
@@ -119,9 +240,48 @@ final class AsyncResourceSseServer
         if (self::$sessionWorkerTable !== null) {
             self::$sessionWorkerTable->del(self::sessionTableKey($sessionId));
         }
+        // Delete RabbitMQ queue for this session to avoid buildup (queue recreated on next connect)
+        $channel = self::getRabbitMqChannel();
+        if ($channel !== null) {
+            try {
+                $queue = new \AMQPQueue($channel);
+                $queue->setName(self::rabbitQueueName($sessionId));
+                $queue->delete();
+            } catch (\Throwable $e) {
+                // ignore
+            }
+        }
         unset(self::$sessions[$sessionId]);
         unset(self::$queues[$sessionId]);
         $response->end();
+    }
+
+    private static function drainRabbitMqQueueForSession(string $sessionId, Response $response): void
+    {
+        $channel = self::getRabbitMqChannel();
+        if ($channel === null) {
+            return;
+        }
+        try {
+            $queue = new \AMQPQueue($channel);
+            $queue->setName(self::rabbitQueueName($sessionId));
+            $queue->setFlags(\defined('AMQP_DURABLE') ? AMQP_DURABLE : 2);
+            $queue->declareQueue();
+            $count = 0;
+            while (true) {
+                $envelope = $queue->get(\defined('AMQP_NOPARAM') ? AMQP_NOPARAM : 0);
+                if ($envelope === false) {
+                    break;
+                }
+                $data = json_decode($envelope->getBody(), true);
+                if (is_array($data) && self::writeSse($response, $data)) {
+                    $count++;
+                }
+                $queue->ack($envelope->getDeliveryTag());
+            }
+        } catch (\Throwable $e) {
+            self::$amqpChannel = null;
+        }
     }
 
     private static function writeSse(Response $response, array $data): bool
@@ -130,16 +290,48 @@ final class AsyncResourceSseServer
         return @$response->write($line);
     }
 
+    /** Drain global Redis queue (no session filter) — every message sent to this client */
+    private static function drainRedisQueueAll(Response $response): void
+    {
+        $redis = self::getRedis();
+        if ($redis === null) {
+            return;
+        }
+        try {
+            while (true) {
+                $raw = $redis->rpop(self::REDIS_KEY_ALL);
+                if ($raw === null || $raw === false) {
+                    break;
+                }
+                $data = json_decode(is_string($raw) ? $raw : (string) $raw, true);
+                if (is_array($data)) {
+                    self::writeSse($response, $data);
+                }
+            }
+        } catch (\Throwable $e) {
+            self::$redis = null;
+        }
+    }
+
+    private static function drainRedisQueueForSession(string $sessionId, Response $response): void
+    {
+        self::drainRedisQueueAll($response);
+    }
+
     /**
-     * Deliver payload to session: add to local queue if this worker has the connection,
-     * else push to shared deliver table for the worker that owns the session.
+     * Deliver payload to session.
+     * Paths: same-worker queue -> RabbitMQ (cross-worker/server) -> Swoole Tables fallback -> pendingTable -> buffer.
      */
     public static function deliver(string $sessionId, array $data): void
     {
+        $sessionId = trim($sessionId);
         if ($sessionId === '') {
             return;
         }
 
+        $currentWorkerId = self::getCurrentWorkerId();
+
+        // Same worker has the SSE connection: add to local queue
         if (isset(self::$sessions[$sessionId])) {
             if (!isset(self::$queues[$sessionId])) {
                 self::$queues[$sessionId] = [];
@@ -148,11 +340,30 @@ final class AsyncResourceSseServer
             return;
         }
 
+        // Cross-worker / cross-server: use RabbitMQ when available (scales across machines and offices)
+        $channel = self::getRabbitMqChannel();
+        if ($channel !== null) {
+            try {
+                $queueName = self::rabbitQueueName($sessionId);
+                $payload = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                $queue = new \AMQPQueue($channel);
+                $queue->setName($queueName);
+                $queue->setFlags(\defined('AMQP_DURABLE') ? AMQP_DURABLE : 2);
+                $queue->declareQueue();
+                $exchange = new \AMQPExchange($channel);
+                $exchange->setName('');
+                $exchange->publish($payload, $queueName, \defined('AMQP_NOPARAM') ? AMQP_NOPARAM : 0, ['delivery_mode' => 2]);
+                return;
+            } catch (\Throwable $e) {
+                self::$amqpChannel = null;
+            }
+        }
+
+        // Fallback: Swoole Tables (single server only)
         if (self::$sessionWorkerTable !== null && self::$deliverTable !== null && self::$httpServer !== null) {
             $row = self::$sessionWorkerTable->get(self::sessionTableKey($sessionId));
             if ($row !== false) {
                 $targetWorkerId = (int) $row['worker_id'];
-                $currentWorkerId = self::getCurrentWorkerId();
                 if ($targetWorkerId !== $currentWorkerId) {
                     $deliverKey = uniqid('d_', true);
                     self::$deliverTable->set($deliverKey, [
@@ -164,7 +375,14 @@ final class AsyncResourceSseServer
                 }
             }
         }
-
+        if (self::$pendingDeliverTable !== null) {
+            $key = uniqid('p_', true);
+            self::$pendingDeliverTable->set($key, [
+                'session_id' => $sessionId,
+                'payload' => json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            ]);
+            return;
+        }
         if (!isset(self::$buffer[$sessionId])) {
             self::$buffer[$sessionId] = [];
         }
@@ -211,10 +429,11 @@ final class AsyncResourceSseServer
         self::$httpServer = $server;
     }
 
-    public static function setTables(\Swoole\Table $sessionWorkerTable, \Swoole\Table $deliverTable): void
+    public static function setTables(\Swoole\Table $sessionWorkerTable, \Swoole\Table $deliverTable, ?\Swoole\Table $pendingDeliverTable = null): void
     {
         self::$sessionWorkerTable = $sessionWorkerTable;
         self::$deliverTable = $deliverTable;
+        self::$pendingDeliverTable = $pendingDeliverTable;
     }
 
     private static function getCurrentWorkerId(): int

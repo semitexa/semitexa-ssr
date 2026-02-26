@@ -6,12 +6,11 @@ namespace Semitexa\Ssr\I18n;
 
 use Semitexa\Core\Environment;
 use Semitexa\Core\Util\ProjectRoot;
+use Semitexa\Locale\Context\LocaleManager;
 
 final class Translator
 {
     private static array $locales = [];
-    private static string $currentLocale = 'en';
-    private static string $fallbackLocale = 'en';
     private static bool $initialized = false;
 
     public static function initialize(): void
@@ -19,10 +18,6 @@ final class Translator
         if (self::$initialized) {
             return;
         }
-
-        $env = Environment::create();
-        self::$currentLocale = $env->get('APP_LOCALE', 'en');
-        self::$fallbackLocale = $env->get('APP_FALLBACK_LOCALE', 'en');
 
         self::loadLocales();
         self::$initialized = true;
@@ -90,17 +85,19 @@ final class Translator
 
     private static function getMessage(string $key): string
     {
-        if (isset(self::$locales[self::$currentLocale])) {
-            foreach (self::$locales[self::$currentLocale] as $module => $messages) {
+        $locale = self::getCurrentLocale();
+        $fallback = self::getFallbackLocale();
+
+        if (isset(self::$locales[$locale])) {
+            foreach (self::$locales[$locale] as $module => $messages) {
                 if (isset($messages[$key])) {
                     return $messages[$key];
                 }
             }
         }
 
-        if (self::$fallbackLocale !== self::$currentLocale 
-            && isset(self::$locales[self::$fallbackLocale])) {
-            foreach (self::$locales[self::$fallbackLocale] as $module => $messages) {
+        if ($fallback !== $locale && isset(self::$locales[$fallback])) {
+            foreach (self::$locales[$fallback] as $module => $messages) {
                 if (isset($messages[$key])) {
                     return $messages[$key];
                 }
@@ -127,11 +124,32 @@ final class Translator
 
     public static function setLocale(string $locale): void
     {
-        self::$currentLocale = $locale;
+        try {
+            LocaleManager::getInstance()->setLocale($locale);
+        } catch (\Throwable) {
+        }
     }
 
     public static function getLocale(): string
     {
-        return self::$currentLocale;
+        return self::getCurrentLocale();
+    }
+
+    private static function getCurrentLocale(): string
+    {
+        try {
+            return LocaleManager::getInstance()->getLocale();
+        } catch (\Throwable) {
+            return 'en';
+        }
+    }
+
+    private static function getFallbackLocale(): string
+    {
+        try {
+            return LocaleManager::getInstance()->getFallbackLocale() ?? 'en';
+        } catch (\Throwable) {
+            return 'en';
+        }
     }
 }

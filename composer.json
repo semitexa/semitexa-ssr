@@ -12,7 +12,9 @@
     ],
     "require": {
         "php": "^8.4",
-        "twig/twig": "^3.10"
+        "twig/twig": "^3.10",
+        "semitexa/locale": "*",
+        "semitexa/tenancy": "*"
     },
     "autoload": {
         "psr-4": {

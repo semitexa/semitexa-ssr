@@ -1,7 +1,7 @@
 {
     "name": "semitexa/ssr",
     "description": "Semitexa Core Frontend (SSR) module with Twig rendering",
-    "version": "v1.0.18",
+    "version": "v1.0.19",
     "type": "semitexa-module",
     "license": "MIT",
     "authors": [

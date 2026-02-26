@@ -28,16 +28,7 @@ final class AsyncResourceSseServer
     /** @var \Swoole\Table|null pending messages when client not connected yet: key -> session_id, payload */
     private static ?\Swoole\Table $pendingDeliverTable = null;
 
-    private const REDIS_KEY_PREFIX = 'sse:deliver:';
-    /** Single global queue: no session checks, every client gets every message (for debugging) */
-    private const REDIS_KEY_ALL = 'sse:deliver:all';
-
     private const RABBITMQ_QUEUE_PREFIX = 'sse.deliver.';
-
-    private static function redisKey(string $sessionId): string
-    {
-        return self::REDIS_KEY_PREFIX . trim($sessionId);
-    }
 
     private static function rabbitQueueName(string $sessionId): string
     {
@@ -71,32 +62,6 @@ final class AsyncResourceSseServer
             self::$amqpChannel = new \AMQPChannel($conn);
             return self::$amqpChannel;
         } catch (\Throwable $e) {
-            return null;
-        }
-    }
-
-    /** @var object|null Predis\Client when Redis is used for cross-worker deliver */
-    private static ?object $redis = null;
-
-    private static function getRedis(): ?object
-    {
-        if (self::$redis !== null) {
-            return self::$redis;
-        }
-        $host = getenv('REDIS_HOST') ?: '';
-        if ($host === '' || !class_exists(\Predis\Client::class)) {
-            return null;
-        }
-        try {
-            $port = (int) (getenv('REDIS_PORT') ?: 6379);
-            self::$redis = new \Predis\Client([
-                'scheme' => 'tcp',
-                'host' => $host,
-                'port' => $port,
-            ]);
-            return self::$redis;
-        } catch (\Throwable $e) {
-            self::$redis = null;
             return null;
         }
     }
@@ -234,7 +199,7 @@ final class AsyncResourceSseServer
                 break;
             }
 
-            usleep(200_000);
+            \Swoole\Coroutine::sleep(0.2);
         }
 
         if (self::$sessionWorkerTable !== null) {
@@ -288,34 +253,6 @@ final class AsyncResourceSseServer
     {
         $line = "data: " . json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n";
         return @$response->write($line);
-    }
-
-    /** Drain global Redis queue (no session filter) — every message sent to this client */
-    private static function drainRedisQueueAll(Response $response): void
-    {
-        $redis = self::getRedis();
-        if ($redis === null) {
-            return;
-        }
-        try {
-            while (true) {
-                $raw = $redis->rpop(self::REDIS_KEY_ALL);
-                if ($raw === null || $raw === false) {
-                    break;
-                }
-                $data = json_decode(is_string($raw) ? $raw : (string) $raw, true);
-                if (is_array($data)) {
-                    self::writeSse($response, $data);
-                }
-            }
-        } catch (\Throwable $e) {
-            self::$redis = null;
-        }
-    }
-
-    private static function drainRedisQueueForSession(string $sessionId, Response $response): void
-    {
-        self::drainRedisQueueAll($response);
     }
 
     /**

@@ -35,11 +35,15 @@ final class SeoMeta
 
     public static function tag(string $name, ?string $content = null): string
     {
-        if ($content === null) {
-            return self::$meta[$name] ?? '';
+        if ($content !== null) {
+            self::$meta[$name] = $content;
+        } else {
+            $content = self::$meta[$name] ?? null;
         }
 
-        self::$meta[$name] = $content;
+        if ($content === null || $content === '') {
+            return '';
+        }
 
         if (in_array($name, ['title', 'description', 'keywords'])) {
             return "<meta name=\"{$name}\" content=\"{$content}\">";

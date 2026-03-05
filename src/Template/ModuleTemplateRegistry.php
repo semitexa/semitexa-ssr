@@ -194,13 +194,14 @@ final class ModuleTemplateRegistry
         if (class_exists(\Semitexa\Ssr\Layout\LayoutSlotRegistry::class)) {
             self::$twig->addFunction(new TwigFunction(
                 'layout_slot',
-                function (array $context, string $slot, array $extraContext = []): string {
+                function (array $context, string $slot, array $extraContext = []) {
                     $pageHandle = $context['page_handle'] ?? $context['layout_handle'] ?? null;
                     if ($pageHandle === null || $pageHandle === '') {
                         return '';
                     }
                     $layoutFrame = $context['layout_frame'] ?? null;
-                    return \Semitexa\Ssr\Layout\LayoutSlotRegistry::render($pageHandle, $slot, $context, $extraContext, $layoutFrame);
+                    $html = \Semitexa\Ssr\Layout\LayoutSlotRegistry::render($pageHandle, $slot, $context, $extraContext, $layoutFrame);
+                    return new \Twig\Markup($html, 'UTF-8');
                 },
                 ['needs_context' => true, 'is_safe' => ['html']]
             ));
@@ -211,15 +212,18 @@ final class ModuleTemplateRegistry
             self::$twig->addFunction(new TwigFunction(
                 'component',
                 function (string $name, array $props = [], array $slots = []) {
-                    return \Semitexa\Ssr\Component\ComponentRenderer::render($name, $props, $slots);
-                }
+                    $html = \Semitexa\Ssr\Component\ComponentRenderer::render($name, $props, $slots);
+                    return new \Twig\Markup($html, 'UTF-8');
+                },
+                ['is_safe' => ['html']]
             ));
 
             // slot() - for component slots
             self::$twig->addFunction(new TwigFunction(
                 'slot',
                 function (array $context, string $name) {
-                    return \Semitexa\Ssr\Component\ComponentSlotRenderer::render($name, $context);
+                    $html = \Semitexa\Ssr\Component\ComponentSlotRenderer::render($name, $context);
+                    return new \Twig\Markup($html, 'UTF-8');
                 },
                 ['needs_context' => true, 'is_safe' => ['html']]
             ));
@@ -229,12 +233,13 @@ final class ModuleTemplateRegistry
         if (class_exists(\Semitexa\Ssr\Seo\SeoMeta::class)) {
             self::$twig->addFunction(new TwigFunction(
                 'page_title',
-                fn (?string $title = null) => \Semitexa\Ssr\Seo\SeoMeta::getTitle($title)
+                function (?string $title = null) { return \Semitexa\Ssr\Seo\SeoMeta::getTitle($title); }
             ));
 
             self::$twig->addFunction(new TwigFunction(
                 'meta',
-                fn (string $name, ?string $content = null) => \Semitexa\Ssr\Seo\SeoMeta::tag($name, $content)
+                function (string $name, ?string $content = null) { return new \Twig\Markup(\Semitexa\Ssr\Seo\SeoMeta::tag($name, $content), 'UTF-8'); },
+                ['is_safe' => ['html']]
             ));
         }
 
@@ -304,7 +309,8 @@ final class ModuleTemplateRegistry
         if (class_exists(\Semitexa\Ssr\Seo\SemanticRenderer::class)) {
             self::$twig->addFunction(new TwigFunction(
                 'semantic_head',
-                fn () => \Semitexa\Ssr\Seo\SemanticRenderer::render()
+                function () { return new \Twig\Markup(\Semitexa\Ssr\Seo\SemanticRenderer::render(), 'UTF-8'); },
+                ['is_safe' => ['html']]
             ));
         }
     }

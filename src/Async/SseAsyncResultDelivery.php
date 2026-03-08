@@ -4,10 +4,10 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Async;
 
-use Semitexa\Core\Attributes\AsServiceContract;
+use Semitexa\Core\Attributes\SatisfiesServiceContract;
 use Semitexa\Core\Contract\AsyncResultDeliveryInterface;
 
-#[AsServiceContract(of: AsyncResultDeliveryInterface::class)]
+#[SatisfiesServiceContract(of: AsyncResultDeliveryInterface::class)]
 final class SseAsyncResultDelivery implements AsyncResultDeliveryInterface
 {
     public function deliver(string $sessionId, object $responseDto, string $handlerClass = ''): void

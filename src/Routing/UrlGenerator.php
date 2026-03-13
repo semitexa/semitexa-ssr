@@ -6,6 +6,7 @@ namespace Semitexa\Ssr\Routing;
 
 use Semitexa\Core\Discovery\AttributeDiscovery;
 use Semitexa\Core\Request;
+use Semitexa\Locale\Context\LocaleContextStore;
 
 final class UrlGenerator
 {
@@ -21,7 +22,25 @@ final class UrlGenerator
             throw new \RuntimeException("Route '{$routeName}' not found");
         }
 
-        return self::buildPath($route['path'], $params);
+        $path = self::buildPath($route['path'], $params);
+
+        return self::prefixLocale($path);
+    }
+
+    private static function prefixLocale(string $path): string
+    {
+        if (!LocaleContextStore::isUrlPrefixEnabled()) {
+            return $path;
+        }
+
+        $locale = LocaleContextStore::getLocale();
+        $default = LocaleContextStore::getDefaultLocale();
+
+        if ($locale === $default) {
+            return $path;
+        }
+
+        return '/' . $locale . '/' . ltrim($path, '/');
     }
 
     public static function current(Request $request, array $overrides = []): string

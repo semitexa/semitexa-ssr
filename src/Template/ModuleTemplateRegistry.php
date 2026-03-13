@@ -297,6 +297,54 @@ final class ModuleTemplateRegistry
             ));
         }
 
+        // Locale URL functions - locale_url(), locale_switch_url()
+        if (class_exists(\Semitexa\Locale\Context\LocaleContextStore::class)) {
+            self::$twig->addFunction(new TwigFunction(
+                'locale_url',
+                function (string $path, ?string $locale = null): string {
+                    if (!\Semitexa\Locale\Context\LocaleContextStore::isUrlPrefixEnabled()) {
+                        return $path;
+                    }
+                    $locale ??= \Semitexa\Locale\Context\LocaleContextStore::getLocale();
+                    $default = \Semitexa\Locale\Context\LocaleContextStore::getDefaultLocale();
+                    if ($locale === $default) {
+                        return $path;
+                    }
+                    return '/' . $locale . '/' . ltrim($path, '/');
+                }
+            ));
+
+            $localeConfig = \Semitexa\Locale\LocaleConfig::fromEnvironment();
+            self::$twig->addFunction(new TwigFunction(
+                'locale_switch_url',
+                function (string $targetLocale) use ($localeConfig): string {
+                    $ctx = \Semitexa\Core\Server\SwooleBootstrap::getCurrentSwooleRequestResponse();
+                    $path = $ctx !== null
+                        ? ($ctx[0]->server['request_uri'] ?? '/')
+                        : '/';
+
+                    // Strip query string
+                    $path = strtok($path, '?') ?: '/';
+
+                    // Strip existing locale prefix if present
+                    $trimmed = ltrim($path, '/');
+                    $segments = explode('/', $trimmed, 2);
+                    if (in_array($segments[0], $localeConfig->supportedLocales, true)) {
+                        $path = '/' . ($segments[1] ?? '');
+                    }
+
+                    if (!\Semitexa\Locale\Context\LocaleContextStore::isUrlPrefixEnabled()) {
+                        return $path;
+                    }
+                    $default = \Semitexa\Locale\Context\LocaleContextStore::getDefaultLocale();
+                    if ($targetLocale === $default) {
+                        return $path;
+                    }
+                    return '/' . $targetLocale . '/' . ltrim($path, '/');
+                }
+            ));
+        }
+
         // Translation functions - trans()
         if (class_exists(\Semitexa\Ssr\I18n\Translator::class)) {
             self::$twig->addFunction(new TwigFunction(

@@ -6,6 +6,7 @@ namespace Semitexa\Ssr\Async;
 
 use Semitexa\Core\Attributes\SatisfiesServiceContract;
 use Semitexa\Core\Contract\AsyncResultDeliveryInterface;
+use Semitexa\Ssr\Domain\Model\DeferredBlockPayload;
 
 #[SatisfiesServiceContract(of: AsyncResultDeliveryInterface::class)]
 final class SseAsyncResultDelivery implements AsyncResultDeliveryInterface
@@ -20,6 +21,19 @@ final class SseAsyncResultDelivery implements AsyncResultDeliveryInterface
                 : (array) $responseDto,
             'html' => $html,
         ];
+        AsyncResourceSseServer::deliver($sessionId, $data);
+    }
+
+    public function deliverDeferredBlock(string $sessionId, DeferredBlockPayload $payload): void
+    {
+        AsyncResourceSseServer::deliver($sessionId, $payload->toArray());
+    }
+
+    /**
+     * Deliver a raw array payload via SSE.
+     */
+    public static function deliverRaw(string $sessionId, array $data): void
+    {
         AsyncResourceSseServer::deliver($sessionId, $data);
     }
 

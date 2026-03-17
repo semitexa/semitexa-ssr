@@ -24,6 +24,7 @@ readonly class StaticAssetHandler
         'woff2' => 'font/woff2',
         'woff' => 'font/woff',
         'map'  => 'application/json',
+        'twig' => 'text/plain; charset=utf-8',
     ];
 
     public function handle(SwooleRequest $request, SwooleResponse $response): bool

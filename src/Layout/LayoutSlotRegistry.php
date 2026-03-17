@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Layout;
 
+use Semitexa\Ssr\Domain\Model\DeferredSlotDefinition;
 use Semitexa\Ssr\Template\ModuleTemplateRegistry;
 
 class LayoutSlotRegistry
@@ -11,13 +12,23 @@ class LayoutSlotRegistry
     public const GLOBAL_HANDLE = '*';
 
     /**
-     * handle => slot => list of { template, context, priority }
-     * @var array<string, array<string, array<int, array{template:string, context:array, priority:int}>>>
+     * handle => slot => list of { template, context, priority, ... }
+     * @var array<string, array<string, array<int, array{template:string, context:array, priority:int, deferred:bool, cacheTtl:int, dataProvider:?string, skeletonTemplate:?string, mode:string}>>>
      */
     private static array $slots = [];
 
-    public static function register(string $handle, string $slot, string $template, array $context = [], int $priority = 0): void
-    {
+    public static function register(
+        string $handle,
+        string $slot,
+        string $template,
+        array $context = [],
+        int $priority = 0,
+        bool $deferred = false,
+        int $cacheTtl = 0,
+        ?string $dataProvider = null,
+        ?string $skeletonTemplate = null,
+        string $mode = 'html',
+    ): void {
         $handleKey = strtolower($handle);
         $slotKey = strtolower($slot);
         if (!isset(self::$slots[$handleKey][$slotKey])) {
@@ -27,6 +38,11 @@ class LayoutSlotRegistry
             'template' => $template,
             'context' => $context,
             'priority' => $priority,
+            'deferred' => $deferred,
+            'cacheTtl' => $cacheTtl,
+            'dataProvider' => $dataProvider,
+            'skeletonTemplate' => $skeletonTemplate,
+            'mode' => $mode,
         ];
         usort(self::$slots[$handleKey][$slotKey], static fn ($a, $b) => $a['priority'] <=> $b['priority']);
     }
@@ -79,5 +95,73 @@ class LayoutSlotRegistry
     {
         $handleKey = strtolower($handle);
         return self::$slots[$handleKey] ?? [];
+    }
+
+    /**
+     * Get all deferred slot definitions for a given page handle.
+     *
+     * @return DeferredSlotDefinition[]
+     */
+    public static function getDeferredSlots(string $handle): array
+    {
+        $handleKey = strtolower($handle);
+        $result = [];
+
+        $handleSlots = self::$slots[$handleKey] ?? [];
+        $globalSlots = self::$slots[self::GLOBAL_HANDLE] ?? [];
+
+        foreach (array_merge($globalSlots, $handleSlots) as $slotName => $entries) {
+            foreach ($entries as $entry) {
+                if (!($entry['deferred'] ?? false)) {
+                    continue;
+                }
+                $result[] = new DeferredSlotDefinition(
+                    slotId: $slotName,
+                    templateName: $entry['template'],
+                    pageHandle: $handle,
+                    mode: $entry['mode'] ?? 'html',
+                    priority: $entry['priority'] ?? 0,
+                    cacheTtl: $entry['cacheTtl'] ?? 0,
+                    dataProviderClass: $entry['dataProvider'] ?? null,
+                    skeletonTemplate: $entry['skeletonTemplate'] ?? null,
+                );
+            }
+        }
+
+        usort($result, static fn (DeferredSlotDefinition $a, DeferredSlotDefinition $b) => $a->priority <=> $b->priority);
+
+        return $result;
+    }
+
+    /**
+     * Get all deferred slot definitions across all handles.
+     *
+     * @return DeferredSlotDefinition[]
+     */
+    public static function getAllDeferredSlots(): array
+    {
+        $result = [];
+
+        foreach (self::$slots as $handleKey => $slotMap) {
+            foreach ($slotMap as $slotName => $entries) {
+                foreach ($entries as $entry) {
+                    if (!($entry['deferred'] ?? false)) {
+                        continue;
+                    }
+                    $result[] = new DeferredSlotDefinition(
+                        slotId: $slotName,
+                        templateName: $entry['template'],
+                        pageHandle: $handleKey,
+                        mode: $entry['mode'] ?? 'html',
+                        priority: $entry['priority'] ?? 0,
+                        cacheTtl: $entry['cacheTtl'] ?? 0,
+                        dataProviderClass: $entry['dataProvider'] ?? null,
+                        skeletonTemplate: $entry['skeletonTemplate'] ?? null,
+                    );
+                }
+            }
+        }
+
+        return $result;
     }
 }

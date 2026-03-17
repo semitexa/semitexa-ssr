@@ -9,13 +9,13 @@ use Semitexa\Core\Contract\TypedHandlerInterface;
 use Semitexa\Core\Exception\NotFoundException;
 use Semitexa\Core\Http\Response\GenericResponse;
 use Semitexa\Core\Server\SwooleBootstrap;
-use Semitexa\Ssr\Application\Payload\Request\SseEndpointPayload;
+use Semitexa\Ssr\Application\Payload\Request\SseKissPayload;
 use Semitexa\Ssr\Async\AsyncResourceSseServer;
 
-#[AsPayloadHandler(payload: SseEndpointPayload::class, resource: GenericResponse::class)]
-final class SseEndpointHandler implements TypedHandlerInterface
+#[AsPayloadHandler(payload: SseKissPayload::class, resource: GenericResponse::class)]
+final class SseKissHandler implements TypedHandlerInterface
 {
-    public function handle(SseEndpointPayload $payload, GenericResponse $resource): GenericResponse
+    public function handle(SseKissPayload $payload, GenericResponse $resource): GenericResponse
     {
         $context = SwooleBootstrap::getCurrentSwooleRequestResponse();
         if ($context === null || $context[2] === null || $context[3] === null || $context[4] === null) {

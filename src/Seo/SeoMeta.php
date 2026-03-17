@@ -4,30 +4,52 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Seo;
 
+use Swoole\Coroutine;
+
 final class SeoMeta
 {
-    private static array $meta = [];
-    private static ?string $title = null;
-    private static ?string $titleSuffix = null;
-    private static ?string $titlePrefix = null;
+    private const KEY_META = '__seo_meta';
+    private const KEY_TITLE = '__seo_title';
+    private const KEY_TITLE_SUFFIX = '__seo_title_suffix';
+    private const KEY_TITLE_PREFIX = '__seo_title_prefix';
+
+    private static array $staticMeta = [];
+    private static ?string $staticTitle = null;
+    private static ?string $staticTitleSuffix = null;
+    private static ?string $staticTitlePrefix = null;
 
     public static function setTitle(string $title, ?string $suffix = null, ?string $prefix = null): void
     {
-        self::$title = $title;
-        self::$titleSuffix = $suffix ?? self::$titleSuffix ?? ' | My Site';
-        self::$titlePrefix = $prefix ?? self::$titlePrefix ?? '';
+        if (self::inCoroutine()) {
+            $ctx = Coroutine::getContext();
+            $ctx[self::KEY_TITLE] = $title;
+            $ctx[self::KEY_TITLE_SUFFIX] = $suffix ?? ($ctx[self::KEY_TITLE_SUFFIX] ?? ' | My Site');
+            $ctx[self::KEY_TITLE_PREFIX] = $prefix ?? ($ctx[self::KEY_TITLE_PREFIX] ?? '');
+            return;
+        }
+        self::$staticTitle = $title;
+        self::$staticTitleSuffix = $suffix ?? self::$staticTitleSuffix ?? ' | My Site';
+        self::$staticTitlePrefix = $prefix ?? self::$staticTitlePrefix ?? '';
     }
 
     public static function getTitle(?string $override = null): string
     {
-        $title = $override ?? self::$title ?? '';
-
-        if ($title && self::$titlePrefix) {
-            $title = self::$titlePrefix . $title;
+        if (self::inCoroutine()) {
+            $ctx = Coroutine::getContext();
+            $title = $override ?? ($ctx[self::KEY_TITLE] ?? '');
+            $prefix = $ctx[self::KEY_TITLE_PREFIX] ?? '';
+            $suffix = $ctx[self::KEY_TITLE_SUFFIX] ?? '';
+        } else {
+            $title = $override ?? self::$staticTitle ?? '';
+            $prefix = self::$staticTitlePrefix ?? '';
+            $suffix = self::$staticTitleSuffix ?? '';
         }
 
-        if ($title && self::$titleSuffix) {
-            $title = $title . self::$titleSuffix;
+        if ($title && $prefix) {
+            $title = $prefix . $title;
+        }
+        if ($title && $suffix) {
+            $title = $title . $suffix;
         }
 
         return $title;
@@ -35,10 +57,13 @@ final class SeoMeta
 
     public static function tag(string $name, ?string $content = null): string
     {
+        $meta = self::getMeta();
+
         if ($content !== null) {
-            self::$meta[$name] = $content;
+            $meta[$name] = $content;
+            self::setMeta($meta);
         } else {
-            $content = self::$meta[$name] ?? null;
+            $content = $meta[$name] ?? null;
         }
 
         if ($content === null || $content === '') {
@@ -58,12 +83,44 @@ final class SeoMeta
 
     public static function all(): array
     {
-        return self::$meta;
+        return self::getMeta();
     }
 
     public static function reset(): void
     {
-        self::$meta = [];
-        self::$title = null;
+        if (self::inCoroutine()) {
+            $ctx = Coroutine::getContext();
+            $ctx[self::KEY_META] = [];
+            $ctx[self::KEY_TITLE] = null;
+            $ctx[self::KEY_TITLE_SUFFIX] = null;
+            $ctx[self::KEY_TITLE_PREFIX] = null;
+            return;
+        }
+        self::$staticMeta = [];
+        self::$staticTitle = null;
+        self::$staticTitleSuffix = null;
+        self::$staticTitlePrefix = null;
+    }
+
+    private static function getMeta(): array
+    {
+        if (self::inCoroutine()) {
+            return Coroutine::getContext()[self::KEY_META] ?? self::$staticMeta;
+        }
+        return self::$staticMeta;
+    }
+
+    private static function setMeta(array $meta): void
+    {
+        if (self::inCoroutine()) {
+            Coroutine::getContext()[self::KEY_META] = $meta;
+            return;
+        }
+        self::$staticMeta = $meta;
+    }
+
+    private static function inCoroutine(): bool
+    {
+        return class_exists(Coroutine::class, false) && Coroutine::getCid() > 0;
     }
 }

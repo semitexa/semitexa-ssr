@@ -15,7 +15,11 @@ class AsLayoutSlot
         public string $template,
         public array $context = [],
         public int $priority = 0,
-    ) {
-    }
+        public bool $deferred = false,
+        public int $cacheTtl = 0,
+        public ?string $dataProvider = null,
+        public ?string $skeletonTemplate = null,
+        public string $mode = 'html',
+    ) {}
 }
 

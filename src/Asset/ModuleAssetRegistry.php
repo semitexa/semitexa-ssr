@@ -10,7 +10,7 @@ class ModuleAssetRegistry
 {
     private const ALLOWED_EXTENSIONS = [
         'js', 'css', 'json', 'svg', 'png', 'jpg', 'jpeg', 'gif', 'ico',
-        'woff2', 'woff', 'map',
+        'woff2', 'woff', 'map', 'twig',
     ];
 
     /** @var array<string, string> module name/alias → absolute resources dir */
@@ -43,6 +43,22 @@ class ModuleAssetRegistry
         }
 
         self::$initialized = true;
+    }
+
+    /**
+     * Register a custom alias pointing to an absolute directory path.
+     * Used for virtual modules (e.g., 'ssr' for compiled template assets).
+     */
+    public static function registerAlias(string $alias, string $absolutePath): void
+    {
+        if (!self::$initialized) {
+            self::initialize();
+        }
+        $realPath = realpath($absolutePath);
+        if ($realPath !== false && is_dir($realPath)) {
+            self::$map[$alias] = $realPath;
+            self::$initialized = true;
+        }
     }
 
     /**

@@ -1,0 +1,230 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Semitexa\Ssr\Isomorphic;
+
+use Semitexa\Ssr\Configuration\IsomorphicConfig;
+use Semitexa\Ssr\Domain\Exception\DeferredRenderingException;
+use Swoole\Table;
+use Swoole\Timer;
+
+final class DeferredRequestRegistry
+{
+    private static ?Table $table = null;
+    private static int $gcTimerId = 0;
+    private static int $contextColumnSize = 0;
+    private static ?\Swoole\Lock $deliveredLock = null;
+
+    private const TTL_SECONDS = 120;
+    private const GC_INTERVAL_SECONDS = 60;
+    private const MAX_ENTRIES = 4096;
+
+    public static function initialize(?IsomorphicConfig $config = null): void
+    {
+        $config ??= IsomorphicConfig::fromEnvironment();
+
+        self::$contextColumnSize = $config->deferredContextSize;
+
+        $table = new Table(self::MAX_ENTRIES);
+        $table->column('page_handle', Table::TYPE_STRING, 128);
+        $table->column('page_context', Table::TYPE_STRING, $config->deferredContextSize);
+        $table->column('slots', Table::TYPE_STRING, 2048);
+        $table->column('delivered', Table::TYPE_STRING, 2048);
+        $table->column('created_at', Table::TYPE_INT);
+        $table->create();
+
+        self::$table = $table;
+
+        if (class_exists(\Swoole\Lock::class, false)) {
+            $lockType = \defined('SWOOLE_MUTEX') ? SWOOLE_MUTEX : 2;
+            self::$deliveredLock = new \Swoole\Lock($lockType);
+        }
+
+        if (class_exists(Timer::class, false)) {
+            self::$gcTimerId = Timer::tick(self::GC_INTERVAL_SECONDS * 1000, static function (): void {
+                self::gc();
+            });
+        }
+    }
+
+    public static function store(
+        string $requestId,
+        string $pageHandle,
+        array $pageContext,
+        array $slotIds,
+    ): void {
+        if (self::$table === null) {
+            $config = IsomorphicConfig::fromEnvironment();
+            if (!$config->enabled) {
+                return;
+            }
+            self::initialize($config);
+        }
+
+        try {
+            $serializedContext = json_encode(
+                $pageContext,
+                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
+            );
+        } catch (\JsonException $e) {
+            throw new DeferredRenderingException(
+                'Failed to serialize page context: ' . $e->getMessage()
+            );
+        }
+        $contextColumnSize = self::$contextColumnSize > 0 ? self::$contextColumnSize : 8192;
+
+        if (strlen($serializedContext) > $contextColumnSize) {
+            throw new DeferredRenderingException(
+                "Serialized page context exceeds configured SSR_DEFERRED_CONTEXT_SIZE ({$contextColumnSize} bytes). "
+                . 'Increase SSR_DEFERRED_CONTEXT_SIZE or reduce context payload.'
+            );
+        }
+
+        $key = self::tableKey($requestId);
+        try {
+            $slotsJson = json_encode($slotIds, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+            $deliveredJson = json_encode([], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        } catch (\JsonException $e) {
+            throw new DeferredRenderingException(
+                'Failed to serialize deferred request slots: ' . $e->getMessage()
+            );
+        }
+
+        $ok = self::$table->set($key, [
+            'page_handle' => $pageHandle,
+            'page_context' => $serializedContext,
+            'slots' => $slotsJson,
+            'delivered' => $deliveredJson,
+            'created_at' => time(),
+        ]);
+        if ($ok === false) {
+            throw new DeferredRenderingException('Failed to store deferred request entry.');
+        }
+    }
+
+    /**
+     * Consume a deferred request entry. Returns null if not found or expired.
+     *
+     * @return array{page_handle: string, page_context: array, slots: string[], delivered: string[]}|null
+     */
+    public static function consume(string $requestId): ?array
+    {
+        if (self::$table === null) {
+            return null;
+        }
+
+        $key = self::tableKey($requestId);
+        $row = self::$table->get($key);
+
+        if ($row === false) {
+            return null;
+        }
+
+        if ((time() - (int) $row['created_at']) > self::TTL_SECONDS) {
+            self::$table->del($key);
+            return null;
+        }
+
+        return [
+            'page_handle' => trim((string) $row['page_handle']),
+            'page_context' => json_decode((string) $row['page_context'], true) ?: [],
+            'slots' => json_decode((string) $row['slots'], true) ?: [],
+            'delivered' => json_decode((string) $row['delivered'], true) ?: [],
+        ];
+    }
+
+    public static function markDelivered(string $requestId, string $slotId): void
+    {
+        if (self::$table === null) {
+            return;
+        }
+
+        $lock = self::$deliveredLock;
+        if ($lock !== null) {
+            $lock->lock();
+        }
+        try {
+            $key = self::tableKey($requestId);
+            $row = self::$table->get($key);
+
+            if ($row === false) {
+                return;
+            }
+
+            $delivered = json_decode((string) $row['delivered'], true) ?: [];
+            if (!in_array($slotId, $delivered, true)) {
+                $delivered[] = $slotId;
+            }
+
+            try {
+                $deliveredJson = json_encode($delivered, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+            } catch (\JsonException $e) {
+                throw new DeferredRenderingException(
+                    'Failed to serialize delivered slots: ' . $e->getMessage()
+                );
+            }
+
+            $ok = self::$table->set($key, [
+                'page_handle' => $row['page_handle'],
+                'page_context' => $row['page_context'],
+                'slots' => $row['slots'],
+                'delivered' => $deliveredJson,
+                'created_at' => $row['created_at'],
+            ]);
+            if ($ok === false) {
+                throw new DeferredRenderingException('Failed to update deferred request entry.');
+            }
+        } finally {
+            if ($lock !== null) {
+                $lock->unlock();
+            }
+        }
+    }
+
+    public static function remove(string $requestId): void
+    {
+        self::$table?->del(self::tableKey($requestId));
+    }
+
+    public static function getTable(): ?Table
+    {
+        return self::$table;
+    }
+
+    private static function gc(): void
+    {
+        if (self::$table === null) {
+            return;
+        }
+
+        $now = time();
+        $toDelete = [];
+
+        foreach (self::$table as $key => $row) {
+            if (($now - (int) $row['created_at']) > self::TTL_SECONDS) {
+                $toDelete[] = $key;
+            }
+        }
+
+        foreach ($toDelete as $key) {
+            self::$table->del($key);
+        }
+    }
+
+    private static function tableKey(string $requestId): string
+    {
+        return strlen($requestId) > 63 ? md5($requestId) : $requestId;
+    }
+
+    public static function reset(): void
+    {
+        if (self::$gcTimerId > 0 && class_exists(Timer::class, false)) {
+            Timer::clear(self::$gcTimerId);
+            self::$gcTimerId = 0;
+        }
+        self::$deliveredLock = null;
+        self::$contextColumnSize = 0;
+        self::$table = null;
+    }
+}

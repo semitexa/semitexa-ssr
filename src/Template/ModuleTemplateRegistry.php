@@ -207,6 +207,33 @@ final class ModuleTemplateRegistry
             ));
         }
 
+        // layout_slot_deferred() - renders deferred placeholder or full content
+        if (class_exists(\Semitexa\Ssr\Isomorphic\PlaceholderRenderer::class)) {
+            self::$twig->addFunction(new TwigFunction(
+                'layout_slot_deferred',
+                function (array $context, string $slot, array $extraContext = []) {
+                    $deferredSlots = $context['__ssr_deferred_slots'] ?? [];
+                    foreach ($deferredSlots as $slotDef) {
+                        if ($slotDef->slotId === strtolower($slot)) {
+                            return new \Twig\Markup(
+                                \Semitexa\Ssr\Isomorphic\PlaceholderRenderer::renderPlaceholder($slotDef),
+                                'UTF-8'
+                            );
+                        }
+                    }
+                    // Not deferred — render normally
+                    $pageHandle = $context['page_handle'] ?? $context['layout_handle'] ?? null;
+                    if ($pageHandle === null || $pageHandle === '') {
+                        return '';
+                    }
+                    $layoutFrame = $context['layout_frame'] ?? null;
+                    $html = \Semitexa\Ssr\Layout\LayoutSlotRegistry::render($pageHandle, $slot, $context, $extraContext, $layoutFrame);
+                    return new \Twig\Markup($html, 'UTF-8');
+                },
+                ['needs_context' => true, 'is_safe' => ['html']]
+            ));
+        }
+
         // component() - new
         if (class_exists(\Semitexa\Ssr\Component\ComponentRenderer::class)) {
             self::$twig->addFunction(new TwigFunction(
@@ -370,6 +397,23 @@ final class ModuleTemplateRegistry
                 function () { return new \Twig\Markup(\Semitexa\Ssr\Seo\SemanticRenderer::render(), 'UTF-8'); },
                 ['is_safe' => ['html']]
             ));
+        }
+    }
+
+    /**
+     * Resolve a template name to its absolute file path.
+     * Returns null if the template cannot be found.
+     */
+    public static function getTemplatePath(string $templateName): ?string
+    {
+        self::initialize();
+
+        try {
+            $source = self::$loader->getSourceContext($templateName);
+            $path = $source->getPath();
+            return ($path !== '' && is_file($path)) ? $path : null;
+        } catch (\Throwable) {
+            return null;
         }
     }
 

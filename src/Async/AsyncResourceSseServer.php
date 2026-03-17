@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Async;
 
 use Semitexa\Core\Environment;
+use Semitexa\Core\Container\ContainerFactory;
 use Swoole\Http\Request;
 use Swoole\Http\Response;
 
@@ -76,6 +77,11 @@ final class AsyncResourceSseServer
         }
 
         if ($path === '/__semitexa_sse' || $path === '/sse') {
+            self::handleSse($request, $response);
+            return true;
+        }
+
+        if ($path === '/__semitexa_kiss') {
             self::handleSse($request, $response);
             return true;
         }
@@ -160,6 +166,13 @@ final class AsyncResourceSseServer
         // and ensures response is flushed; some proxies don't send headers until first byte).
         self::writeSse($response, ['connected' => true]);
 
+        // Trigger deferred block streaming if deferred_request_id is present
+        $deferredRequestId = trim((string) ($request->get['deferred_request_id'] ?? ''));
+        $lastEventId = $request->header['last-event-id'] ?? null;
+        if ($deferredRequestId !== '') {
+            self::triggerDeferredBlocks($sessionId, $deferredRequestId, $lastEventId);
+        }
+
         $closed = false;
         while (!$closed && isset(self::$sessions[$sessionId])) {
             while (isset(self::$queues[$sessionId]) && self::$queues[$sessionId] !== []) {
@@ -222,6 +235,50 @@ final class AsyncResourceSseServer
         $response->end();
     }
 
+    private static function triggerDeferredBlocks(string $sessionId, string $deferredRequestId, ?string $lastEventId): void
+    {
+        $registry = \Semitexa\Ssr\Isomorphic\DeferredRequestRegistry::consume($deferredRequestId);
+        if ($registry === null) {
+            self::deliver($sessionId, ['type' => 'done']);
+            return;
+        }
+
+        // Use coroutine to resolve deferred blocks concurrently
+        if (class_exists(\Swoole\Coroutine::class, false) && \Swoole\Coroutine::getCid() > 0) {
+            \Swoole\Coroutine::create(static function () use ($sessionId, $registry, $lastEventId, $deferredRequestId): void {
+                try {
+                    $container = ContainerFactory::get();
+                    $orchestrator = $container->get(\Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator::class);
+                    $orchestrator->streamDeferredBlocks(
+                        sessionId: $sessionId,
+                        pageHandle: $registry['page_handle'],
+                        pageContext: $registry['page_context'],
+                        lastEventId: $lastEventId,
+                        deferredRequestId: $deferredRequestId,
+                    );
+                } catch (\Throwable $e) {
+                    error_log("[Semitexa SSR] Deferred block streaming failed: {$e->getMessage()}");
+                    self::deliver($sessionId, ['type' => 'done']);
+                }
+            });
+        } else {
+            try {
+                $container = ContainerFactory::get();
+                $orchestrator = $container->get(\Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator::class);
+                $orchestrator->streamDeferredBlocks(
+                    sessionId: $sessionId,
+                    pageHandle: $registry['page_handle'],
+                    pageContext: $registry['page_context'],
+                    lastEventId: $lastEventId,
+                    deferredRequestId: $deferredRequestId,
+                );
+            } catch (\Throwable $e) {
+                error_log("[Semitexa SSR] Deferred block streaming failed (sync): {$e->getMessage()}");
+                self::deliver($sessionId, ['type' => 'done']);
+            }
+        }
+    }
+
     private static function drainRabbitMqQueueForSession(string $sessionId, Response $response): void
     {
         $channel = self::getRabbitMqChannel();
@@ -252,7 +309,12 @@ final class AsyncResourceSseServer
 
     private static function writeSse(Response $response, array $data): bool
     {
-        $line = "data: " . json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n";
+        $line = '';
+        if (isset($data['id'])) {
+            $safeId = str_replace(["\r", "\n"], '', (string) $data['id']);
+            $line .= 'id: ' . $safeId . "\n";
+        }
+        $line .= "data: " . json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n";
         return @$response->write($line);
     }
 

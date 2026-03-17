@@ -108,7 +108,7 @@ final class SeoMeta
     private static function getMeta(): array
     {
         if (self::inCoroutine()) {
-            return Coroutine::getContext()[self::KEY_META] ?? self::$staticMeta;
+            return Coroutine::getContext()[self::KEY_META] ?? [];
         }
         return self::$staticMeta;
     }

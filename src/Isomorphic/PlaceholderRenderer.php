@@ -100,10 +100,14 @@ final class PlaceholderRenderer
             'slots' => $slotManifest,
         ];
 
-        $json = json_encode($manifest, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG);
-        if ($json === false) {
+        try {
+            $json = json_encode(
+                $manifest,
+                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_THROW_ON_ERROR
+            );
+        } catch (\JsonException $e) {
             // Log the error and fall back to a minimal, valid manifest to avoid breaking client initialization.
-            error_log('Failed to JSON-encode SSR deferred manifest: ' . json_last_error_msg());
+            error_log('Failed to JSON-encode SSR deferred manifest: ' . $e->getMessage());
             $json = '{"requestId":"","sessionId":"","slots":[]}';
         }
 

@@ -62,6 +62,43 @@ final class DeferredBlockOrchestrator
             return;
         }
 
+        $useCoroutine = class_exists(Coroutine::class, false)
+            && Coroutine::getCid() > 0
+            && class_exists(WaitGroup::class, false);
+
+        if (!$useCoroutine) {
+            $results = [];
+            foreach ($slots as $slot) {
+                $data = [];
+                try {
+                    $provider = $this->dataProviderRegistry->resolve($slot->slotId, $pageHandle);
+                    $data = $provider?->resolve($slot, $pageContext) ?? [];
+                } catch (\Throwable $e) {
+                    error_log("DataProvider failed for slot {$slot->slotId}: {$e->getMessage()}");
+                }
+                $results[] = [$slot, $data];
+            }
+
+            usort($results, static fn (array $a, array $b) => $a[0]->priority <=> $b[0]->priority);
+
+            $eventId = $lastEventId !== null ? ((int) $lastEventId) : 0;
+            foreach ($results as [$slot, $data]) {
+                $eventId++;
+                $payload = $this->buildPayload($slot, $data);
+                $sseData = $payload->toArray();
+                $sseData['id'] = $eventId;
+
+                SseAsyncResultDelivery::deliverRaw($sessionId, $sseData);
+
+                if ($deferredRequestId !== null) {
+                    DeferredRequestRegistry::markDelivered($deferredRequestId, $slot->slotId);
+                }
+            }
+
+            SseAsyncResultDelivery::deliverRaw($sessionId, ['type' => 'done']);
+            return;
+        }
+
         // Concurrent resolution via Swoole coroutines
         $slotCount = count($slots);
         $channel = class_exists(\Swoole\Coroutine\Channel::class, false)
@@ -181,21 +218,25 @@ final class DeferredBlockOrchestrator
         }
         $meta['priority'] = $slot->priority;
 
-        return match ($slot->mode) {
-            'template' => new DeferredBlockPayload(
-                slotId: $slot->slotId,
-                mode: 'template',
-                template: DeferredTemplateRegistry::getPublishedPath($slot->slotId, $slot->pageHandle),
-                data: $data,
-                meta: $meta,
-            ),
-            default => new DeferredBlockPayload(
-                slotId: $slot->slotId,
-                mode: 'html',
-                html: $this->renderSlotHtml($slot, $data),
-                meta: $meta,
-            ),
-        };
+        if ($slot->mode === 'template') {
+            $templatePath = DeferredTemplateRegistry::getPublishedPath($slot->slotId, $slot->pageHandle);
+            if ($templatePath !== null && $templatePath !== '') {
+                return new DeferredBlockPayload(
+                    slotId: $slot->slotId,
+                    mode: 'template',
+                    template: $templatePath,
+                    data: $data,
+                    meta: $meta,
+                );
+            }
+        }
+
+        return new DeferredBlockPayload(
+            slotId: $slot->slotId,
+            mode: 'html',
+            html: $this->renderSlotHtml($slot, $data),
+            meta: $meta,
+        );
     }
 
     private function renderSlotHtml(DeferredSlotDefinition $slot, array $data): string

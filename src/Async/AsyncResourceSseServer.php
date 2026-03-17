@@ -311,7 +311,8 @@ final class AsyncResourceSseServer
     {
         $line = '';
         if (isset($data['id'])) {
-            $line .= 'id: ' . $data['id'] . "\n";
+            $safeId = str_replace(["\r", "\n"], '', (string) $data['id']);
+            $line .= 'id: ' . $safeId . "\n";
         }
         $line .= "data: " . json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n";
         return @$response->write($line);

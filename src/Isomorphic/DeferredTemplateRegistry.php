@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Isomorphic;
 
 use Semitexa\Core\Util\ProjectRoot;
+use Semitexa\Ssr\Asset\ModuleAssetRegistry;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Semitexa\Ssr\Layout\LayoutSlotRegistry;
 use Semitexa\Ssr\Template\ModuleTemplateRegistry;
@@ -33,6 +34,7 @@ final class DeferredTemplateRegistry
         $deferredSlots = LayoutSlotRegistry::getAllDeferredSlots();
         $projectRoot = ProjectRoot::get();
         $basePath = rtrim($config->templateAssetsPath, '/');
+        $assetBasePath = rtrim(dirname($basePath), '/');
 
         $outputDir = $projectRoot . '/' . $basePath;
         if ($tenantId !== null && $tenantId !== '') {
@@ -41,6 +43,11 @@ final class DeferredTemplateRegistry
 
         if (!is_dir($outputDir) && !mkdir($outputDir, 0755, true) && !is_dir($outputDir)) {
             return;
+        }
+
+        if ($assetBasePath !== '' && $assetBasePath !== '.' && $assetBasePath !== $basePath) {
+            $assetRoot = $projectRoot . '/' . $assetBasePath;
+            ModuleAssetRegistry::registerAlias('ssr', $assetRoot);
         }
 
         foreach ($deferredSlots as $slot) {
@@ -83,7 +90,18 @@ final class DeferredTemplateRegistry
         if ($pageHandle !== null && $pageHandle !== '') {
             return self::$publishedPaths[self::keyFor($slotId, $pageHandle)] ?? null;
         }
-        return self::$publishedPaths[$slotId] ?? null;
+        $direct = self::$publishedPaths[$slotId] ?? null;
+        if ($direct !== null) {
+            return $direct;
+        }
+
+        $slotKey = '::' . strtolower($slotId);
+        foreach (self::$publishedPaths as $key => $path) {
+            if (str_ends_with($key, $slotKey)) {
+                return $path;
+            }
+        }
+        return null;
     }
 
     /**

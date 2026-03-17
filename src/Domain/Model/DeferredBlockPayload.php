@@ -20,8 +20,8 @@ final readonly class DeferredBlockPayload
         if ($this->mode === 'template' && ($this->template === null || $this->template === '')) {
             throw new \InvalidArgumentException('Template mode requires a non-empty template path.');
         }
-        if ($this->mode === 'html' && ($this->html === null || $this->html === '')) {
-            throw new \InvalidArgumentException('Html mode requires a non-empty html payload.');
+        if ($this->mode === 'html' && $this->html === null) {
+            throw new \InvalidArgumentException('Html mode requires an html payload.');
         }
     }
 

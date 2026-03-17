@@ -70,7 +70,7 @@ final class DeferredBlockOrchestrator
             $wg->add();
             Coroutine::create(function () use ($slot, $pageContext, $wg, &$results): void {
                 try {
-                    $provider = $this->dataProviderRegistry->resolve($slot->slotId);
+                    $provider = $this->dataProviderRegistry->resolve($slot->slotId, $pageHandle);
                     if ($provider !== null) {
                         $data = $provider->resolve($slot, $pageContext);
                         $results[] = [$slot, $data];
@@ -116,6 +116,7 @@ final class DeferredBlockOrchestrator
     public function renderDeferredBlocksSync(
         string $pageHandle,
         array $slotNames,
+        array $pageContext = [],
     ): array {
         $allSlots = $this->getDeferredSlots($pageHandle);
         $result = [];
@@ -126,12 +127,12 @@ final class DeferredBlockOrchestrator
             }
 
             try {
-                $provider = $this->dataProviderRegistry->resolve($slot->slotId);
+                $provider = $this->dataProviderRegistry->resolve($slot->slotId, $pageHandle);
                 if ($provider === null) {
                     continue;
                 }
 
-                $data = $provider->resolve($slot, []);
+                $data = $provider->resolve($slot, $pageContext);
                 $twig = ModuleTemplateRegistry::getTwig();
                 $result[$slot->slotId] = $twig->render($slot->templateName, $data);
             } catch (\Throwable $e) {
@@ -162,7 +163,7 @@ final class DeferredBlockOrchestrator
             'template' => new DeferredBlockPayload(
                 slotId: $slot->slotId,
                 mode: 'template',
-                template: DeferredTemplateRegistry::getPublishedPath($slot->slotId),
+                template: DeferredTemplateRegistry::getPublishedPath($slot->slotId, $slot->pageHandle),
                 data: $data,
                 meta: $meta,
             ),

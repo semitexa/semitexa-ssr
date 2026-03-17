@@ -17,6 +17,7 @@ class SsrFallbackPayload
 {
     protected string $handle = '';
     protected string $slots = '';
+    protected string $deferredRequestId = '';
 
     public function getHandle(): string
     {
@@ -36,5 +37,15 @@ class SsrFallbackPayload
     public function setSlots(string $slots): void
     {
         $this->slots = $slots;
+    }
+
+    public function getDeferredRequestId(): string
+    {
+        return $this->deferredRequestId;
+    }
+
+    public function setDeferredRequestId(string $deferredRequestId): void
+    {
+        $this->deferredRequestId = $deferredRequestId;
     }
 }

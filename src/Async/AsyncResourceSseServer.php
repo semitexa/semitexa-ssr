@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Async;
 
 use Semitexa\Core\Environment;
+use Semitexa\Core\Container\ContainerFactory;
 use Swoole\Http\Request;
 use Swoole\Http\Response;
 
@@ -246,7 +247,8 @@ final class AsyncResourceSseServer
         if (class_exists(\Swoole\Coroutine::class, false) && \Swoole\Coroutine::getCid() > 0) {
             \Swoole\Coroutine::create(static function () use ($sessionId, $registry, $lastEventId, $deferredRequestId): void {
                 try {
-                    $orchestrator = new \Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator();
+                    $container = ContainerFactory::get();
+                    $orchestrator = $container->get(\Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator::class);
                     $orchestrator->streamDeferredBlocks(
                         sessionId: $sessionId,
                         pageHandle: $registry['page_handle'],

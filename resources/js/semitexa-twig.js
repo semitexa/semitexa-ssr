@@ -235,7 +235,7 @@
             case 'unary':
                 if (node.op === 'not') return !evaluateExpr(node.operand, ctx);
                 return null;
-            case 'binary':
+            case 'binary': {
                 var l = evaluateExpr(node.left, ctx);
                 var r = evaluateExpr(node.right, ctx);
                 switch (node.op) {
@@ -253,6 +253,7 @@
                         return false;
                 }
                 return null;
+            }
         }
         return null;
     }
@@ -363,11 +364,12 @@
                     case 'text':
                         out += node.value;
                         break;
-                    case 'output':
+                    case 'output': {
                         var val = resolve(node.expr, localCtx);
                         out += node.raw ? String(val == null ? '' : val) : htmlEscape(val);
                         break;
-                    case 'if':
+                    }
+                    case 'if': {
                         var matched = false;
                         for (var b = 0; b < node.branches.length; b++) {
                             if (evaluateExpr(node.branches[b].condition, localCtx)) {
@@ -380,7 +382,8 @@
                             exec(node.elseBranch, localCtx);
                         }
                         break;
-                    case 'for':
+                    }
+                    case 'for': {
                         var items = resolve(node.iterExpr, localCtx);
                         if (!items) break;
                         var arr = Array.isArray(items) ? items : Object.values(items);
@@ -399,12 +402,14 @@
                             exec(node.body, childCtx);
                         }
                         break;
-                    case 'set':
+                    }
+                    case 'set': {
                         if (node.expr !== '') {
                             var setExprNode = parseExpression(node.expr);
                             localCtx[node.name] = evaluateExpr(setExprNode, localCtx);
                         }
                         break;
+                    }
                 }
             }
         }
@@ -418,6 +423,7 @@
         _templates: new Map(),
         _connected: false,
         _eventSource: null,
+        _manifest: null,
 
         parse: function (templateString) {
             return parse(tokenize(templateString));
@@ -430,6 +436,7 @@
         _connect: function (manifest) {
             if (!manifest || !manifest.requestId) return;
             var self = this;
+            self._manifest = manifest;
             var sseUrl = '/__semitexa_kiss?session_id=' + encodeURIComponent(manifest.sessionId)
                 + '&deferred_request_id=' + encodeURIComponent(manifest.requestId);
 
@@ -517,15 +524,14 @@
             if (!manifest || !manifest.requestId) return;
             var self = this;
             var slotIds = manifest.slots.map(function (s) { return s.id; });
-            var url = '/__semitexa_hug?handle=' + encodeURIComponent(manifest.slots.length > 0 ? manifest.requestId : '')
-                + '&slots=' + encodeURIComponent(slotIds.join(','));
 
             // We need the page handle, extract from manifest or use a data attribute
             var handleEl = document.querySelector('[data-ssr-handle]');
             var pageHandle = handleEl ? handleEl.getAttribute('data-ssr-handle') : '';
 
             var fallbackUrl = '/__semitexa_hug?handle=' + encodeURIComponent(pageHandle)
-                + '&slots=' + encodeURIComponent(slotIds.join(','));
+                + '&slots=' + encodeURIComponent(slotIds.join(','))
+                + '&deferred_request_id=' + encodeURIComponent(manifest.requestId);
 
             fetch(fallbackUrl).then(function (resp) {
                 if (!resp.ok) return;
@@ -555,9 +561,11 @@
             if (!el) return;
             var handleEl = document.querySelector('[data-ssr-handle]');
             var pageHandle = handleEl ? handleEl.getAttribute('data-ssr-handle') : '';
+            var requestId = this._manifest && this._manifest.requestId ? this._manifest.requestId : '';
 
             fetch('/__semitexa_hug?handle=' + encodeURIComponent(pageHandle)
-                + '&slots=' + encodeURIComponent(slotId))
+                + '&slots=' + encodeURIComponent(slotId)
+                + (requestId ? '&deferred_request_id=' + encodeURIComponent(requestId) : ''))
                 .then(function (resp) { return resp.ok ? resp.json() : null; })
                 .then(function (data) {
                     if (data && data[slotId]) el.innerHTML = data[slotId];

@@ -70,15 +70,18 @@ final class SeoMeta
             return '';
         }
 
-        if (in_array($name, ['title', 'description', 'keywords'])) {
-            return "<meta name=\"{$name}\" content=\"{$content}\">";
+        $safeName = htmlspecialchars($name, ENT_QUOTES, 'UTF-8');
+        $safeContent = htmlspecialchars($content, ENT_QUOTES, 'UTF-8');
+
+        if (in_array($name, ['title', 'description', 'keywords'], true)) {
+            return "<meta name=\"{$safeName}\" content=\"{$safeContent}\">";
         }
 
         if (str_starts_with($name, 'og:')) {
-            return "<meta property=\"{$name}\" content=\"{$content}\">";
+            return "<meta property=\"{$safeName}\" content=\"{$safeContent}\">";
         }
 
-        return "<meta name=\"{$name}\" content=\"{$content}\">";
+        return "<meta name=\"{$safeName}\" content=\"{$safeContent}\">";
     }
 
     public static function all(): array

@@ -13,6 +13,8 @@ final class DeferredRequestRegistry
 {
     private static ?Table $table = null;
     private static int $gcTimerId = 0;
+    private static int $contextColumnSize = 0;
+    private static ?\Swoole\Lock $deliveredLock = null;
 
     private const TTL_SECONDS = 120;
     private const GC_INTERVAL_SECONDS = 60;
@@ -21,6 +23,8 @@ final class DeferredRequestRegistry
     public static function initialize(?IsomorphicConfig $config = null): void
     {
         $config ??= IsomorphicConfig::fromEnvironment();
+
+        self::$contextColumnSize = $config->deferredContextSize;
 
         $table = new Table(self::MAX_ENTRIES);
         $table->column('page_handle', Table::TYPE_STRING, 128);
@@ -31,6 +35,11 @@ final class DeferredRequestRegistry
         $table->create();
 
         self::$table = $table;
+
+        if (class_exists(\Swoole\Lock::class, false)) {
+            $lockType = \defined('SWOOLE_MUTEX') ? SWOOLE_MUTEX : 2;
+            self::$deliveredLock = new \Swoole\Lock($lockType);
+        }
 
         if (class_exists(Timer::class, false)) {
             self::$gcTimerId = Timer::tick(self::GC_INTERVAL_SECONDS * 1000, static function (): void {
@@ -46,13 +55,20 @@ final class DeferredRequestRegistry
         array $slotIds,
     ): void {
         if (self::$table === null) {
-            return;
+            $config = IsomorphicConfig::fromEnvironment();
+            if (!$config->enabled) {
+                return;
+            }
+            self::initialize($config);
         }
 
         $serializedContext = json_encode($pageContext, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        $contextColumnSize = self::$table->getSize() > 0
-            ? (IsomorphicConfig::fromEnvironment())->deferredContextSize
-            : 8192;
+        if ($serializedContext === false) {
+            throw new DeferredRenderingException(
+                'Failed to serialize page context: ' . json_last_error_msg()
+            );
+        }
+        $contextColumnSize = self::$contextColumnSize > 0 ? self::$contextColumnSize : 8192;
 
         if (strlen($serializedContext) > $contextColumnSize) {
             throw new DeferredRenderingException(
@@ -108,25 +124,35 @@ final class DeferredRequestRegistry
             return;
         }
 
-        $key = self::tableKey($requestId);
-        $row = self::$table->get($key);
-
-        if ($row === false) {
-            return;
+        $lock = self::$deliveredLock;
+        if ($lock !== null) {
+            $lock->lock();
         }
+        try {
+            $key = self::tableKey($requestId);
+            $row = self::$table->get($key);
 
-        $delivered = json_decode((string) $row['delivered'], true) ?: [];
-        if (!in_array($slotId, $delivered, true)) {
-            $delivered[] = $slotId;
+            if ($row === false) {
+                return;
+            }
+
+            $delivered = json_decode((string) $row['delivered'], true) ?: [];
+            if (!in_array($slotId, $delivered, true)) {
+                $delivered[] = $slotId;
+            }
+
+            self::$table->set($key, [
+                'page_handle' => $row['page_handle'],
+                'page_context' => $row['page_context'],
+                'slots' => $row['slots'],
+                'delivered' => json_encode($delivered, JSON_UNESCAPED_UNICODE),
+                'created_at' => $row['created_at'],
+            ]);
+        } finally {
+            if ($lock !== null) {
+                $lock->unlock();
+            }
         }
-
-        self::$table->set($key, [
-            'page_handle' => $row['page_handle'],
-            'page_context' => $row['page_context'],
-            'slots' => $row['slots'],
-            'delivered' => json_encode($delivered, JSON_UNESCAPED_UNICODE),
-            'created_at' => $row['created_at'],
-        ]);
     }
 
     public static function remove(string $requestId): void
@@ -170,6 +196,8 @@ final class DeferredRequestRegistry
             Timer::clear(self::$gcTimerId);
             self::$gcTimerId = 0;
         }
+        self::$deliveredLock = null;
+        self::$contextColumnSize = 0;
         self::$table = null;
     }
 }

@@ -14,10 +14,12 @@ class HtmlResponse extends GenericResponse
 {
     private ?string $declaredTemplate = null;
     private static array $attributeCache = [];
+    private bool $autoRenderEnabled = true;
 
     public function __construct()
     {
         parent::__construct('', 200, ['Content-Type' => 'text/html; charset=UTF-8']);
+        SeoMeta::reset();
         $this->initFromAttribute();
     }
 
@@ -97,12 +99,35 @@ class HtmlResponse extends GenericResponse
         return $this->declaredTemplate;
     }
 
+    public function setDeclaredTemplate(?string $template): self
+    {
+        $this->declaredTemplate = $template;
+        return $this;
+    }
+
+    public function disableAutoRender(): self
+    {
+        $this->autoRenderEnabled = false;
+        return $this;
+    }
+
+    public function enableAutoRender(): self
+    {
+        $this->autoRenderEnabled = true;
+        return $this;
+    }
+
     /**
      * Auto-renders the declared template if no content has been set by the handler pipeline.
      */
     public function toCoreResponse(): CoreResponse
     {
-        if ($this->getContent() === '' && $this->declaredTemplate !== null) {
+        if (
+            $this->autoRenderEnabled
+            && $this->getContent() === ''
+            && $this->declaredTemplate !== null
+            && !in_array($this->getStatusCode(), [204, 304], true)
+        ) {
             $this->renderTemplate($this->declaredTemplate);
         }
         return parent::toCoreResponse();
@@ -111,27 +136,33 @@ class HtmlResponse extends GenericResponse
     private function initFromAttribute(): void
     {
         $class = static::class;
-        if (!array_key_exists($class, self::$attributeCache)) {
+        $cacheKey = $class;
+        if (!array_key_exists($cacheKey, self::$attributeCache)) {
             // Walk up the parent chain to find #[AsResource].
             // This is necessary when PayloadDtoFactory creates a dynamic wrapper class
             // (via eval) that extends the real Resource subclass — the wrapper has no
             // attributes of its own, but its parent does.
             $ref = new \ReflectionClass($class);
             $instance = null;
+            $attrClass = null;
             while ($ref !== false) {
                 $attrs = $ref->getAttributes(AsResource::class);
                 if (!empty($attrs)) {
                     $instance = $attrs[0]->newInstance();
+                    $attrClass = $ref->getName();
                     break;
                 }
                 $ref = $ref->getParentClass();
             }
-            self::$attributeCache[$class] = $instance !== null
-                ? ['handle' => $instance->handle, 'template' => $instance->template]
-                : ['handle' => null, 'template' => null];
+            $cacheKey = $attrClass ?? $class;
+            if (!array_key_exists($cacheKey, self::$attributeCache)) {
+                self::$attributeCache[$cacheKey] = $instance !== null
+                    ? ['handle' => $instance->handle, 'template' => $instance->template]
+                    : ['handle' => null, 'template' => null];
+            }
         }
 
-        $cached = self::$attributeCache[$class];
+        $cached = self::$attributeCache[$cacheKey];
         if ($cached['handle'] !== null) {
             $this->setRenderHandle($cached['handle']);
         }

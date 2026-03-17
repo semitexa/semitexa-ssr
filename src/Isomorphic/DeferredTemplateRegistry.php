@@ -11,7 +11,7 @@ use Semitexa\Ssr\Template\ModuleTemplateRegistry;
 
 final class DeferredTemplateRegistry
 {
-    /** @var array<string, string> slot_id => public URL path (e.g. /assets/ssr/tpl/sidebar.a1b2c3.twig) */
+    /** @var array<string, string> handle::slot_id => public URL path (e.g. /assets/ssr/tpl/sidebar.a1b2c3.twig) */
     private static array $publishedPaths = [];
 
     private static bool $initialized = false;
@@ -22,6 +22,10 @@ final class DeferredTemplateRegistry
 
         if (!$config->enabled) {
             return;
+        }
+
+        if ($tenantId !== null && $tenantId !== '' && !preg_match('/\A[a-zA-Z0-9_-]+\z/', $tenantId)) {
+            throw new \InvalidArgumentException('Invalid tenant ID.');
         }
 
         self::$publishedPaths = [];
@@ -35,8 +39,8 @@ final class DeferredTemplateRegistry
             $outputDir .= '/' . $tenantId;
         }
 
-        if (!is_dir($outputDir)) {
-            @mkdir($outputDir, 0755, true);
+        if (!is_dir($outputDir) && !mkdir($outputDir, 0755, true) && !is_dir($outputDir)) {
+            return;
         }
 
         foreach ($deferredSlots as $slot) {
@@ -59,20 +63,26 @@ final class DeferredTemplateRegistry
             $filename = "{$safeName}.{$hash}.twig";
 
             $outputFile = $outputDir . '/' . $filename;
-            file_put_contents($outputFile, $content);
+            if (file_put_contents($outputFile, $content) === false) {
+                continue;
+            }
 
-            $urlBase = '/assets/ssr/tpl';
+            $publicBase = preg_replace('#^public/?#', '', ltrim($basePath, '/')) ?? $basePath;
+            $urlBase = '/' . ltrim($publicBase, '/');
             if ($tenantId !== null && $tenantId !== '') {
                 $urlBase .= '/' . $tenantId;
             }
-            self::$publishedPaths[$slot->slotId] = $urlBase . '/' . $filename;
+            self::$publishedPaths[self::keyFor($slot->slotId, $slot->pageHandle)] = $urlBase . '/' . $filename;
         }
 
         self::$initialized = true;
     }
 
-    public static function getPublishedPath(string $slotId): ?string
+    public static function getPublishedPath(string $slotId, ?string $pageHandle = null): ?string
     {
+        if ($pageHandle !== null && $pageHandle !== '') {
+            return self::$publishedPaths[self::keyFor($slotId, $pageHandle)] ?? null;
+        }
         return self::$publishedPaths[$slotId] ?? null;
     }
 
@@ -104,5 +114,10 @@ final class DeferredTemplateRegistry
     {
         self::$publishedPaths = [];
         self::$initialized = false;
+    }
+
+    private static function keyFor(string $slotId, string $pageHandle): string
+    {
+        return strtolower($pageHandle) . '::' . strtolower($slotId);
     }
 }

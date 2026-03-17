@@ -109,8 +109,16 @@ class LayoutSlotRegistry
 
         $handleSlots = self::$slots[$handleKey] ?? [];
         $globalSlots = self::$slots[self::GLOBAL_HANDLE] ?? [];
+        $mergedSlots = $globalSlots;
+        foreach ($handleSlots as $slotName => $entries) {
+            if (isset($mergedSlots[$slotName])) {
+                $mergedSlots[$slotName] = array_merge($mergedSlots[$slotName], $entries);
+            } else {
+                $mergedSlots[$slotName] = $entries;
+            }
+        }
 
-        foreach (array_merge($globalSlots, $handleSlots) as $slotName => $entries) {
+        foreach ($mergedSlots as $slotName => $entries) {
             foreach ($entries as $entry) {
                 if (!($entry['deferred'] ?? false)) {
                     continue;

@@ -20,9 +20,11 @@ final class DataProviderRegistry
 
     public static function register(string $slotId, string $providerClass, array $handles = []): void
     {
-        self::$providerMap[$slotId] = [
+        $slotKey = self::normalizeSlotId($slotId);
+        $handleKeys = self::normalizeHandles($handles);
+        self::$providerMap[$slotKey] = [
             'class' => $providerClass,
-            'handles' => $handles,
+            'handles' => $handleKeys,
         ];
     }
 
@@ -30,11 +32,22 @@ final class DataProviderRegistry
      * Resolve a fresh DataProvider instance for the given slot.
      * Returns null if no provider is registered.
      */
-    public function resolve(string $slotId): ?DataProviderInterface
+    public function resolve(string $slotId, ?string $pageHandle = null): ?DataProviderInterface
     {
-        $entry = self::$providerMap[$slotId] ?? null;
+        $slotKey = self::normalizeSlotId($slotId);
+        $entry = self::$providerMap[$slotKey] ?? null;
         if ($entry === null) {
             return null;
+        }
+
+        if ($entry['handles'] !== []) {
+            if ($pageHandle === null || $pageHandle === '') {
+                return null;
+            }
+            $handleKey = strtolower($pageHandle);
+            if (!in_array($handleKey, $entry['handles'], true)) {
+                return null;
+            }
         }
 
         if ($this->container === null) {
@@ -55,13 +68,18 @@ final class DataProviderRegistry
      */
     public static function hasProvider(string $slotId, ?string $handle = null): bool
     {
-        $entry = self::$providerMap[$slotId] ?? null;
+        $slotKey = self::normalizeSlotId($slotId);
+        $entry = self::$providerMap[$slotKey] ?? null;
         if ($entry === null) {
             return false;
         }
 
-        if ($handle !== null && $entry['handles'] !== []) {
-            return in_array($handle, $entry['handles'], true);
+        if ($entry['handles'] !== []) {
+            if ($handle === null || $handle === '') {
+                return false;
+            }
+            $handleKey = strtolower($handle);
+            return in_array($handleKey, $entry['handles'], true);
         }
 
         return true;
@@ -78,5 +96,26 @@ final class DataProviderRegistry
     public static function reset(): void
     {
         self::$providerMap = [];
+    }
+
+    private static function normalizeSlotId(string $slotId): string
+    {
+        return strtolower($slotId);
+    }
+
+    /**
+     * @param list<string> $handles
+     * @return list<string>
+     */
+    private static function normalizeHandles(array $handles): array
+    {
+        $normalized = [];
+        foreach ($handles as $handle) {
+            $handle = strtolower($handle);
+            if ($handle !== '') {
+                $normalized[] = $handle;
+            }
+        }
+        return $normalized;
     }
 }

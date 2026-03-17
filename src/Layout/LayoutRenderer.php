@@ -7,6 +7,7 @@ namespace Semitexa\Ssr\Layout;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Semitexa\Ssr\Context\IsomorphicContextStore;
 use Semitexa\Ssr\Isomorphic\DeferredRequestRegistry;
+use Semitexa\Ssr\Isomorphic\DeferredTemplateRegistry;
 use Semitexa\Ssr\Isomorphic\PlaceholderRenderer;
 use Semitexa\Ssr\Template\ModuleTemplateRegistry;
 
@@ -41,13 +42,20 @@ class LayoutRenderer
             // Isomorphic deferred rendering support
             $config = self::getConfig();
             if ($config->enabled && !self::isCrawler()) {
+                if (DeferredRequestRegistry::getTable() === null) {
+                    DeferredRequestRegistry::initialize($config);
+                }
+
                 $deferredSlots = LayoutSlotRegistry::getDeferredSlots($handle);
 
                 if ($deferredSlots !== []) {
+                    if (!DeferredTemplateRegistry::isInitialized()) {
+                        DeferredTemplateRegistry::initialize($config);
+                    }
                     $requestId = 'dr_' . bin2hex(random_bytes(12));
                     $sessionId = IsomorphicContextStore::getSessionId();
                     if ($sessionId === '') {
-                        $sessionId = uniqid('sse_', true);
+                        $sessionId = 'sse_' . bin2hex(random_bytes(16));
                         IsomorphicContextStore::setSessionId($sessionId);
                     }
 
@@ -135,5 +143,4 @@ class LayoutRenderer
         self::$config = null;
     }
 }
-
 

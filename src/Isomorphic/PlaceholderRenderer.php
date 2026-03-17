@@ -50,7 +50,7 @@ final class PlaceholderRenderer
                 continue;
             }
 
-            $publishedPath = DeferredTemplateRegistry::getPublishedPath($slot->slotId);
+            $publishedPath = DeferredTemplateRegistry::getPublishedPath($slot->slotId, $slot->pageHandle);
             if ($publishedPath === null) {
                 continue;
             }
@@ -81,7 +81,7 @@ final class PlaceholderRenderer
             ];
 
             if ($slot->mode === 'template') {
-                $publishedPath = DeferredTemplateRegistry::getPublishedPath($slot->slotId);
+                $publishedPath = DeferredTemplateRegistry::getPublishedPath($slot->slotId, $slot->pageHandle);
                 if ($publishedPath !== null) {
                     $entry['template'] = $publishedPath;
                 }

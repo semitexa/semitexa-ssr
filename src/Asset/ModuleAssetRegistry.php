@@ -51,9 +51,13 @@ class ModuleAssetRegistry
      */
     public static function registerAlias(string $alias, string $absolutePath): void
     {
+        if (!self::$initialized) {
+            self::initialize();
+        }
         $realPath = realpath($absolutePath);
         if ($realPath !== false && is_dir($realPath)) {
             self::$map[$alias] = $realPath;
+            self::$initialized = true;
         }
     }
 

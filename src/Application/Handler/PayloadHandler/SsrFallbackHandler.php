@@ -11,6 +11,7 @@ use Semitexa\Core\Exception\NotFoundException;
 use Semitexa\Core\Http\Response\GenericResponse;
 use Semitexa\Ssr\Application\Payload\Request\SsrFallbackPayload;
 use Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator;
+use Semitexa\Ssr\Isomorphic\DeferredRequestRegistry;
 
 #[AsPayloadHandler(payload: SsrFallbackPayload::class, resource: GenericResponse::class)]
 final class SsrFallbackHandler implements TypedHandlerInterface
@@ -35,7 +36,16 @@ final class SsrFallbackHandler implements TypedHandlerInterface
             throw new NotFoundException('Deferred slot', implode(', ', $invalid));
         }
 
-        $rendered = $this->orchestrator->renderDeferredBlocksSync($handle, $slotNames);
+        $pageContext = [];
+        $requestId = $payload->getDeferredRequestId();
+        if ($requestId !== '') {
+            $entry = DeferredRequestRegistry::consume($requestId);
+            if ($entry !== null) {
+                $pageContext = $entry['page_context'];
+            }
+        }
+
+        $rendered = $this->orchestrator->renderDeferredBlocksSync($handle, $slotNames, $pageContext);
         $resource->setContext($rendered);
 
         return $resource;

@@ -101,6 +101,11 @@ final class PlaceholderRenderer
         ];
 
         $json = json_encode($manifest, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG);
+        if ($json === false) {
+            // Log the error and fall back to a minimal, valid manifest to avoid breaking client initialization.
+            error_log('Failed to JSON-encode SSR deferred manifest: ' . json_last_error_msg());
+            $json = '{"requestId":"","sessionId":"","slots":[]}';
+        }
 
         return '<script>window.__SSR_DEFERRED=' . $json . ';</script>';
     }

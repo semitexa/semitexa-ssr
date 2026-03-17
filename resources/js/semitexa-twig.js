@@ -583,6 +583,23 @@
             } catch (e) {
                 // IE fallback — not critical
             }
+        },
+
+        setLocale: function (locale) {
+            if (!locale) return;
+            var manifest = this._manifest || window.__SSR_DEFERRED;
+            if (!manifest || !manifest.requestId || !manifest.sessionId) return;
+
+            if (!this._connected) {
+                this._connect(manifest);
+            }
+
+            var url = '/__semitexa_locale?session_id=' + encodeURIComponent(manifest.sessionId)
+                + '&deferred_request_id=' + encodeURIComponent(manifest.requestId)
+                + '&locale=' + encodeURIComponent(locale);
+
+            fetch(url, {method: 'GET', credentials: 'same-origin'})
+                .catch(function () {});
         }
     };
 

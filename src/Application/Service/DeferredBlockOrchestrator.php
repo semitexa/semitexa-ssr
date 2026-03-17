@@ -31,6 +31,7 @@ final class DeferredBlockOrchestrator
         array $pageContext,
         ?string $lastEventId = null,
         ?string $deferredRequestId = null,
+        ?string $locale = null,
     ): void {
         $slots = $this->getDeferredSlots($pageHandle);
 
@@ -38,6 +39,8 @@ final class DeferredBlockOrchestrator
             SseAsyncResultDelivery::deliverRaw($sessionId, ['type' => 'done']);
             return;
         }
+
+        $this->applyLocale($locale);
 
         // Determine already-delivered slots for reconnect scenario
         $deliveredSlots = [];
@@ -71,6 +74,7 @@ final class DeferredBlockOrchestrator
             foreach ($slots as $slot) {
                 $data = [];
                 try {
+                    $this->applyLocale($locale);
                     $provider = $this->dataProviderRegistry->resolve($slot->slotId, $pageHandle);
                     $data = $provider?->resolve($slot, $pageContext) ?? [];
                 } catch (\Throwable $e) {
@@ -78,8 +82,6 @@ final class DeferredBlockOrchestrator
                 }
                 $results[] = [$slot, $data];
             }
-
-            usort($results, static fn (array $a, array $b) => $a[0]->priority <=> $b[0]->priority);
 
             $eventId = $lastEventId !== null ? ((int) $lastEventId) : 0;
             foreach ($results as [$slot, $data]) {
@@ -109,9 +111,10 @@ final class DeferredBlockOrchestrator
 
         foreach ($slots as $slot) {
             $wg->add();
-            Coroutine::create(function () use ($slot, $pageContext, $pageHandle, $wg, &$results, $channel): void {
+            Coroutine::create(function () use ($slot, $pageContext, $pageHandle, $wg, &$results, $channel, $locale): void {
                 $data = [];
                 try {
+                    $this->applyLocale($locale);
                     $provider = $this->dataProviderRegistry->resolve($slot->slotId, $pageHandle);
                     $data = $provider?->resolve($slot, $pageContext) ?? [];
                 } catch (\Throwable $e) {
@@ -150,7 +153,6 @@ final class DeferredBlockOrchestrator
             }
         } else {
             $wg->wait();
-            usort($results, static fn (array $a, array $b) => $a[0]->priority <=> $b[0]->priority);
             foreach ($results as [$slot, $data]) {
                 $eventId++;
                 $payload = $this->buildPayload($slot, $data);
@@ -180,6 +182,7 @@ final class DeferredBlockOrchestrator
         string $pageHandle,
         array $slotNames,
         array $pageContext = [],
+        ?string $locale = null,
     ): array {
         $allSlots = $this->getDeferredSlots($pageHandle);
         $result = [];
@@ -190,6 +193,7 @@ final class DeferredBlockOrchestrator
             }
 
             try {
+                $this->applyLocale($locale);
                 $provider = $this->dataProviderRegistry->resolve($slot->slotId, $pageHandle);
                 $data = $provider?->resolve($slot, $pageContext) ?? [];
                 $twig = ModuleTemplateRegistry::getTwig();
@@ -246,6 +250,22 @@ final class DeferredBlockOrchestrator
         } catch (\Throwable $e) {
             error_log("Twig render failed for deferred slot {$slot->slotId}: {$e->getMessage()}");
             return '';
+        }
+    }
+
+    private function applyLocale(?string $locale): void
+    {
+        if ($locale === null || $locale === '') {
+            return;
+        }
+
+        if (class_exists(\Semitexa\Locale\Context\LocaleContextStore::class)) {
+            \Semitexa\Locale\Context\LocaleContextStore::setLocale($locale);
+            return;
+        }
+
+        if (class_exists(\Semitexa\Ssr\I18n\Translator::class)) {
+            \Semitexa\Ssr\I18n\Translator::setLocale($locale);
         }
     }
 }

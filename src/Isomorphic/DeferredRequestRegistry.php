@@ -62,6 +62,8 @@ final class DeferredRequestRegistry
             self::initialize($config);
         }
 
+        self::validateContext($pageContext);
+
         try {
             $serializedContext = json_encode(
                 $pageContext,
@@ -215,6 +217,26 @@ final class DeferredRequestRegistry
     private static function tableKey(string $requestId): string
     {
         return strlen($requestId) > 63 ? md5($requestId) : $requestId;
+    }
+
+    private static function validateContext(mixed $value, int $depth = 0): void
+    {
+        if ($depth > 32) {
+            throw new DeferredRenderingException('Page context exceeds maximum nesting depth.');
+        }
+
+        if (is_array($value)) {
+            foreach ($value as $item) {
+                self::validateContext($item, $depth + 1);
+            }
+            return;
+        }
+
+        if (is_null($value) || is_scalar($value)) {
+            return;
+        }
+
+        throw new DeferredRenderingException('Page context contains non-serializable values.');
     }
 
     public static function reset(): void

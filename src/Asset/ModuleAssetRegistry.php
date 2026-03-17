@@ -10,7 +10,10 @@ class ModuleAssetRegistry
 {
     private const ALLOWED_EXTENSIONS = [
         'js', 'css', 'json', 'svg', 'png', 'jpg', 'jpeg', 'gif', 'ico',
-        'woff2', 'woff', 'map', 'twig',
+        'woff2', 'woff', 'map',
+        // .twig is reserved for SSR-published templates in public/assets/ssr/tpl (served as text/plain).
+        // Do not publish secrets in these templates.
+        'twig',
     ];
 
     /** @var array<string, string> module name/alias → absolute resources dir */

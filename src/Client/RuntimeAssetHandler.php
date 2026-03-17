@@ -57,7 +57,11 @@ final class RuntimeAssetHandler
             return null;
         }
 
-        self::$cachedContent = file_get_contents($path);
+        $content = file_get_contents($path);
+        if ($content === false) {
+            return null;
+        }
+        self::$cachedContent = $content;
         return self::$cachedContent;
     }
 

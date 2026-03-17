@@ -63,46 +63,72 @@ final class DeferredBlockOrchestrator
         }
 
         // Concurrent resolution via Swoole coroutines
+        $slotCount = count($slots);
+        $channel = class_exists(\Swoole\Coroutine\Channel::class, false)
+            ? new \Swoole\Coroutine\Channel($slotCount)
+            : null;
         $results = [];
         $wg = new WaitGroup();
 
         foreach ($slots as $slot) {
             $wg->add();
-            Coroutine::create(function () use ($slot, $pageContext, $wg, &$results): void {
+            Coroutine::create(function () use ($slot, $pageContext, $pageHandle, $wg, &$results, $channel): void {
+                $data = [];
                 try {
                     $provider = $this->dataProviderRegistry->resolve($slot->slotId, $pageHandle);
-                    if ($provider !== null) {
-                        $data = $provider->resolve($slot, $pageContext);
-                        $results[] = [$slot, $data];
-                    }
+                    $data = $provider?->resolve($slot, $pageContext) ?? [];
                 } catch (\Throwable $e) {
                     error_log("DataProvider failed for slot {$slot->slotId}: {$e->getMessage()}");
                 } finally {
+                    if ($channel !== null) {
+                        $channel->push([$slot, $data]);
+                    } else {
+                        $results[] = [$slot, $data];
+                    }
                     $wg->done();
                 }
             });
         }
 
-        $wg->wait();
-
-        // Sort by priority (lower = higher priority)
-        usort($results, static fn (array $a, array $b) => $a[0]->priority <=> $b[0]->priority);
-
-        // Stream results
         $eventId = $lastEventId !== null ? ((int) $lastEventId) : 0;
-        foreach ($results as [$slot, $data]) {
-            $eventId++;
-            $payload = $this->buildPayload($slot, $data);
-            $sseData = $payload->toArray();
-            $sseData['id'] = $eventId;
+        if ($channel !== null) {
+            $received = 0;
+            while ($received < $slotCount) {
+                $item = $channel->pop();
+                if ($item === false) {
+                    break;
+                }
+                $received++;
+                [$slot, $data] = $item;
+                $eventId++;
+                $payload = $this->buildPayload($slot, $data);
+                $sseData = $payload->toArray();
+                $sseData['id'] = $eventId;
 
-            SseAsyncResultDelivery::deliverRaw($sessionId, $sseData);
+                SseAsyncResultDelivery::deliverRaw($sessionId, $sseData);
 
-            // Mark as delivered for reconnect
-            if ($deferredRequestId !== null) {
-                DeferredRequestRegistry::markDelivered($deferredRequestId, $slot->slotId);
+                if ($deferredRequestId !== null) {
+                    DeferredRequestRegistry::markDelivered($deferredRequestId, $slot->slotId);
+                }
+            }
+        } else {
+            $wg->wait();
+            usort($results, static fn (array $a, array $b) => $a[0]->priority <=> $b[0]->priority);
+            foreach ($results as [$slot, $data]) {
+                $eventId++;
+                $payload = $this->buildPayload($slot, $data);
+                $sseData = $payload->toArray();
+                $sseData['id'] = $eventId;
+
+                SseAsyncResultDelivery::deliverRaw($sessionId, $sseData);
+
+                if ($deferredRequestId !== null) {
+                    DeferredRequestRegistry::markDelivered($deferredRequestId, $slot->slotId);
+                }
             }
         }
+
+        $wg->wait();
 
         SseAsyncResultDelivery::deliverRaw($sessionId, ['type' => 'done']);
     }
@@ -128,11 +154,7 @@ final class DeferredBlockOrchestrator
 
             try {
                 $provider = $this->dataProviderRegistry->resolve($slot->slotId, $pageHandle);
-                if ($provider === null) {
-                    continue;
-                }
-
-                $data = $provider->resolve($slot, $pageContext);
+                $data = $provider?->resolve($slot, $pageContext) ?? [];
                 $twig = ModuleTemplateRegistry::getTwig();
                 $result[$slot->slotId] = $twig->render($slot->templateName, $data);
             } catch (\Throwable $e) {

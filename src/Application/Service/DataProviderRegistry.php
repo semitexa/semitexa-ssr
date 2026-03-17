@@ -54,7 +54,11 @@ final class DataProviderRegistry
             return null;
         }
 
-        $instance = $this->container->get($entry['class']);
+        try {
+            $instance = $this->container->get($entry['class']);
+        } catch (\Throwable) {
+            return null;
+        }
 
         if (!$instance instanceof DataProviderInterface) {
             return null;

@@ -261,6 +261,21 @@ final class AsyncResourceSseServer
                     self::deliver($sessionId, ['type' => 'done']);
                 }
             });
+        } else {
+            try {
+                $container = ContainerFactory::get();
+                $orchestrator = $container->get(\Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator::class);
+                $orchestrator->streamDeferredBlocks(
+                    sessionId: $sessionId,
+                    pageHandle: $registry['page_handle'],
+                    pageContext: $registry['page_context'],
+                    lastEventId: $lastEventId,
+                    deferredRequestId: $deferredRequestId,
+                );
+            } catch (\Throwable $e) {
+                error_log("[Semitexa SSR] Deferred block streaming failed (sync): {$e->getMessage()}");
+                self::deliver($sessionId, ['type' => 'done']);
+            }
         }
     }
 

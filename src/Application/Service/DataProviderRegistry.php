@@ -58,7 +58,8 @@ final class DataProviderRegistry
             } else {
                 $instance = new $entry['class']();
             }
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            error_log("DataProviderRegistry: Failed to instantiate {$entry['class']}: " . $e->getMessage());
             return null;
         }
 

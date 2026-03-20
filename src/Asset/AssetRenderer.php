@@ -116,7 +116,8 @@ final class AssetRenderer
         }
 
         $attrs = self::buildAttributes($entry->attributes);
-        return '<style' . $attrs . '>' . $content . '</style>' . "\n";
+        $safeContent = str_ireplace('</style', '<\/style', $content);
+        return '<style' . $attrs . '>' . $safeContent . '</style>' . "\n";
     }
 
     private static function renderInlineScript(AssetEntry $entry): string
@@ -127,7 +128,8 @@ final class AssetRenderer
         }
 
         $attrs = self::buildAttributes($entry->attributes);
-        return '<script' . $attrs . '>' . $content . '</script>' . "\n";
+        $safeContent = str_ireplace('</script', '<\/script', $content);
+        return '<script' . $attrs . '>' . $safeContent . '</script>' . "\n";
     }
 
     /**
@@ -136,6 +138,7 @@ final class AssetRenderer
      */
     private static function readInlineContent(AssetEntry $entry): ?string
     {
+        ModuleAssetRegistry::initialize();
         $filePath = ModuleAssetRegistry::resolve($entry->module, $entry->path);
         if ($filePath === null) {
             error_log("[AssetRenderer] Cannot resolve inline asset: {$entry->key} ({$entry->module}/{$entry->path})");

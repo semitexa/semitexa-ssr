@@ -194,7 +194,7 @@ final class AssetCollector
                         "[AssetCollector] Module '{$moduleName}' has Application/Static/ directory"
                         . " but no assets.json manifest. Add {$staticDir}/assets.json."
                     );
-                    break;
+                    continue;
                 }
 
                 self::parseManifestV2($manifestPath, $staticDir, $moduleName);

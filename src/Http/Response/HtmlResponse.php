@@ -250,7 +250,8 @@ class HtmlResponse extends GenericResponse
         }
 
         $slotIds = array_map(static fn ($s) => $s->slotId, $deferredSlots);
-        DeferredRequestRegistry::store($requestId, $handle, $context, $slotIds);
+        $serializableContext = array_filter($context, static fn ($v) => is_null($v) || is_scalar($v) || is_array($v));
+        DeferredRequestRegistry::store($requestId, $handle, $serializableContext, $slotIds);
 
         IsomorphicContextStore::setPageHandle($handle);
         IsomorphicContextStore::setDeferredSlots($deferredSlots);

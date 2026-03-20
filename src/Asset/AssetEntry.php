@@ -57,6 +57,12 @@ final readonly class AssetEntry
 
         [$module, $type, $name] = $parts;
 
+        if ($type === 'preload') {
+            throw new \InvalidArgumentException(
+                "Preload assets require an explicit target path and must be declared via manifest or overrides."
+            );
+        }
+
         $ext = match ($type) {
             'css', 'inline-css' => 'css',
             'js', 'inline-js'  => 'js',

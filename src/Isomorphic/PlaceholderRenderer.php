@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Isomorphic;
 
+use Semitexa\Ssr\Asset\ModuleAssetRegistry;
 use Semitexa\Ssr\Domain\Model\DeferredSlotDefinition;
 use Semitexa\Ssr\Template\ModuleTemplateRegistry;
 
@@ -122,7 +123,9 @@ final class PlaceholderRenderer
      */
     public static function renderRuntimeScript(): string
     {
-        $path = __DIR__ . '/../Application/Static/js/semitexa-twig.js';
+        ModuleAssetRegistry::initialize();
+        $path = ModuleAssetRegistry::resolve('ssr', 'js/semitexa-twig.js')
+            ?? __DIR__ . '/../Application/Static/js/semitexa-twig.js';
         $version = @filemtime($path) ?: 0;
         return '<script src="/assets/ssr/js/semitexa-twig.js?v=' . $version . '" defer></script>';
     }

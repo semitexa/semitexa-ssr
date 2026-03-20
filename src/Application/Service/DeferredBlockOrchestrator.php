@@ -116,7 +116,7 @@ final class DeferredBlockOrchestrator
 
         $liveSlots = array_values(array_filter($slots, static fn (DeferredSlotDefinition $s) => $s->refreshInterval > 0));
             SseAsyncResultDelivery::deliverRaw($sessionId, ['type' => 'done', 'live' => $liveSlots !== []]);
-            $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots);
+            $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale);
             return;
         }
 
@@ -190,7 +190,7 @@ final class DeferredBlockOrchestrator
         $liveSlots = array_values(array_filter($slots, static fn (DeferredSlotDefinition $s) => $s->refreshInterval > 0));
         SseAsyncResultDelivery::deliverRaw($sessionId, ['type' => 'done', 'live' => $liveSlots !== []]);
 
-        $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots);
+        $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale);
     }
 
     /**
@@ -239,7 +239,7 @@ final class DeferredBlockOrchestrator
      *
      * @param DeferredSlotDefinition[] $liveSlots
      */
-    private function runLiveLoop(string $sessionId, string $pageHandle, array $pageContext, array $liveSlots): void
+    private function runLiveLoop(string $sessionId, string $pageHandle, array $pageContext, array $liveSlots, ?string $locale = null): void
     {
         if ($liveSlots === []) {
             return;
@@ -271,6 +271,7 @@ final class DeferredBlockOrchestrator
                 }
 
                 try {
+                    $this->applyLocale($locale);
                     $data = $this->resolveSlotData($slot, $pageHandle, $pageContext);
                 } catch (\Throwable $e) {
                     error_log("[Semitexa SSR] Live slot refresh failed for {$slot->slotId}: {$e->getMessage()}");

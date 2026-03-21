@@ -78,8 +78,7 @@ final class DeferredBlockOrchestrator
         }
 
         $useCoroutine = class_exists(Coroutine::class, false)
-            && Coroutine::getCid() > 0
-            && class_exists(WaitGroup::class, false);
+            && Coroutine::getCid() > 0;
 
         if (!$useCoroutine) {
             $results = [];

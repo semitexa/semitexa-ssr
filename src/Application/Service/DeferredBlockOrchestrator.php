@@ -40,17 +40,10 @@ final class DeferredBlockOrchestrator
     ): void {
         $slots = $this->getDeferredSlots($pageHandle);
 
-        $debugLog = static function (string $msg, array $data = []): void {
-            $entry = json_encode(['ssr_orchestrator' => $msg] + $data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-            $logPath = defined('SEMITEXA_ROOT') ? SEMITEXA_ROOT . '/var/log/debug.log' : (defined('SEMITEXA_PROJECT_ROOT') ? SEMITEXA_PROJECT_ROOT . '/var/log/debug.log' : '/var/www/html/var/log/debug.log');
-            @file_put_contents($logPath, $entry . "\n", FILE_APPEND);
-        };
-
-        $debugLog('stream_start', [
+        self::debugLog('stream_start', [
             'page_handle' => $pageHandle,
             'slot_count' => count($slots),
             'slots' => array_map(static fn ($s) => $s->slotId, $slots),
-            'providers' => \Semitexa\Ssr\Application\Service\DataProviderRegistry::getAll(),
         ]);
 
         if ($slots === []) {
@@ -358,5 +351,22 @@ final class DeferredBlockOrchestrator
         if (class_exists(\Semitexa\Ssr\I18n\Translator::class)) {
             \Semitexa\Ssr\I18n\Translator::setLocale($locale);
         }
+    }
+
+    private static function debugLog(string $message, array $data = []): void
+    {
+        if (!self::debugEnabled()) {
+            return;
+        }
+
+        $entry = json_encode(['ssr_orchestrator' => $message] + $data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($entry !== false) {
+            error_log($entry);
+        }
+    }
+
+    private static function debugEnabled(): bool
+    {
+        return filter_var((string) (\getenv('APP_DEBUG') ?? \getenv('DEBUG') ?? '0'), \FILTER_VALIDATE_BOOLEAN);
     }
 }

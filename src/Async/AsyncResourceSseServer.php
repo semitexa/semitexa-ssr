@@ -239,10 +239,16 @@ final class AsyncResourceSseServer
     {
         $registry = \Semitexa\Ssr\Isomorphic\DeferredRequestRegistry::consume($deferredRequestId);
 
-        $debugLog = static function (string $msg, array $data = []): void {
+        $debugEnabled = filter_var((string) (\getenv('APP_DEBUG') ?? \getenv('DEBUG') ?? '0'), \FILTER_VALIDATE_BOOLEAN);
+        $debugLog = static function (string $msg, array $data = []) use ($debugEnabled): void {
+            if (!$debugEnabled) {
+                return;
+            }
+
             $entry = json_encode(['ssr_sse' => $msg] + $data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-            $logPath = defined('SEMITEXA_ROOT') ? SEMITEXA_ROOT . '/var/log/debug.log' : (defined('SEMITEXA_PROJECT_ROOT') ? SEMITEXA_PROJECT_ROOT . '/var/log/debug.log' : '/var/www/html/var/log/debug.log');
-            @file_put_contents($logPath, $entry . "\n", FILE_APPEND);
+            if ($entry !== false) {
+                error_log($entry);
+            }
         };
 
         if ($registry === null) {

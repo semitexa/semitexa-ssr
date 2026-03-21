@@ -16,7 +16,11 @@ final class SlotAssetCollector
 {
     public static function collectFromSlot(HtmlSlotResponse $slot): void
     {
-        $modules = $slot->getClientModules();
+        self::collectModuleRefs($slot->getClientModules());
+    }
+
+    public static function collectModuleRefs(array $modules): void
+    {
         if ($modules === []) {
             return;
         }

@@ -250,7 +250,7 @@ class HtmlResponse extends GenericResponse
         }
 
         $slotIds = array_map(static fn ($s) => $s->slotId, $deferredSlots);
-        $serializableContext = array_filter($context, static fn ($v) => is_null($v) || is_scalar($v) || is_array($v));
+        $serializableContext = self::sanitizeDeferredContext($context);
         DeferredRequestRegistry::store($requestId, $handle, $serializableContext, $slotIds);
 
         IsomorphicContextStore::setPageHandle($handle);
@@ -265,6 +265,27 @@ class HtmlResponse extends GenericResponse
         $context['__ssr_handle_attr'] = ' data-ssr-handle="' . htmlspecialchars($handle, ENT_QUOTES, 'UTF-8') . '"';
 
         return $context;
+    }
+
+    private static function sanitizeDeferredContext(array $context, int $depth = 0): array
+    {
+        if ($depth > 32) {
+            return [];
+        }
+
+        $sanitized = [];
+        foreach ($context as $key => $value) {
+            if (is_array($value)) {
+                $sanitized[$key] = self::sanitizeDeferredContext($value, $depth + 1);
+                continue;
+            }
+
+            if (is_null($value) || is_scalar($value)) {
+                $sanitized[$key] = $value;
+            }
+        }
+
+        return $sanitized;
     }
 
     private static function isCrawler(IsomorphicConfig $config): bool

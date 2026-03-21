@@ -90,10 +90,10 @@ class LayoutSlotRegistry
         $twig = ModuleTemplateRegistry::getTwig();
         $html = '';
         foreach ($entries as $entry) {
+            $context = array_merge($baseContext, $entry['context'], $inlineContext);
             if (($entry['resourceClass'] ?? null) !== null) {
-                $html .= SlotRenderer::renderEntry($entry);
+                $html .= SlotRenderer::renderEntry($entry, $context);
             } else {
-                $context = array_merge($baseContext, $entry['context'], $inlineContext);
                 $html .= $twig->render($entry['template'], $context);
             }
         }

@@ -50,6 +50,26 @@ abstract class HtmlSlotResponse
         return $this->renderContext;
     }
 
+    public function withRenderContext(array $context): static
+    {
+        $clone = clone $this;
+        $clone->renderContext = array_merge($clone->renderContext, $context);
+
+        return $clone;
+    }
+
+    public function withClientModules(array $clientModules): static
+    {
+        if ($clientModules === []) {
+            return $this;
+        }
+
+        $clone = clone $this;
+        $clone->clientModules = array_values(array_unique(array_merge($clone->clientModules, $clientModules)));
+
+        return $clone;
+    }
+
     /**
      * Renders the slot Twig template and returns HTML string.
      * Merges static context, render context, and optional extra context.

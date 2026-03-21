@@ -7,7 +7,11 @@ namespace Semitexa\Ssr\Application\Payload\Request;
 use Semitexa\Core\Attributes\AsPayload;
 use Semitexa\Core\Http\Response\GenericResponse;
 
-#[AsPayload(path: '/sse', methods: ['GET'], responseWith: GenericResponse::class)]
+#[AsPayload(
+    responseWith: GenericResponse::class,
+    path: '/sse',
+    methods: ['GET']
+)]
 class SseEndpointPayload
 {
     protected string $sessionId = '';

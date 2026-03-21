@@ -9,9 +9,9 @@ use Semitexa\Core\Attributes\AsPayload;
 use Semitexa\Core\Http\Response\GenericResponse;
 
 #[AsPayload(
+    responseWith: GenericResponse::class,
     path: '/__semitexa_locale',
     methods: ['GET'],
-    responseWith: GenericResponse::class,
     name: 'ssr.locale',
 )]
 #[PublicEndpoint]

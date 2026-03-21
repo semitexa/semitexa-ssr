@@ -17,7 +17,6 @@ use Semitexa\Ssr\Layout\SlotHandlerPipeline;
 use Semitexa\Ssr\Layout\SlotResourceFactory;
 use Semitexa\Ssr\Template\ModuleTemplateRegistry;
 use Swoole\Coroutine;
-use Swoole\Coroutine\WaitGroup;
 
 #[AsService]
 final class DeferredBlockOrchestrator
@@ -123,11 +122,14 @@ final class DeferredBlockOrchestrator
             ? new \Swoole\Coroutine\Channel($slotCount)
             : null;
         $results = [];
-        $wg = new WaitGroup();
 
         foreach ($slots as $slot) {
-            $wg->add();
-            Coroutine::create(function () use ($slot, $pageContext, $pageHandle, $wg, &$results, $channel, $locale): void {
+            if ($channel === null) {
+                $results[] = [$slot, $this->resolveSlotSafely($slot, $pageHandle, $pageContext, $locale)];
+                continue;
+            }
+
+            Coroutine::create(function () use ($slot, $pageContext, $pageHandle, &$results, $channel, $locale): void {
                 $data = [];
                 try {
                     $this->applyLocale($locale);
@@ -140,7 +142,6 @@ final class DeferredBlockOrchestrator
                     } else {
                         $results[] = [$slot, $data];
                     }
-                    $wg->done();
                 }
             });
         }
@@ -167,7 +168,6 @@ final class DeferredBlockOrchestrator
                 }
             }
         } else {
-            $wg->wait();
             foreach ($results as [$slot, $data]) {
                 $eventId++;
                 $payload = $this->buildPayload($slot, $data);
@@ -182,12 +182,25 @@ final class DeferredBlockOrchestrator
             }
         }
 
-        $wg->wait();
-
         $liveEnabled = $startLiveLoop && $liveSlots !== [];
         SseAsyncResultDelivery::deliverRaw($sessionId, ['type' => 'done', 'live' => $liveEnabled]);
         if ($liveEnabled) {
             $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale);
+        }
+    }
+
+    private function resolveSlotSafely(
+        DeferredSlotDefinition $slot,
+        string $pageHandle,
+        array $pageContext,
+        ?string $locale,
+    ): array {
+        try {
+            $this->applyLocale($locale);
+            return $this->resolveSlotData($slot, $pageHandle, $pageContext);
+        } catch (\Throwable $e) {
+            error_log("DataProvider failed for slot {$slot->slotId}: {$e->getMessage()}");
+            return [];
         }
     }
 

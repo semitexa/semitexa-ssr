@@ -102,7 +102,7 @@ final class Translator
     {
         return class_exists(LocaleManager::class)
             ? LocaleManager::getInstance()
-            : new \Semitexa\Core\Locale\DefaultLocaleContext();
+            : \Semitexa\Core\Locale\DefaultLocaleContext::getInstance();
     }
 
     private static function buildService(LocaleContextInterface $localeContext): TranslationService

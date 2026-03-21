@@ -33,7 +33,7 @@ class HtmlResponse extends GenericResponse
     /**
      * Sets the browser tab / SEO title via SeoMeta.
      */
-    public function pageTitle(string $title, ?string $suffix = null, ?string $prefix = null): self
+    public function pageTitle(string $title, ?string $suffix = null, ?string $prefix = null): static
     {
         SeoMeta::setTitle($title, $suffix, $prefix);
         return $this;
@@ -42,7 +42,7 @@ class HtmlResponse extends GenericResponse
     /**
      * Sets an arbitrary SEO meta tag via SeoMeta.
      */
-    public function seoTag(string $name, string $content): self
+    public function seoTag(string $name, string $content): static
     {
         SeoMeta::tag($name, $content);
         return $this;
@@ -52,7 +52,7 @@ class HtmlResponse extends GenericResponse
      * Adds a single typed variable to the render context.
      * Intended for use by typed with*() methods in Resource subclasses.
      */
-    protected function with(string $key, mixed $value): self
+    protected function with(string $key, mixed $value): static
     {
         $context = $this->getRenderContext();
         $context[$key] = $value;
@@ -67,7 +67,7 @@ class HtmlResponse extends GenericResponse
      * When a render handle is set, injects page_handle and layout_handle into context.
      * The $extraContext array is merged on top of the accumulated render context.
      */
-    public function renderTemplate(?string $template = null, array $extraContext = []): self
+    public function renderTemplate(?string $template = null, array $extraContext = []): static
     {
         $tmpl = $template ?? $this->declaredTemplate;
         if ($tmpl === null) {
@@ -99,7 +99,7 @@ class HtmlResponse extends GenericResponse
         return $this;
     }
 
-    public function renderString(string $templateSource, array $context = []): self
+    public function renderString(string $templateSource, array $context = []): static
     {
         $this->beginTopLevelRender();
 
@@ -115,19 +115,19 @@ class HtmlResponse extends GenericResponse
         return $this->declaredTemplate;
     }
 
-    public function setDeclaredTemplate(?string $template): self
+    public function setDeclaredTemplate(?string $template): static
     {
         $this->declaredTemplate = $template;
         return $this;
     }
 
-    public function disableAutoRender(): self
+    public function disableAutoRender(): static
     {
         $this->autoRenderEnabled = false;
         return $this;
     }
 
-    public function enableAutoRender(): self
+    public function enableAutoRender(): static
     {
         $this->autoRenderEnabled = true;
         return $this;

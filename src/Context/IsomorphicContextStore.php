@@ -28,7 +28,7 @@ final class IsomorphicContextStore
     public static function getPageHandle(): string
     {
         if (self::inCoroutine()) {
-            return Coroutine::getContext()[self::KEY_PAGE_HANDLE] ?? self::$staticPageHandle;
+            return Coroutine::getContext()[self::KEY_PAGE_HANDLE] ?? '';
         }
         return self::$staticPageHandle;
     }
@@ -45,7 +45,7 @@ final class IsomorphicContextStore
     public static function getDeferredSlots(): array
     {
         if (self::inCoroutine()) {
-            return Coroutine::getContext()[self::KEY_DEFERRED_SLOTS] ?? self::$staticDeferredSlots;
+            return Coroutine::getContext()[self::KEY_DEFERRED_SLOTS] ?? [];
         }
         return self::$staticDeferredSlots;
     }
@@ -62,7 +62,7 @@ final class IsomorphicContextStore
     public static function getSessionId(): string
     {
         if (self::inCoroutine()) {
-            return Coroutine::getContext()[self::KEY_SESSION_ID] ?? self::$staticSessionId;
+            return Coroutine::getContext()[self::KEY_SESSION_ID] ?? '';
         }
         return self::$staticSessionId;
     }

@@ -15,5 +15,7 @@ final readonly class DeferredSlotDefinition
         public int $cacheTtl = 0,
         public ?string $dataProviderClass = null,
         public ?string $skeletonTemplate = null,
+        public int $refreshInterval = 0,
+        public ?string $resourceClass = null,
     ) {}
 }

@@ -13,7 +13,7 @@ class LayoutSlotRegistry
 
     /**
      * handle => slot => list of { template, context, priority, ... }
-     * @var array<string, array<string, array<int, array{template:string, context:array, priority:int, deferred:bool, cacheTtl:int, dataProvider:?string, skeletonTemplate:?string, mode:string}>>>
+     * @var array<string, array<string, array<int, array{template:string, context:array, priority:int, deferred:bool, cacheTtl:int, dataProvider:?string, skeletonTemplate:?string, mode:string, refreshInterval:int, resourceClass:?string, clientModules:array}>>>
      */
     private static array $slots = [];
 
@@ -28,6 +28,9 @@ class LayoutSlotRegistry
         ?string $dataProvider = null,
         ?string $skeletonTemplate = null,
         string $mode = 'html',
+        int $refreshInterval = 0,
+        ?string $resourceClass = null,
+        array $clientModules = [],
     ): void {
         $handleKey = strtolower($handle);
         $slotKey = strtolower($slot);
@@ -43,6 +46,9 @@ class LayoutSlotRegistry
             'dataProvider' => $dataProvider,
             'skeletonTemplate' => $skeletonTemplate,
             'mode' => $mode,
+            'refreshInterval' => $refreshInterval,
+            'resourceClass' => $resourceClass,
+            'clientModules' => $clientModules,
         ];
         usort(self::$slots[$handleKey][$slotKey], static fn ($a, $b) => $a['priority'] <=> $b['priority']);
     }
@@ -85,7 +91,11 @@ class LayoutSlotRegistry
         $html = '';
         foreach ($entries as $entry) {
             $context = array_merge($baseContext, $entry['context'], $inlineContext);
-            $html .= $twig->render($entry['template'], $context);
+            if (($entry['resourceClass'] ?? null) !== null) {
+                $html .= SlotRenderer::renderEntry($entry, $context);
+            } else {
+                $html .= $twig->render($entry['template'], $context);
+            }
         }
 
         return $html;
@@ -132,6 +142,8 @@ class LayoutSlotRegistry
                     cacheTtl: $entry['cacheTtl'] ?? 0,
                     dataProviderClass: $entry['dataProvider'] ?? null,
                     skeletonTemplate: $entry['skeletonTemplate'] ?? null,
+                    refreshInterval: $entry['refreshInterval'] ?? 0,
+                    resourceClass: $entry['resourceClass'] ?? null,
                 );
             }
         }
@@ -165,6 +177,8 @@ class LayoutSlotRegistry
                         cacheTtl: $entry['cacheTtl'] ?? 0,
                         dataProviderClass: $entry['dataProvider'] ?? null,
                         skeletonTemplate: $entry['skeletonTemplate'] ?? null,
+                        refreshInterval: $entry['refreshInterval'] ?? 0,
+                        resourceClass: $entry['resourceClass'] ?? null,
                     );
                 }
             }

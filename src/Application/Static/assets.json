@@ -1,0 +1,17 @@
+{
+    "$schema": "semitexa://asset-manifest/v2",
+    "module": "ssr",
+    "include": {
+        "js": ["js/**/*.js"]
+    },
+    "exclude": [
+        "js/semitexa-twig.js"
+    ],
+    "overrides": {
+        "js/async-resource-manager.js": {
+            "scope": "global",
+            "priority": 20,
+            "attributes": { "defer": true }
+        }
+    }
+}

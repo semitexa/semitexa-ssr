@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service;
 
+use Semitexa\Core\Attributes\AsService;
 use Semitexa\Core\Attributes\InjectAsReadonly;
 use Semitexa\Ssr\Async\SseAsyncResultDelivery;
 use Semitexa\Ssr\Domain\Model\DeferredBlockPayload;
@@ -11,10 +12,14 @@ use Semitexa\Ssr\Domain\Model\DeferredSlotDefinition;
 use Semitexa\Ssr\Isomorphic\DeferredRequestRegistry;
 use Semitexa\Ssr\Isomorphic\DeferredTemplateRegistry;
 use Semitexa\Ssr\Layout\LayoutSlotRegistry;
+use Semitexa\Ssr\Layout\SlotAssetCollector;
+use Semitexa\Ssr\Layout\SlotHandlerPipeline;
+use Semitexa\Ssr\Layout\SlotResourceFactory;
 use Semitexa\Ssr\Template\ModuleTemplateRegistry;
 use Swoole\Coroutine;
 use Swoole\Coroutine\WaitGroup;
 
+#[AsService]
 final class DeferredBlockOrchestrator
 {
     #[InjectAsReadonly]
@@ -31,13 +36,24 @@ final class DeferredBlockOrchestrator
         array $pageContext,
         ?string $lastEventId = null,
         ?string $deferredRequestId = null,
+        ?string $locale = null,
+        bool $startLiveLoop = true,
     ): void {
         $slots = $this->getDeferredSlots($pageHandle);
+        $liveSlots = array_values(array_filter($slots, static fn (DeferredSlotDefinition $s) => $s->refreshInterval > 0));
+
+        self::debugLog('stream_start', [
+            'page_handle' => $pageHandle,
+            'slot_count' => count($slots),
+            'slots' => array_map(static fn ($s) => $s->slotId, $slots),
+        ]);
 
         if ($slots === []) {
             SseAsyncResultDelivery::deliverRaw($sessionId, ['type' => 'done']);
             return;
         }
+
+        $this->applyLocale($locale);
 
         // Determine already-delivered slots for reconnect scenario
         $deliveredSlots = [];
@@ -71,15 +87,13 @@ final class DeferredBlockOrchestrator
             foreach ($slots as $slot) {
                 $data = [];
                 try {
-                    $provider = $this->dataProviderRegistry->resolve($slot->slotId, $pageHandle);
-                    $data = $provider?->resolve($slot, $pageContext) ?? [];
+                    $this->applyLocale($locale);
+                    $data = $this->resolveSlotData($slot, $pageHandle, $pageContext);
                 } catch (\Throwable $e) {
                     error_log("DataProvider failed for slot {$slot->slotId}: {$e->getMessage()}");
                 }
                 $results[] = [$slot, $data];
             }
-
-            usort($results, static fn (array $a, array $b) => $a[0]->priority <=> $b[0]->priority);
 
             $eventId = $lastEventId !== null ? ((int) $lastEventId) : 0;
             foreach ($results as [$slot, $data]) {
@@ -95,7 +109,11 @@ final class DeferredBlockOrchestrator
                 }
             }
 
-            SseAsyncResultDelivery::deliverRaw($sessionId, ['type' => 'done']);
+            $liveEnabled = $startLiveLoop && $liveSlots !== [];
+            SseAsyncResultDelivery::deliverRaw($sessionId, ['type' => 'done', 'live' => $liveEnabled]);
+            if ($liveEnabled) {
+                $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale);
+            }
             return;
         }
 
@@ -109,11 +127,11 @@ final class DeferredBlockOrchestrator
 
         foreach ($slots as $slot) {
             $wg->add();
-            Coroutine::create(function () use ($slot, $pageContext, $pageHandle, $wg, &$results, $channel): void {
+            Coroutine::create(function () use ($slot, $pageContext, $pageHandle, $wg, &$results, $channel, $locale): void {
                 $data = [];
                 try {
-                    $provider = $this->dataProviderRegistry->resolve($slot->slotId, $pageHandle);
-                    $data = $provider?->resolve($slot, $pageContext) ?? [];
+                    $this->applyLocale($locale);
+                    $data = $this->resolveSlotData($slot, $pageHandle, $pageContext);
                 } catch (\Throwable $e) {
                     error_log("DataProvider failed for slot {$slot->slotId}: {$e->getMessage()}");
                 } finally {
@@ -150,7 +168,6 @@ final class DeferredBlockOrchestrator
             }
         } else {
             $wg->wait();
-            usort($results, static fn (array $a, array $b) => $a[0]->priority <=> $b[0]->priority);
             foreach ($results as [$slot, $data]) {
                 $eventId++;
                 $payload = $this->buildPayload($slot, $data);
@@ -167,7 +184,11 @@ final class DeferredBlockOrchestrator
 
         $wg->wait();
 
-        SseAsyncResultDelivery::deliverRaw($sessionId, ['type' => 'done']);
+        $liveEnabled = $startLiveLoop && $liveSlots !== [];
+        SseAsyncResultDelivery::deliverRaw($sessionId, ['type' => 'done', 'live' => $liveEnabled]);
+        if ($liveEnabled) {
+            $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale);
+        }
     }
 
     /**
@@ -180,6 +201,7 @@ final class DeferredBlockOrchestrator
         string $pageHandle,
         array $slotNames,
         array $pageContext = [],
+        ?string $locale = null,
     ): array {
         $allSlots = $this->getDeferredSlots($pageHandle);
         $result = [];
@@ -190,8 +212,8 @@ final class DeferredBlockOrchestrator
             }
 
             try {
-                $provider = $this->dataProviderRegistry->resolve($slot->slotId, $pageHandle);
-                $data = $provider?->resolve($slot, $pageContext) ?? [];
+                $this->applyLocale($locale);
+                $data = $this->resolveSlotData($slot, $pageHandle, $pageContext);
                 $twig = ModuleTemplateRegistry::getTwig();
                 $result[$slot->slotId] = $twig->render($slot->templateName, $data);
             } catch (\Throwable $e) {
@@ -210,6 +232,56 @@ final class DeferredBlockOrchestrator
         return LayoutSlotRegistry::getDeferredSlots($pageHandle);
     }
 
+    /**
+     * After initial SSE delivery, keep pushing live slots (refreshInterval > 0) until the client disconnects.
+     *
+     * @param DeferredSlotDefinition[] $liveSlots
+     */
+    private function runLiveLoop(string $sessionId, string $pageHandle, array $pageContext, array $liveSlots, ?string $locale = null): void
+    {
+        if ($liveSlots === []) {
+            return;
+        }
+
+        // Track when each slot was last delivered
+        $lastDelivered = [];
+        $now = microtime(true);
+        foreach ($liveSlots as $slot) {
+            $lastDelivered[$slot->slotId] = $now;
+        }
+
+        while (\Semitexa\Ssr\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+            // Sleep 1 second ticks — fine-grained enough for any reasonable interval
+            if (class_exists(Coroutine::class, false) && Coroutine::getCid() > 0) {
+                Coroutine::sleep(1.0);
+            } else {
+                usleep(1_000_000);
+            }
+
+            if (!\Semitexa\Ssr\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+                break;
+            }
+
+            $now = microtime(true);
+            foreach ($liveSlots as $slot) {
+                if (($now - ($lastDelivered[$slot->slotId] ?? 0)) < $slot->refreshInterval) {
+                    continue;
+                }
+
+                try {
+                    $this->applyLocale($locale);
+                    $data = $this->resolveSlotData($slot, $pageHandle, $pageContext);
+                } catch (\Throwable $e) {
+                    error_log("[Semitexa SSR] Live slot refresh failed for {$slot->slotId}: {$e->getMessage()}");
+                    $data = [];
+                }
+
+                SseAsyncResultDelivery::deliverRaw($sessionId, $this->buildPayload($slot, $data)->toArray());
+                $lastDelivered[$slot->slotId] = microtime(true);
+            }
+        }
+    }
+
     private function buildPayload(DeferredSlotDefinition $slot, array $data): DeferredBlockPayload
     {
         $meta = [];
@@ -217,6 +289,9 @@ final class DeferredBlockOrchestrator
             $meta['cache_ttl'] = $slot->cacheTtl;
         }
         $meta['priority'] = $slot->priority;
+        if ($slot->refreshInterval > 0) {
+            $meta['refresh_interval'] = $slot->refreshInterval;
+        }
 
         if ($slot->mode === 'template') {
             $templatePath = DeferredTemplateRegistry::getPublishedPath($slot->slotId, $slot->pageHandle);
@@ -247,5 +322,56 @@ final class DeferredBlockOrchestrator
             error_log("Twig render failed for deferred slot {$slot->slotId}: {$e->getMessage()}");
             return '';
         }
+    }
+
+    /**
+     * Resolve slot data for rendering.
+     * For new-style slot resources (resourceClass set): run the slot handler pipeline.
+     * For legacy provider-backed slots: delegate to DataProviderRegistry.
+     */
+    private function resolveSlotData(DeferredSlotDefinition $slot, string $pageHandle, array $pageContext): array
+    {
+        if ($slot->resourceClass !== null) {
+            $slotInstance = SlotResourceFactory::create($slot->resourceClass);
+            $slotInstance = SlotHandlerPipeline::execute($slotInstance);
+            SlotAssetCollector::collectFromSlot($slotInstance);
+            return $slotInstance->getRenderContext();
+        }
+
+        $provider = $this->dataProviderRegistry->resolve($slot->slotId, $pageHandle);
+        return $provider?->resolve($slot, $pageContext) ?? [];
+    }
+
+    private function applyLocale(?string $locale): void
+    {
+        if ($locale === null || $locale === '') {
+            return;
+        }
+
+        if (class_exists(\Semitexa\Locale\Context\LocaleContextStore::class)) {
+            \Semitexa\Locale\Context\LocaleContextStore::setLocale($locale);
+            return;
+        }
+
+        if (class_exists(\Semitexa\Ssr\I18n\Translator::class)) {
+            \Semitexa\Ssr\I18n\Translator::setLocale($locale);
+        }
+    }
+
+    private static function debugLog(string $message, array $data = []): void
+    {
+        if (!self::debugEnabled()) {
+            return;
+        }
+
+        $entry = json_encode(['ssr_orchestrator' => $message] + $data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($entry !== false) {
+            error_log($entry);
+        }
+    }
+
+    private static function debugEnabled(): bool
+    {
+        return filter_var((string) (\getenv('APP_DEBUG') ?? \getenv('DEBUG') ?? '0'), \FILTER_VALIDATE_BOOLEAN);
     }
 }

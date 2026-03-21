@@ -238,17 +238,38 @@ final class AsyncResourceSseServer
     private static function triggerDeferredBlocks(string $sessionId, string $deferredRequestId, ?string $lastEventId): void
     {
         $registry = \Semitexa\Ssr\Isomorphic\DeferredRequestRegistry::consume($deferredRequestId);
+
+        $debugEnabled = filter_var((string) (\getenv('APP_DEBUG') ?? \getenv('DEBUG') ?? '0'), \FILTER_VALIDATE_BOOLEAN);
+        $debugLog = static function (string $msg, array $data = []) use ($debugEnabled): void {
+            if (!$debugEnabled) {
+                return;
+            }
+
+            $entry = json_encode(['ssr_sse' => $msg] + $data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            if ($entry !== false) {
+                error_log($entry);
+            }
+        };
+
         if ($registry === null) {
+            $debugLog('registry_null', ['deferred_request_id' => $deferredRequestId]);
             self::deliver($sessionId, ['type' => 'done']);
             return;
         }
 
+        $debugLog('registry_found', [
+            'deferred_request_id' => $deferredRequestId,
+            'page_handle' => $registry['page_handle'],
+            'slots' => $registry['slots'],
+        ]);
+
         // Use coroutine to resolve deferred blocks concurrently
         if (class_exists(\Swoole\Coroutine::class, false) && \Swoole\Coroutine::getCid() > 0) {
-            \Swoole\Coroutine::create(static function () use ($sessionId, $registry, $lastEventId, $deferredRequestId): void {
+            \Swoole\Coroutine::create(static function () use ($sessionId, $registry, $lastEventId, $deferredRequestId, $debugLog): void {
                 try {
                     $container = ContainerFactory::get();
                     $orchestrator = $container->get(\Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator::class);
+                    $debugLog('orchestrator_resolved', ['session_id' => $sessionId]);
                     $orchestrator->streamDeferredBlocks(
                         sessionId: $sessionId,
                         pageHandle: $registry['page_handle'],
@@ -257,6 +278,7 @@ final class AsyncResourceSseServer
                         deferredRequestId: $deferredRequestId,
                     );
                 } catch (\Throwable $e) {
+                    $debugLog('streaming_failed', ['error' => $e->getMessage(), 'trace' => substr($e->getTraceAsString(), 0, 500)]);
                     error_log("[Semitexa SSR] Deferred block streaming failed: {$e->getMessage()}");
                     self::deliver($sessionId, ['type' => 'done']);
                 }
@@ -265,6 +287,7 @@ final class AsyncResourceSseServer
             try {
                 $container = ContainerFactory::get();
                 $orchestrator = $container->get(\Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator::class);
+                $debugLog('orchestrator_resolved_sync', ['session_id' => $sessionId]);
                 $orchestrator->streamDeferredBlocks(
                     sessionId: $sessionId,
                     pageHandle: $registry['page_handle'],
@@ -273,6 +296,7 @@ final class AsyncResourceSseServer
                     deferredRequestId: $deferredRequestId,
                 );
             } catch (\Throwable $e) {
+                $debugLog('streaming_failed_sync', ['error' => $e->getMessage()]);
                 error_log("[Semitexa SSR] Deferred block streaming failed (sync): {$e->getMessage()}");
                 self::deliver($sessionId, ['type' => 'done']);
             }
@@ -422,6 +446,24 @@ final class AsyncResourceSseServer
         } catch (\Throwable $e) {
             return '';
         }
+    }
+
+    public static function isSessionActive(string $sessionId): bool
+    {
+        $sessionId = trim($sessionId);
+        if ($sessionId === '') {
+            return false;
+        }
+
+        if (isset(self::$sessions[$sessionId])) {
+            return true;
+        }
+
+        if (self::$sessionWorkerTable !== null) {
+            return self::$sessionWorkerTable->get(self::sessionTableKey($sessionId)) !== false;
+        }
+
+        return false;
     }
 
     public static function setServer(\Swoole\Http\Server $server): void

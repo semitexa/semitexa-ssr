@@ -17,6 +17,10 @@ class LayoutRenderer
 
     public static function renderHandle(string $handle, array $context = []): string
     {
+        if (class_exists(\Semitexa\Ssr\Asset\AssetCollectorStore::class)) {
+            \Semitexa\Ssr\Asset\AssetCollectorStore::reset();
+        }
+
         $layout = ModuleTemplateRegistry::resolveLayout($handle);
         
         if ($layout === null) {
@@ -143,4 +147,3 @@ class LayoutRenderer
         self::$config = null;
     }
 }
-

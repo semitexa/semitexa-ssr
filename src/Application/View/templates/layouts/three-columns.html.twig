@@ -6,9 +6,11 @@
     <style>
       .layout{display:grid;grid-template-columns:280px 1fr 280px;gap:24px}
     </style>
+    {{ semantic_head() }}
+    {{ asset_head() }}
     {% block head_extra %}{{ layout_slot('head_extra') }}{% endblock %}
   </head>
-  <body>
+  <body{{ __ssr_handle_attr|default('')|raw }}>
     <header>
       {% block header %}{{ layout_slot('header') }}{{ header|default('')|raw }}{% endblock %}
     </header>
@@ -29,6 +31,7 @@
     <footer>
       {% block footer %}{{ layout_slot('footer') }}{{ footer|default('')|raw }}{{ layout_slot('footer_after') }}{% endblock %}
     </footer>
+    {{ asset_body() }}
   </body>
 </html>
 

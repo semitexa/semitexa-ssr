@@ -30,6 +30,9 @@ readonly class StaticAssetHandler
     public function handle(SwooleRequest $request, SwooleResponse $response): bool
     {
         $uri = $request->server['request_uri'] ?? '';
+        if ($uri !== '' && str_contains($uri, '?')) {
+            $uri = explode('?', $uri, 2)[0];
+        }
 
         if (!str_starts_with($uri, self::PREFIX)) {
             return false;
@@ -74,7 +77,7 @@ readonly class StaticAssetHandler
 
         $response->status(200);
         $response->header('Content-Type', $contentType);
-        $response->header('Cache-Control', 'public, max-age=3600');
+        $response->header('Cache-Control', 'public, max-age=31536000, immutable');
         $response->sendfile($filePath);
 
         return true;

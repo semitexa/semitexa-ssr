@@ -448,6 +448,13 @@
                 return;
             }
 
+            // Track which slots still need to be rendered so we can fall back if the
+            // connection closes before all blocks arrive (e.g. premature 'done').
+            var pendingSlots = new Set();
+            if (Array.isArray(manifest.slots)) {
+                manifest.slots.forEach(function (s) { pendingSlots.add(s.id); });
+            }
+
             var es = new EventSource(sseUrl);
             self._eventSource = es;
             self._connected = true;
@@ -456,12 +463,27 @@
                 try {
                     var payload = JSON.parse(event.data);
                     if (payload.type === 'done') {
-                        es.close();
-                        self._connected = false;
+                        // Fallback for any blocks that never arrived
+                        if (pendingSlots.size > 0) {
+                            var missed = [];
+                            pendingSlots.forEach(function (id) { missed.push(id); });
+                            var fallbackManifest = {
+                                requestId: manifest.requestId,
+                                sessionId: manifest.sessionId,
+                                slots: missed.map(function (id) { return {id: id}; })
+                            };
+                            self._fallback(fallbackManifest);
+                        }
+                        // Keep connection open if server will push live updates
+                        if (!payload.live) {
+                            es.close();
+                            self._connected = false;
+                        }
                         return;
                     }
                     if (payload.connected) return;
                     if (payload.type === 'deferred_block') {
+                        pendingSlots.delete(payload.slot_id);
                         self._handleMessage(payload);
                     }
                 } catch (e) {
@@ -481,15 +503,16 @@
             var el = document.querySelector('[data-ssr-deferred="' + payload.slot_id + '"]');
             if (!el) return;
 
+            var self = this;
+
             if (payload.mode === 'html') {
                 el.innerHTML = payload.html;
-                this._fireEvent('semitexa:block:rendered', {
+                self._fireEvent('semitexa:block:rendered', {
                     slotId: payload.slot_id,
                     mode: 'html',
                     renderTimeMs: Math.round(performance.now() - start)
                 });
             } else if (payload.mode === 'template') {
-                var self = this;
                 self._fetchTemplate(payload.template).then(function (ast) {
                     el.innerHTML = render(ast, payload.data);
                     self._fireEvent('semitexa:block:rendered', {
@@ -583,6 +606,23 @@
             } catch (e) {
                 // IE fallback — not critical
             }
+        },
+
+        setLocale: function (locale) {
+            if (!locale) return;
+            var manifest = this._manifest || window.__SSR_DEFERRED;
+            if (!manifest || !manifest.requestId || !manifest.sessionId) return;
+
+            if (!this._connected) {
+                this._connect(manifest);
+            }
+
+            var url = '/__semitexa_locale?session_id=' + encodeURIComponent(manifest.sessionId)
+                + '&deferred_request_id=' + encodeURIComponent(manifest.requestId)
+                + '&locale=' + encodeURIComponent(locale);
+
+            fetch(url, {method: 'GET', credentials: 'same-origin'})
+                .catch(function () {});
         }
     };
 

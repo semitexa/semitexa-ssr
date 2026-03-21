@@ -7,6 +7,13 @@ namespace Semitexa\Ssr\Http\Response;
 use Semitexa\Core\Attributes\AsResource;
 use Semitexa\Core\Http\Response\GenericResponse;
 use Semitexa\Core\Response as CoreResponse;
+use Semitexa\Core\Server\SwooleBootstrap;
+use Semitexa\Ssr\Configuration\IsomorphicConfig;
+use Semitexa\Ssr\Context\IsomorphicContextStore;
+use Semitexa\Ssr\Isomorphic\DeferredRequestRegistry;
+use Semitexa\Ssr\Isomorphic\DeferredTemplateRegistry;
+use Semitexa\Ssr\Isomorphic\PlaceholderRenderer;
+use Semitexa\Ssr\Layout\LayoutSlotRegistry;
 use Semitexa\Ssr\Seo\SeoMeta;
 use Semitexa\Ssr\Template\ModuleTemplateRegistry;
 
@@ -69,6 +76,11 @@ class HtmlResponse extends GenericResponse
             );
         }
 
+        $this->beginTopLevelRender();
+
+        // Populate AssetCollector before Twig renders so {{ asset_head() }} has data
+        $this->prepareAssetCollector($tmpl);
+
         $context = $this->getRenderContext();
         if ($extraContext !== []) {
             $context = array_merge($context, $extraContext);
@@ -80,6 +92,8 @@ class HtmlResponse extends GenericResponse
             $context['layout_handle'] ??= $handle;
         }
 
+        $context = $this->applyIsomorphicContext($context);
+
         $html = ModuleTemplateRegistry::getTwig()->render($tmpl, $context);
         $this->setContent($html);
         return $this;
@@ -87,6 +101,8 @@ class HtmlResponse extends GenericResponse
 
     public function renderString(string $templateSource, array $context = []): self
     {
+        $this->beginTopLevelRender();
+
         $twig = ModuleTemplateRegistry::getTwig();
         $template = $twig->createTemplate($templateSource);
         $html = $template->render($context);
@@ -119,6 +135,9 @@ class HtmlResponse extends GenericResponse
 
     /**
      * Auto-renders the declared template if no content has been set by the handler pipeline.
+     *
+     * renderTemplate() internally calls prepareAssetCollector() so that
+     * {{ asset_head() }} and {{ asset_body() }} emit the correct tags.
      */
     public function toCoreResponse(): CoreResponse
     {
@@ -131,6 +150,48 @@ class HtmlResponse extends GenericResponse
             $this->renderTemplate($this->declaredTemplate);
         }
         return parent::toCoreResponse();
+    }
+
+    private bool $assetCollectorPrepared = false;
+
+    private function beginTopLevelRender(): void
+    {
+        $this->assetCollectorPrepared = false;
+
+        if (class_exists(\Semitexa\Ssr\Asset\AssetCollectorStore::class)) {
+            \Semitexa\Ssr\Asset\AssetCollectorStore::reset();
+        }
+    }
+
+    /**
+     * Populate the per-request AssetCollector with global and module-scoped assets.
+     * Idempotent — safe to call multiple times per request.
+     *
+     * Module detection: extracts module name from the template path convention
+     * @project-layouts-{ModuleName}/... and auto-requires module-scoped assets.
+     */
+    private function prepareAssetCollector(?string $template = null): void
+    {
+        if ($this->assetCollectorPrepared) {
+            return;
+        }
+        $this->assetCollectorPrepared = true;
+
+        if (!class_exists(\Semitexa\Ssr\Asset\AssetCollectorStore::class)) {
+            return;
+        }
+
+        // Ensure boot has run (in non-Swoole environments like CLI/tests,
+        // SwooleBootstrap::WorkerStart is never called)
+        \Semitexa\Ssr\Asset\AssetCollector::boot();
+
+        $collector = \Semitexa\Ssr\Asset\AssetCollectorStore::get();
+        $collector->requireGlobals();
+
+        // Auto-require module-scoped assets based on the template namespace
+        if ($template !== null && preg_match('/@project-layouts-([^\/]+)\//', $template, $matches)) {
+            $collector->requireModule($matches[1]);
+        }
     }
 
     private function initFromAttribute(): void
@@ -167,5 +228,109 @@ class HtmlResponse extends GenericResponse
             $this->setRenderHandle($cached['handle']);
         }
         $this->declaredTemplate = $cached['template'];
+    }
+
+    private function applyIsomorphicContext(array $context): array
+    {
+        $handle = $context['page_handle'] ?? $context['layout_handle'] ?? null;
+        if ($handle === null || $handle === '') {
+            return $context;
+        }
+
+        $config = IsomorphicConfig::fromEnvironment();
+        if (!$config->enabled || self::isCrawler($config)) {
+            return $context;
+        }
+
+        if (DeferredRequestRegistry::getTable() === null) {
+            DeferredRequestRegistry::initialize($config);
+        }
+
+        $deferredSlots = LayoutSlotRegistry::getDeferredSlots($handle);
+        if ($deferredSlots === []) {
+            return $context;
+        }
+
+        if (!DeferredTemplateRegistry::isInitialized()) {
+            DeferredTemplateRegistry::initialize($config);
+        }
+
+        $requestId = 'dr_' . bin2hex(random_bytes(12));
+        $sessionId = IsomorphicContextStore::getSessionId();
+        if ($sessionId === '') {
+            $sessionId = 'sse_' . bin2hex(random_bytes(16));
+            IsomorphicContextStore::setSessionId($sessionId);
+        }
+
+        $slotIds = array_map(static fn ($s) => $s->slotId, $deferredSlots);
+        $serializableContext = self::sanitizeDeferredContext($context);
+        DeferredRequestRegistry::store($requestId, $handle, $serializableContext, $slotIds);
+
+        IsomorphicContextStore::setPageHandle($handle);
+        IsomorphicContextStore::setDeferredSlots($deferredSlots);
+
+        $context['__ssr_deferred_slots'] = $deferredSlots;
+        $context['__ssr_deferred_request_id'] = $requestId;
+        $context['__ssr_deferred_session_id'] = $sessionId;
+        $context['__ssr_preload_hints'] = PlaceholderRenderer::renderPreloadHints($deferredSlots);
+        $context['__ssr_deferred_manifest'] = PlaceholderRenderer::renderManifest($requestId, $sessionId, $deferredSlots);
+        $context['__ssr_runtime_script'] = PlaceholderRenderer::renderRuntimeScript();
+        $context['__ssr_handle_attr'] = ' data-ssr-handle="' . htmlspecialchars($handle, ENT_QUOTES, 'UTF-8') . '"';
+
+        return $context;
+    }
+
+    private static function sanitizeDeferredContext(array $context, int $depth = 0): array
+    {
+        if ($depth > 32) {
+            return [];
+        }
+
+        $sanitized = [];
+        foreach ($context as $key => $value) {
+            if (is_array($value)) {
+                $sanitized[$key] = self::sanitizeDeferredContext($value, $depth + 1);
+                continue;
+            }
+
+            if (is_null($value) || is_scalar($value)) {
+                $sanitized[$key] = $value;
+            }
+        }
+
+        return $sanitized;
+    }
+
+    private static function isCrawler(IsomorphicConfig $config): bool
+    {
+        if (!$config->crawlerFullRender) {
+            return false;
+        }
+
+        $ctx = SwooleBootstrap::getCurrentSwooleRequestResponse();
+        if ($ctx === null) {
+            return false;
+        }
+
+        $userAgent = $ctx[0]->header['user-agent'] ?? '';
+        $queryFull = $ctx[0]->get['_ssr_full'] ?? null;
+
+        if ($queryFull === '1') {
+            return true;
+        }
+
+        $crawlerPatterns = [
+            'Googlebot', 'Bingbot', 'Slurp', 'DuckDuckBot', 'Baiduspider',
+            'YandexBot', 'Sogou', 'facebot', 'ia_archiver', 'Twitterbot',
+            'LinkedInBot', 'WhatsApp', 'TelegramBot',
+        ];
+
+        foreach ($crawlerPatterns as $pattern) {
+            if (stripos($userAgent, $pattern) !== false) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

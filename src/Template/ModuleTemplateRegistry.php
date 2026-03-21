@@ -125,14 +125,13 @@ final class ModuleTemplateRegistry
     {
         $loader = new FilesystemLoader();
 
-        foreach (self::$themePaths as $module => $path) {
-            $loader->addPath($path, self::aliasForModule($module));
-        }
-
+        // Register both theme and module paths per namespace — theme first, module as fallback.
+        // Twig searches registered paths in registration order, so theme overrides are transparent.
         foreach (self::$modulePaths as $module => $config) {
-            if (!isset(self::$themePaths[$module])) {
-                $loader->addPath($config['path'], self::aliasForModule($module));
+            if (isset(self::$themePaths[$module])) {
+                $loader->addPath(self::$themePaths[$module], self::aliasForModule($module));
             }
+            $loader->addPath($config['path'], self::aliasForModule($module));
         }
 
         self::$loader = $loader;
@@ -298,6 +297,43 @@ final class ModuleTemplateRegistry
             self::$twig->addFunction(new TwigFunction(
                 'version',
                 fn (string $path) => \Semitexa\Ssr\Asset\AssetManager::version($path)
+            ));
+        }
+
+        // Unified asset management - asset_head(), asset_body(), asset_require()
+        if (class_exists(\Semitexa\Ssr\Asset\AssetCollectorStore::class)) {
+            self::$twig->addFunction(new TwigFunction(
+                'asset_head',
+                function () {
+                    $collector = \Semitexa\Ssr\Asset\AssetCollectorStore::get();
+                    return new \Twig\Markup(
+                        \Semitexa\Ssr\Asset\AssetRenderer::renderHead($collector),
+                        'UTF-8'
+                    );
+                },
+                ['is_safe' => ['html']]
+            ));
+
+            self::$twig->addFunction(new TwigFunction(
+                'asset_body',
+                function () {
+                    $collector = \Semitexa\Ssr\Asset\AssetCollectorStore::get();
+                    return new \Twig\Markup(
+                        \Semitexa\Ssr\Asset\AssetRenderer::renderBody($collector),
+                        'UTF-8'
+                    );
+                },
+                ['is_safe' => ['html']]
+            ));
+
+            self::$twig->addFunction(new TwigFunction(
+                'asset_require',
+                function (string $key) {
+                    $collector = \Semitexa\Ssr\Asset\AssetCollectorStore::get();
+                    $collector->require($key);
+                    return '';
+                },
+                ['is_safe' => ['html']]
             ));
         }
 

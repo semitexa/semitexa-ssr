@@ -76,6 +76,8 @@ class HtmlResponse extends GenericResponse
             );
         }
 
+        $this->beginTopLevelRender();
+
         // Populate AssetCollector before Twig renders so {{ asset_head() }} has data
         $this->prepareAssetCollector($tmpl);
 
@@ -99,6 +101,8 @@ class HtmlResponse extends GenericResponse
 
     public function renderString(string $templateSource, array $context = []): self
     {
+        $this->beginTopLevelRender();
+
         $twig = ModuleTemplateRegistry::getTwig();
         $template = $twig->createTemplate($templateSource);
         $html = $template->render($context);
@@ -149,6 +153,15 @@ class HtmlResponse extends GenericResponse
     }
 
     private bool $assetCollectorPrepared = false;
+
+    private function beginTopLevelRender(): void
+    {
+        $this->assetCollectorPrepared = false;
+
+        if (class_exists(\Semitexa\Ssr\Asset\AssetCollectorStore::class)) {
+            \Semitexa\Ssr\Asset\AssetCollectorStore::reset();
+        }
+    }
 
     /**
      * Populate the per-request AssetCollector with global and module-scoped assets.

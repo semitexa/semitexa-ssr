@@ -450,7 +450,20 @@ final class AsyncResourceSseServer
 
     public static function isSessionActive(string $sessionId): bool
     {
-        return isset(self::$sessions[trim($sessionId)]);
+        $sessionId = trim($sessionId);
+        if ($sessionId === '') {
+            return false;
+        }
+
+        if (isset(self::$sessions[$sessionId])) {
+            return true;
+        }
+
+        if (self::$sessionWorkerTable !== null) {
+            return self::$sessionWorkerTable->get(self::sessionTableKey($sessionId)) !== false;
+        }
+
+        return false;
     }
 
     public static function setServer(\Swoole\Http\Server $server): void

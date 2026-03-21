@@ -11,6 +11,7 @@ use Semitexa\Core\Exception\NotFoundException;
 use Semitexa\Core\Http\Response\GenericResponse;
 use Semitexa\Ssr\Application\Payload\Request\SsrLocaleSwitchPayload;
 use Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator;
+use Semitexa\Ssr\Async\AsyncResourceSseServer;
 use Semitexa\Ssr\Isomorphic\DeferredRequestRegistry;
 use Swoole\Coroutine;
 
@@ -38,6 +39,9 @@ final class SsrLocaleSwitchHandler implements TypedHandlerInterface
         if ($sessionId === '') {
             throw new NotFoundException('SSE session', '(empty)');
         }
+        if (!AsyncResourceSseServer::isSessionActive($sessionId)) {
+            throw new NotFoundException('SSE session', $sessionId);
+        }
 
         $requestId = trim($payload->getDeferredRequestId());
         if ($requestId === '') {
@@ -62,6 +66,7 @@ final class SsrLocaleSwitchHandler implements TypedHandlerInterface
                         lastEventId: null,
                         deferredRequestId: null,
                         locale: $locale,
+                        startLiveLoop: false,
                     );
                 } catch (\Throwable $e) {
                     error_log("[Semitexa SSR] Locale switch failed: {$e->getMessage()}");
@@ -75,6 +80,7 @@ final class SsrLocaleSwitchHandler implements TypedHandlerInterface
                 lastEventId: null,
                 deferredRequestId: null,
                 locale: $locale,
+                startLiveLoop: false,
             );
         }
 

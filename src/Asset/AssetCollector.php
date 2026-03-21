@@ -182,23 +182,34 @@ final class AssetCollector
                 $modulePath . '/Application/Static',
             ];
 
+            $existingStaticDirs = [];
+            $manifestLoaded = false;
+
             foreach ($staticDirCandidates as $staticDir) {
                 if (!is_dir($staticDir)) {
                     continue;
                 }
 
+                $existingStaticDirs[] = $staticDir;
+
                 $manifestPath = $staticDir . '/assets.json';
 
                 if (!is_file($manifestPath)) {
-                    error_log(
-                        "[AssetCollector] Module '{$moduleName}' has Application/Static/ directory"
-                        . " but no assets.json manifest. Add {$staticDir}/assets.json."
-                    );
                     continue;
                 }
 
                 self::parseManifestV2($manifestPath, $staticDir, $moduleName);
+                $manifestLoaded = true;
                 break;
+            }
+
+            if (!$manifestLoaded && $existingStaticDirs !== []) {
+                error_log(
+                    "[AssetCollector] Module '{$moduleName}' has Application/Static/ directory"
+                    . ' but no assets.json manifest in candidate path(s): '
+                    . implode(', ', $existingStaticDirs)
+                    . '. Add assets.json.'
+                );
             }
         }
     }

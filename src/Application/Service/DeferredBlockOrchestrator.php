@@ -37,6 +37,7 @@ final class DeferredBlockOrchestrator
         ?string $lastEventId = null,
         ?string $deferredRequestId = null,
         ?string $locale = null,
+        bool $startLiveLoop = true,
     ): void {
         $slots = $this->getDeferredSlots($pageHandle);
         $liveSlots = array_values(array_filter($slots, static fn (DeferredSlotDefinition $s) => $s->refreshInterval > 0));
@@ -108,8 +109,11 @@ final class DeferredBlockOrchestrator
                 }
             }
 
-            SseAsyncResultDelivery::deliverRaw($sessionId, ['type' => 'done', 'live' => $liveSlots !== []]);
-            $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale);
+            $liveEnabled = $startLiveLoop && $liveSlots !== [];
+            SseAsyncResultDelivery::deliverRaw($sessionId, ['type' => 'done', 'live' => $liveEnabled]);
+            if ($liveEnabled) {
+                $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale);
+            }
             return;
         }
 
@@ -180,9 +184,11 @@ final class DeferredBlockOrchestrator
 
         $wg->wait();
 
-        SseAsyncResultDelivery::deliverRaw($sessionId, ['type' => 'done', 'live' => $liveSlots !== []]);
-
-        $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale);
+        $liveEnabled = $startLiveLoop && $liveSlots !== [];
+        SseAsyncResultDelivery::deliverRaw($sessionId, ['type' => 'done', 'live' => $liveEnabled]);
+        if ($liveEnabled) {
+            $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale);
+        }
     }
 
     /**

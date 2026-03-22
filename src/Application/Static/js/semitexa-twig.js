@@ -628,6 +628,11 @@
                 + '&locale=' + encodeURIComponent(locale);
 
             fetch(url, {method: 'GET', credentials: 'same-origin'})
+                .then(function (resp) {
+                    if (resp && resp.ok && document.documentElement) {
+                        document.documentElement.setAttribute('lang', locale);
+                    }
+                })
                 .catch(function () {});
         }
     };

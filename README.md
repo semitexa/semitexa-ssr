@@ -1,30 +1,26 @@
-# Semitexa Core Frontend
+# semitexa/ssr
 
-> **Philosophy & ideology** — [Why Semitexa: vision and principles](../semitexa-docs/README.md). The detailed, technical documentation for this package is below.
+Twig-based server-side rendering with components, layout slots, theme overrides, and locale-aware URL generation.
 
-Server-side rendering for Semitexa using Twig: layouts, slots, and HTML response handling.
+## Purpose
 
-## Installation
+Renders HTML responses using Twig. Provides a component system discovered via `#[AsComponent]`, layout slot composition via `#[AsLayoutSlot]`, theme override support for module templates, and locale-aware URL generation.
 
-```bash
-composer require semitexa/ssr
-```
+## Role in Semitexa
 
-## What's inside
+Depends on Twig, Locale, and Tenancy. Depended on by Mail, Platform WM, Platform User, Platform Settings, and Demo. Required for any package that renders HTML pages.
 
-- **LayoutRenderer** — Renders response content into a layout template (e.g. one-column, two-column)
-- **Twig** — Twig integration; templates under `Application/View/templates/` in your modules
-- **Layout slots** — `#[AsLayoutSlot]` + `layout_slot('slotname')`; handle `*` (global), layout frame, or page handle
-- **Theme override** — `src/theme/{ModuleName}/` overrides module templates (same path)
-- **HtmlResponse** — Response type for HTML pages
+## Key Features
 
-## Slots
+- `#[AsComponent]` attribute for component discovery
+- `#[AsLayoutSlot]` for layout slot registration
+- `#[AsDataProvider]` and `#[AsTwigExtension]` for template extensions
+- `LayoutRenderer` for slot-based page composition
+- Theme override system (module templates overridable via `src/theme/`)
+- `UrlGenerator` with locale-aware routing
+- `ModuleTemplateRegistry` for per-module template discovery
+- Development hot-reload support
 
-In layout templates: `{{ layout_slot('nav') }}`, `{{ layout_slot('header') }}`, etc. Register with `#[AsLayoutSlot(handle: '*', slot: 'nav', template: '...', priority: 0)]`. Use handle `'*'` for every page, or a layout name / page handle for scoped slots. Optional: `$response->setLayoutFrame('one-column')` so layout-level slots apply.
+## Notes
 
-## Theme override
-
-- **With THEME in .env:** Put overrides in `src/theme/{THEME}/{ModuleName}/` (e.g. `src/theme/default/Website/one-column.html.twig`). Set `THEME=default` in `.env` to activate. Twig loads theme paths first, so these override the module’s templates.
-- **Legacy (THEME empty):** Use `src/theme/{ModuleName}/` (e.g. `src/theme/Website/one-column.html.twig`) to override that module’s templates. Works for any module that has layout templates.
-
-Use this package when you build HTML pages (not just JSON API). See **semitexa/docs** (e.g. AI_REFERENCE, RECOMMENDED_STACK) and [core/docs/ADDING_ROUTES.md](../semitexa-core/docs/ADDING_ROUTES.md) for the “Responses: JSON and HTML pages” section.
+SSR is required for HTML pages. JSON-only APIs do not need this package. Layout slots use handle-based scoping: `*` for global, layout frame name, or specific page handle.

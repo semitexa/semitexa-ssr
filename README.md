@@ -21,6 +21,12 @@ Depends on Twig, Locale, and Tenancy. Used by Mail, Platform WM, Platform User, 
 - `ModuleTemplateRegistry` for per-module template discovery
 - Development hot-reload support
 
+## Deferred SSE Safety
+
+- `SSR_DEFERRED_PERSISTENT_SSE=false` is the safe default. Deferred SSR streams final HTML blocks once and then closes the SSE connection.
+- `SSR_DEFERRED_PERSISTENT_SSE_REQUIRE_AUTH=true` adds a second guard for persistent mode. Even when persistent SSE is explicitly enabled, live reconnect-capable streams still require an authenticated session by default.
+- For public pages and demos, keep persistent SSE disabled unless you have a specific live-update use case and have capacity controls in place.
+
 ## Notes
 
 SSR is required for HTML pages. JSON-only APIs do not need this package. Layout slots use handle-based scoping: `*` for global, layout frame name, or specific page handle.

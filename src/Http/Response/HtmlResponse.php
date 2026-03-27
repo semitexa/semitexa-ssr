@@ -292,8 +292,31 @@ class HtmlResponse extends GenericResponse
             return [];
         }
 
+        $excludedTopLevelKeys = [
+            'navSections',
+            'featureTree',
+            'sections',
+            'features',
+            'sourceCode',
+            'resultPreview',
+            'resultPreviewData',
+            'resultPreviewTemplate',
+            'l2Content',
+            'l2ContentData',
+            'l2ContentTemplate',
+            'l3Content',
+            'l3ContentData',
+            'l3ContentTemplate',
+            'explanation',
+            'relatedPayloads',
+        ];
+
         $sanitized = [];
         foreach ($context as $key => $value) {
+            if ($depth === 0 && is_string($key) && in_array($key, $excludedTopLevelKeys, true)) {
+                continue;
+            }
+
             if (is_array($value)) {
                 $sanitized[$key] = self::sanitizeDeferredContext($value, $depth + 1);
                 continue;

@@ -441,6 +441,7 @@
             var self = this;
             self._manifest = manifest;
             self._setBindCookie(manifest);
+            self._deferredCompleted = false;
             var sseUrl = '/__semitexa_kiss?session_id=' + encodeURIComponent(manifest.sessionId)
                 + '&deferred_request_id=' + encodeURIComponent(manifest.requestId);
 
@@ -464,6 +465,7 @@
                 try {
                     var payload = JSON.parse(event.data);
                     if (payload.type === 'done') {
+                        self._deferredCompleted = true;
                         // Fallback for any blocks that never arrived
                         if (pendingSlots.size > 0) {
                             var missed = [];
@@ -493,6 +495,11 @@
             };
 
             es.onerror = function () {
+                if (self._deferredCompleted) {
+                    es.close();
+                    self._connected = false;
+                    return;
+                }
                 es.close();
                 self._connected = false;
                 self._fallback(manifest);
@@ -514,6 +521,7 @@
             if (payload.mode === 'html') {
                 el.innerHTML = payload.html;
                 self._fireEvent('semitexa:block:rendered', {
+                    block: el.firstElementChild || el,
                     slotId: payload.slot_id,
                     mode: 'html',
                     renderTimeMs: Math.round(performance.now() - start)
@@ -522,6 +530,7 @@
                 self._fetchTemplate(payload.template).then(function (ast) {
                     el.innerHTML = render(ast, payload.data);
                     self._fireEvent('semitexa:block:rendered', {
+                        block: el.firstElementChild || el,
                         slotId: payload.slot_id,
                         mode: 'template',
                         renderTimeMs: Math.round(performance.now() - start)
@@ -577,6 +586,7 @@
                         if (el) {
                             el.innerHTML = data[slotId];
                             self._fireEvent('semitexa:block:rendered', {
+                                block: el.firstElementChild || el,
                                 slotId: slotId,
                                 mode: 'fallback',
                                 renderTimeMs: 0

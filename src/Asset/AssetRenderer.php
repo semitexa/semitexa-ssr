@@ -22,8 +22,14 @@ final class AssetRenderer
     {
         $entries = $collector->resolve();
         $html = '';
+        $renderedKeys = [];
 
         foreach ($entries as $entry) {
+            $signature = self::buildRenderSignature($entry);
+            if (isset($renderedKeys[$signature])) {
+                continue;
+            }
+
             // R1: CSS is always in <head> regardless of position override
             $effectivePosition = match ($entry->type) {
                 'css', 'inline-css', 'preload' => 'head',
@@ -33,6 +39,8 @@ final class AssetRenderer
             if ($effectivePosition !== 'head') {
                 continue;
             }
+
+            $renderedKeys[$signature] = true;
 
             $html .= match ($entry->type) {
                 'css'        => self::renderCssLink($entry),
@@ -54,8 +62,14 @@ final class AssetRenderer
     {
         $entries = $collector->resolve();
         $html = '';
+        $renderedKeys = [];
 
         foreach ($entries as $entry) {
+            $signature = self::buildRenderSignature($entry);
+            if (isset($renderedKeys[$signature])) {
+                continue;
+            }
+
             // CSS types are always head — skip them here
             if (in_array($entry->type, ['css', 'inline-css', 'preload'], true)) {
                 continue;
@@ -64,6 +78,8 @@ final class AssetRenderer
             if ($entry->position !== 'body') {
                 continue;
             }
+
+            $renderedKeys[$signature] = true;
 
             $html .= match ($entry->type) {
                 'js'        => self::renderScript($entry),
@@ -173,5 +189,15 @@ final class AssetRenderer
         }
 
         return $parts;
+    }
+
+    private static function buildRenderSignature(AssetEntry $entry): string
+    {
+        $identity = match ($entry->type) {
+            'inline-css', 'inline-js' => $entry->module . '|' . $entry->path,
+            default => $entry->toUrl(),
+        };
+
+        return $entry->type . '|' . $entry->position . '|' . $identity;
     }
 }

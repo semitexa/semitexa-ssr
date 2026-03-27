@@ -214,6 +214,16 @@ final class ModuleTemplateRegistry
                     $deferredSlots = $context['__ssr_deferred_slots'] ?? [];
                     foreach ($deferredSlots as $slotDef) {
                         if ($slotDef->slotId === strtolower($slot)) {
+                            $pageHandle = $context['page_handle'] ?? $context['layout_handle'] ?? null;
+                            if ($pageHandle !== null && $pageHandle !== '') {
+                                \Semitexa\Ssr\Layout\SlotAssetCollector::collectModuleRefs(
+                                    \Semitexa\Ssr\Layout\LayoutSlotRegistry::getDeferredClientModulesForSlot(
+                                        $pageHandle,
+                                        $slot,
+                                    )
+                                );
+                            }
+
                             return new \Twig\Markup(
                                 \Semitexa\Ssr\Isomorphic\PlaceholderRenderer::renderPlaceholder($slotDef),
                                 'UTF-8'

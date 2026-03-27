@@ -129,7 +129,7 @@ final class PlaceholderRenderer
         $path = ModuleAssetRegistry::resolve('ssr', 'js/semitexa-twig.js')
             ?? __DIR__ . '/../Application/Static/js/semitexa-twig.js';
         $version = @filemtime($path) ?: 0;
-        return '<script src="/assets/ssr/js/semitexa-twig.js?v=' . $version . '" defer></script>';
+        return '<script src="/assets/ssr/js/semitexa-twig.js?v=' . $version . '" defer></script>' . "\n";
     }
 
     private static function defaultSkeleton(string $slotId): string

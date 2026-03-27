@@ -17,5 +17,6 @@ final readonly class DeferredSlotDefinition
         public ?string $skeletonTemplate = null,
         public int $refreshInterval = 0,
         public ?string $resourceClass = null,
+        public array $clientModules = [],
     ) {}
 }

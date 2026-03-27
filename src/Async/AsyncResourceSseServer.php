@@ -5,12 +5,18 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Async;
 
 use Semitexa\Core\Environment;
+use Semitexa\Core\Session\RedisSessionHandler;
+use Semitexa\Core\Session\SessionHandlerInterface;
+use Semitexa\Core\Session\SwooleTableSessionHandler;
 use Semitexa\Core\Container\ContainerFactory;
+use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Swoole\Http\Request;
 use Swoole\Http\Response;
 
 final class AsyncResourceSseServer
 {
+    private const AUTH_SESSION_USER_KEY = '_auth_user_id';
+
     private static array $sessions = [];
 
     /** @var array<string, list<array>> Pending messages per session when no connection yet */
@@ -177,12 +183,22 @@ final class AsyncResourceSseServer
         if ($deferredRequestId !== '') {
             $bindToken = self::getSsrBindToken($request);
             if (!\Semitexa\Ssr\Isomorphic\DeferredRequestRegistry::matchesBindToken($deferredRequestId, $bindToken)) {
-                self::writeSse($response, ['type' => 'done']);
+                self::writeSse($response, [
+                    'type' => 'done',
+                    'live' => false,
+                    'close' => true,
+                    'reconnect' => false,
+                ]);
                 $response->end();
                 unset(self::$sessions[$sessionId], self::$queues[$sessionId]);
                 return;
             }
-            self::triggerDeferredBlocks($sessionId, $deferredRequestId, $lastEventId);
+            self::triggerDeferredBlocks(
+                $sessionId,
+                $deferredRequestId,
+                $lastEventId,
+                self::canUsePersistentDeferredSse($request),
+            );
         }
 
         $closed = false;
@@ -190,6 +206,10 @@ final class AsyncResourceSseServer
             while (isset(self::$queues[$sessionId]) && self::$queues[$sessionId] !== []) {
                 $data = array_shift(self::$queues[$sessionId]);
                 if (!self::writeSse($response, $data)) {
+                    $closed = true;
+                    break;
+                }
+                if (self::shouldCloseAfterPayload($data)) {
                     $closed = true;
                     break;
                 }
@@ -205,6 +225,10 @@ final class AsyncResourceSseServer
                         if (is_array($data) && self::writeSse($response, $data)) {
                             $toDel[] = $deliverKey;
                             $deliverCount++;
+                            if (self::shouldCloseAfterPayload($data)) {
+                                $closed = true;
+                                break;
+                            }
                         }
                     }
                 }
@@ -214,7 +238,9 @@ final class AsyncResourceSseServer
             }
 
             if (!$closed) {
-                self::drainRabbitMqQueueForSession($sessionId, $response);
+                if (self::drainRabbitMqQueueForSession($sessionId, $response)) {
+                    $closed = true;
+                }
             }
 
             if ($closed) {
@@ -247,7 +273,12 @@ final class AsyncResourceSseServer
         $response->end();
     }
 
-    private static function triggerDeferredBlocks(string $sessionId, string $deferredRequestId, ?string $lastEventId): void
+    private static function triggerDeferredBlocks(
+        string $sessionId,
+        string $deferredRequestId,
+        ?string $lastEventId,
+        bool $allowPersistentDeferredSse,
+    ): void
     {
         $registry = \Semitexa\Ssr\Isomorphic\DeferredRequestRegistry::consume($deferredRequestId);
 
@@ -265,7 +296,12 @@ final class AsyncResourceSseServer
 
         if ($registry === null) {
             $debugLog('registry_null', ['deferred_request_id' => $deferredRequestId]);
-            self::deliver($sessionId, ['type' => 'done']);
+            self::deliver($sessionId, [
+                'type' => 'done',
+                'live' => false,
+                'close' => true,
+                'reconnect' => false,
+            ]);
             return;
         }
 
@@ -288,11 +324,17 @@ final class AsyncResourceSseServer
                         pageContext: $registry['page_context'],
                         lastEventId: $lastEventId,
                         deferredRequestId: $deferredRequestId,
+                        startLiveLoop: $allowPersistentDeferredSse,
                     );
                 } catch (\Throwable $e) {
                     $debugLog('streaming_failed', ['error' => $e->getMessage(), 'trace' => substr($e->getTraceAsString(), 0, 500)]);
                     error_log("[Semitexa SSR] Deferred block streaming failed: {$e->getMessage()}");
-                    self::deliver($sessionId, ['type' => 'done']);
+                    self::deliver($sessionId, [
+                        'type' => 'done',
+                        'live' => false,
+                        'close' => true,
+                        'reconnect' => false,
+                    ]);
                 }
             });
         } else {
@@ -306,20 +348,26 @@ final class AsyncResourceSseServer
                     pageContext: $registry['page_context'],
                     lastEventId: $lastEventId,
                     deferredRequestId: $deferredRequestId,
+                    startLiveLoop: $allowPersistentDeferredSse,
                 );
             } catch (\Throwable $e) {
                 $debugLog('streaming_failed_sync', ['error' => $e->getMessage()]);
                 error_log("[Semitexa SSR] Deferred block streaming failed (sync): {$e->getMessage()}");
-                self::deliver($sessionId, ['type' => 'done']);
+                self::deliver($sessionId, [
+                    'type' => 'done',
+                    'live' => false,
+                    'close' => true,
+                    'reconnect' => false,
+                ]);
             }
         }
     }
 
-    private static function drainRabbitMqQueueForSession(string $sessionId, Response $response): void
+    private static function drainRabbitMqQueueForSession(string $sessionId, Response $response): bool
     {
         $channel = self::getRabbitMqChannel();
         if ($channel === null) {
-            return;
+            return false;
         }
         try {
             $queue = new \AMQPQueue($channel);
@@ -335,12 +383,17 @@ final class AsyncResourceSseServer
                 $data = json_decode($envelope->getBody(), true);
                 if (is_array($data) && self::writeSse($response, $data)) {
                     $count++;
+                    if (self::shouldCloseAfterPayload($data)) {
+                        $queue->ack($envelope->getDeliveryTag());
+                        return true;
+                    }
                 }
                 $queue->ack($envelope->getDeliveryTag());
             }
         } catch (\Throwable $e) {
             self::$amqpChannel = null;
         }
+        return false;
     }
 
     private static function writeSse(Response $response, array $data): bool
@@ -352,6 +405,19 @@ final class AsyncResourceSseServer
         }
         $line .= "data: " . json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n";
         return @$response->write($line);
+    }
+
+    private static function shouldCloseAfterPayload(array $data): bool
+    {
+        if (($data['type'] ?? null) !== 'done') {
+            return false;
+        }
+
+        if (($data['close'] ?? false) === true) {
+            return true;
+        }
+
+        return ($data['live'] ?? false) !== true;
     }
 
     /**
@@ -510,6 +576,49 @@ final class AsyncResourceSseServer
     {
         $cookieName = 'semitexa_ssr_bind';
         return trim((string) (($request->cookie[$cookieName] ?? '')));
+    }
+
+    private static function canUsePersistentDeferredSse(Request $request): bool
+    {
+        $config = IsomorphicConfig::fromEnvironment();
+        if (!$config->persistentDeferredSse) {
+            return false;
+        }
+
+        if (!$config->persistentDeferredSseRequireAuth) {
+            return true;
+        }
+
+        return self::hasAuthenticatedSession($request);
+    }
+
+    private static function hasAuthenticatedSession(Request $request): bool
+    {
+        $cookieName = Environment::getEnvValue('SESSION_COOKIE_NAME') ?? 'semitexa_session';
+        $sessionId = trim((string) ($request->cookie[$cookieName] ?? ''));
+        if ($sessionId === '' || !preg_match('/^[a-f0-9]{32}$/', $sessionId)) {
+            return false;
+        }
+
+        try {
+            $handler = self::createSessionHandler();
+            $data = $handler->read($sessionId);
+        } catch (\Throwable) {
+            return false;
+        }
+
+        $userId = $data[self::AUTH_SESSION_USER_KEY] ?? null;
+        return is_string($userId) && trim($userId) !== '';
+    }
+
+    private static function createSessionHandler(): SessionHandlerInterface
+    {
+        $redisHost = Environment::getEnvValue('REDIS_HOST');
+        if ($redisHost !== null && $redisHost !== '') {
+            return new RedisSessionHandler();
+        }
+
+        return new SwooleTableSessionHandler();
     }
 
     private static function isSameOriginRequest(Request $request): bool

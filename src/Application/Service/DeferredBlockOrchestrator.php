@@ -7,6 +7,7 @@ namespace Semitexa\Ssr\Application\Service;
 use Semitexa\Core\Attributes\AsService;
 use Semitexa\Core\Attributes\InjectAsReadonly;
 use Semitexa\Ssr\Async\SseAsyncResultDelivery;
+use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Semitexa\Ssr\Domain\Model\DeferredBlockPayload;
 use Semitexa\Ssr\Domain\Model\DeferredSlotDefinition;
 use Semitexa\Ssr\Isomorphic\DeferredRequestRegistry;
@@ -39,7 +40,11 @@ final class DeferredBlockOrchestrator
         bool $startLiveLoop = true,
     ): void {
         $slots = $this->getDeferredSlots($pageHandle);
-        $liveSlots = array_values(array_filter($slots, static fn (DeferredSlotDefinition $s) => $s->refreshInterval > 0));
+        $config = IsomorphicConfig::fromEnvironment();
+        $persistentDeferredSse = $config->persistentDeferredSse;
+        $liveSlots = $persistentDeferredSse
+            ? array_values(array_filter($slots, static fn (DeferredSlotDefinition $s) => $s->refreshInterval > 0))
+            : [];
 
         self::debugLog('stream_start', [
             'page_handle' => $pageHandle,
@@ -48,7 +53,12 @@ final class DeferredBlockOrchestrator
         ]);
 
         if ($slots === []) {
-            SseAsyncResultDelivery::deliverRaw($sessionId, ['type' => 'done']);
+            SseAsyncResultDelivery::deliverRaw($sessionId, [
+                'type' => 'done',
+                'live' => false,
+                'close' => true,
+                'reconnect' => false,
+            ]);
             return;
         }
 
@@ -73,7 +83,12 @@ final class DeferredBlockOrchestrator
         }
 
         if ($slots === []) {
-            SseAsyncResultDelivery::deliverRaw($sessionId, ['type' => 'done']);
+            SseAsyncResultDelivery::deliverRaw($sessionId, [
+                'type' => 'done',
+                'live' => false,
+                'close' => true,
+                'reconnect' => false,
+            ]);
             return;
         }
 
@@ -96,7 +111,7 @@ final class DeferredBlockOrchestrator
             $eventId = $lastEventId !== null ? ((int) $lastEventId) : 0;
             foreach ($results as [$slot, $data]) {
                 $eventId++;
-                $payload = $this->buildPayload($slot, $data);
+                $payload = $this->buildPayload($slot, $data, $persistentDeferredSse);
                 $sseData = $payload->toArray();
                 $sseData['id'] = $eventId;
 
@@ -107,8 +122,13 @@ final class DeferredBlockOrchestrator
                 }
             }
 
-            $liveEnabled = $startLiveLoop && $liveSlots !== [];
-            SseAsyncResultDelivery::deliverRaw($sessionId, ['type' => 'done', 'live' => $liveEnabled]);
+            $liveEnabled = $startLiveLoop && $persistentDeferredSse && $liveSlots !== [];
+            SseAsyncResultDelivery::deliverRaw($sessionId, [
+                'type' => 'done',
+                'live' => $liveEnabled,
+                'close' => !$liveEnabled,
+                'reconnect' => $liveEnabled,
+            ]);
             if ($liveEnabled) {
                 $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale);
             }
@@ -156,7 +176,7 @@ final class DeferredBlockOrchestrator
                 $received++;
                 [$slot, $data] = $item;
                 $eventId++;
-                $payload = $this->buildPayload($slot, $data);
+                $payload = $this->buildPayload($slot, $data, $persistentDeferredSse);
                 $sseData = $payload->toArray();
                 $sseData['id'] = $eventId;
 
@@ -169,7 +189,7 @@ final class DeferredBlockOrchestrator
         } else {
             foreach ($results as [$slot, $data]) {
                 $eventId++;
-                $payload = $this->buildPayload($slot, $data);
+                $payload = $this->buildPayload($slot, $data, $persistentDeferredSse);
                 $sseData = $payload->toArray();
                 $sseData['id'] = $eventId;
 
@@ -181,8 +201,13 @@ final class DeferredBlockOrchestrator
             }
         }
 
-        $liveEnabled = $startLiveLoop && $liveSlots !== [];
-        SseAsyncResultDelivery::deliverRaw($sessionId, ['type' => 'done', 'live' => $liveEnabled]);
+        $liveEnabled = $startLiveLoop && $persistentDeferredSse && $liveSlots !== [];
+        SseAsyncResultDelivery::deliverRaw($sessionId, [
+            'type' => 'done',
+            'live' => $liveEnabled,
+            'close' => !$liveEnabled,
+            'reconnect' => $liveEnabled,
+        ]);
         if ($liveEnabled) {
             $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale);
         }
@@ -294,14 +319,18 @@ final class DeferredBlockOrchestrator
         }
     }
 
-    private function buildPayload(DeferredSlotDefinition $slot, array $data): DeferredBlockPayload
+    private function buildPayload(
+        DeferredSlotDefinition $slot,
+        array $data,
+        bool $persistentDeferredSse = false,
+    ): DeferredBlockPayload
     {
         $meta = [];
         if ($slot->cacheTtl > 0) {
             $meta['cache_ttl'] = $slot->cacheTtl;
         }
         $meta['priority'] = $slot->priority;
-        if ($slot->refreshInterval > 0) {
+        if ($persistentDeferredSse && $slot->refreshInterval > 0) {
             $meta['refresh_interval'] = $slot->refreshInterval;
         }
 
@@ -345,6 +374,9 @@ final class DeferredBlockOrchestrator
     {
         if ($slot->resourceClass !== null) {
             $slotInstance = SlotResourceFactory::create($slot->resourceClass);
+            if ($pageContext !== []) {
+                $slotInstance = $slotInstance->withRenderContext($pageContext);
+            }
             $slotInstance = SlotHandlerPipeline::execute($slotInstance);
             SlotAssetCollector::collectFromSlot($slotInstance);
             return array_merge($slotInstance->getStaticContext(), $slotInstance->getRenderContext());

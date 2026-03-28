@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Handler\PayloadHandler;
 
 use Semitexa\Core\Attributes\AsPayloadHandler;
+use Semitexa\Core\Attributes\InjectAsMutable;
 use Semitexa\Core\Attributes\InjectAsReadonly;
 use Semitexa\Core\Contract\TypedHandlerInterface;
 use Semitexa\Core\Exception\NotFoundException;
@@ -20,6 +21,7 @@ final class SsrFallbackHandler implements TypedHandlerInterface
     #[InjectAsReadonly]
     protected DeferredBlockOrchestrator $orchestrator;
 
+    #[InjectAsMutable]
     protected Request $request;
 
     public function handle(SsrFallbackPayload $payload, GenericResponse $resource): GenericResponse

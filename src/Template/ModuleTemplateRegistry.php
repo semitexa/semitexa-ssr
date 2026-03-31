@@ -244,37 +244,39 @@ final class ModuleTemplateRegistry
         }
 
         // component() - new
-        if (class_exists(\Semitexa\Ssr\Component\ComponentRenderer::class)) {
-            self::$twig->addFunction(new TwigFunction(
-                'component',
-                function (string $name, array $props = [], array $slots = []) {
-                    $html = \Semitexa\Ssr\Component\ComponentRenderer::render($name, $props, $slots);
-                    return new \Twig\Markup($html, 'UTF-8');
-                },
-                ['is_safe' => ['html']]
-            ));
+        self::$twig->addFunction(new TwigFunction(
+            'component',
+            function (string $name, array $props = [], array $slots = []) {
+                $html = \Semitexa\Ssr\Component\ComponentRenderer::render($name, $props, $slots);
+                return new \Twig\Markup($html, 'UTF-8');
+            },
+            ['is_safe' => ['html']]
+        ));
 
-            // slot() - for component slots
-            self::$twig->addFunction(new TwigFunction(
-                'slot',
-                function (array $context, string $name) {
-                    $html = \Semitexa\Ssr\Component\ComponentSlotRenderer::render($name, $context);
-                    return new \Twig\Markup($html, 'UTF-8');
-                },
-                ['needs_context' => true, 'is_safe' => ['html']]
-            ));
+        // slot() - for component slots
+        self::$twig->addFunction(new TwigFunction(
+            'slot',
+            function (array $context, string $name) {
+                $html = \Semitexa\Ssr\Component\ComponentSlotRenderer::render($name, $context);
+                return new \Twig\Markup($html, 'UTF-8');
+            },
+            ['needs_context' => true, 'is_safe' => ['html']]
+        ));
 
-            self::$twig->addFunction(new TwigFunction(
-                'component_event_attrs',
-                function (array $context, string $trigger, array $payload = []) {
-                    return new \Twig\Markup(
-                        \Semitexa\Ssr\Component\ComponentEventBridge::renderTriggerAttributes($context, $trigger, $payload),
-                        'UTF-8'
-                    );
-                },
-                ['needs_context' => true, 'is_safe' => ['html']]
-            ));
-        }
+        self::$twig->addFunction(new TwigFunction(
+            'component_event_attrs',
+            /**
+             * @param array<array-key, mixed> $context
+             * @param array<array-key, mixed> $payload
+             */
+            function (array $context, string $trigger, array $payload = []) {
+                return new \Twig\Markup(
+                    \Semitexa\Ssr\Component\ComponentEventBridge::renderTriggerAttributes($context, $trigger, $payload),
+                    'UTF-8'
+                );
+            },
+            ['needs_context' => true, 'is_safe' => ['html']]
+        ));
 
         // SEO functions - page_title, meta
         if (class_exists(\Semitexa\Ssr\Seo\SeoMeta::class)) {

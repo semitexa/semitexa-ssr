@@ -106,6 +106,9 @@ final class ComponentRegistry
         return self::$components;
     }
 
+    /**
+     * @param array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string} $component
+     */
     public static function register(array $component): void
     {
         self::$components[$component['name']] = $component;

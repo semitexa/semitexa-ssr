@@ -11,6 +11,10 @@ final class ComponentRenderer
 {
     private static array $renderedSlots = [];
 
+    /**
+     * @param array<array-key, mixed> $props
+     * @param array<array-key, mixed> $slots
+     */
     public static function render(string $name, array $props = [], array $slots = []): string
     {
         $component = ComponentRegistry::get($name);
@@ -19,6 +23,7 @@ final class ComponentRenderer
             return "<!-- Component '{$name}' not found -->";
         }
 
+        /** @var array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string} $component */
         $previousSlots = self::$renderedSlots;
         self::$renderedSlots[$name] = $slots;
 
@@ -35,17 +40,15 @@ final class ComponentRenderer
                 $manifest = ComponentEventBridge::buildManifest($component, $componentId);
             }
 
-            if (class_exists(AssetCollectorStore::class)) {
-                $collector = AssetCollectorStore::get();
+            $collector = AssetCollectorStore::get();
 
-                if (($component['event'] ?? null) !== null) {
-                    $collector->require('ssr:js:component-events');
-                }
+            if (($component['event'] ?? null) !== null) {
+                $collector->require('ssr:js:component-events');
+            }
 
-                if (($component['script'] ?? null) !== null) {
-                    $collector->require('ssr:js:component-runtime');
-                    $collector->require((string) $component['script']);
-                }
+            if (($component['script'] ?? null) !== null) {
+                $collector->require('ssr:js:component-runtime');
+                $collector->require($component['script']);
             }
 
             $context = array_merge($props, [
@@ -73,9 +76,11 @@ final class ComponentRenderer
     {
         return preg_replace_callback(
             '/\{\{\s*component\(\s*["\']([^"\']+)["\']\s*(?:,\s*(\{[^\}]*\}))?\s*\)\s*\}\}/',
-            function ($matches) {
+            static function (array $matches): string {
                 $name = $matches[1];
                 $props = isset($matches[2]) ? json_decode($matches[2], true) : [];
+                $props = is_array($props) ? $props : [];
+
                 return self::render($name, $props, []);
             },
             $html

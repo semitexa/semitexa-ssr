@@ -10,6 +10,7 @@ use Semitexa\Core\Server\SwooleBootstrap;
 final class ComponentEventBridge
 {
     public const ENDPOINT_PATH = '/__semitexa_component_event';
+    public const DEFAULT_MANIFEST_TTL_SECONDS = 300;
 
     /** @var list<string> */
     private const NATIVE_TRIGGERS = ['click', 'change', 'input', 'submit', 'hover'];
@@ -51,6 +52,20 @@ final class ComponentEventBridge
         return $normalized;
     }
 
+    /**
+     * @param array{name: string, event: ?string, triggers: list<string>, script?: ?string} $component
+     * @return array{
+     *     componentId: string,
+     *     componentName: string,
+     *     eventClass: string,
+     *     triggers: list<string>,
+     *     endpoint: string,
+     *     pagePath: string,
+     *     issuedAt: int,
+     *     sessionBinding: string,
+     *     signature: string
+     * }
+     */
     public static function buildManifest(array $component, ?string $componentId = null): array
     {
         $pagePath = self::resolveCurrentPagePath();
@@ -59,10 +74,11 @@ final class ComponentEventBridge
             'componentId' => $componentId ?? ('cmp_' . bin2hex(random_bytes(8))),
             'componentName' => (string) $component['name'],
             'eventClass' => (string) $component['event'],
-            'triggers' => self::normalizeTriggers((array) ($component['triggers'] ?? [])),
+            'triggers' => self::normalizeTriggers($component['triggers']),
             'endpoint' => self::ENDPOINT_PATH,
             'pagePath' => $pagePath,
             'issuedAt' => time(),
+            'sessionBinding' => self::resolveCurrentSessionBinding(),
         ];
 
         $manifest['signature'] = self::sign($manifest);
@@ -70,10 +86,33 @@ final class ComponentEventBridge
         return $manifest;
     }
 
+    /**
+     * @param array{
+     *     componentId: string,
+     *     componentName: string,
+     *     eventClass: string,
+     *     triggers: list<string>,
+     *     endpoint: string,
+     *     pagePath: string,
+     *     issuedAt: int,
+     *     sessionBinding: string,
+     *     signature?: string
+     * } $manifest
+     */
     public static function verifyManifest(array $manifest): bool
     {
-        $signature = (string) ($manifest['signature'] ?? '');
-        if ($signature === '') {
+        if (!isset($manifest['signature']) || $manifest['signature'] === '') {
+            return false;
+        }
+
+        $signature = $manifest['signature'];
+
+        $issuedAt = $manifest['issuedAt'];
+        if ($issuedAt <= 0) {
+            return false;
+        }
+
+        if ((time() - $issuedAt) > self::resolveManifestTtlSeconds()) {
             return false;
         }
 
@@ -83,6 +122,26 @@ final class ComponentEventBridge
         return hash_equals($signature, self::sign($unsigned));
     }
 
+    public static function matchesCurrentSessionBinding(?string $sessionBinding): bool
+    {
+        $expected = self::resolveCurrentSessionBinding();
+        $provided = trim((string) $sessionBinding);
+
+        if ($expected === '' && $provided === '') {
+            return true;
+        }
+
+        if ($expected === '' || $provided === '') {
+            return false;
+        }
+
+        return hash_equals($expected, $provided);
+    }
+
+    /**
+     * @param array<array-key, mixed> $context
+     * @param array<array-key, mixed> $payload
+     */
     public static function renderTriggerAttributes(array $context, string $trigger, array $payload = []): string
     {
         $component = $context['_component'] ?? null;
@@ -90,13 +149,14 @@ final class ComponentEventBridge
             return '';
         }
 
+        /** @var array{name: string, event: string, triggers: list<string>, script?: ?string} $component */
         $trigger = strtolower(trim($trigger));
-        $allowedTriggers = self::normalizeTriggers((array) ($component['triggers'] ?? []));
+        $allowedTriggers = self::normalizeTriggers($component['triggers']);
 
         if (!in_array($trigger, $allowedTriggers, true)) {
             throw new \LogicException(sprintf(
                 'Component "%s" does not declare trigger "%s".',
-                (string) ($component['name'] ?? 'unknown'),
+                $component['name'],
                 $trigger,
             ));
         }
@@ -110,6 +170,20 @@ final class ComponentEventBridge
         );
     }
 
+    /**
+     * @param array{name: string, event: ?string, triggers: list<string>, script?: ?string} $component
+     * @param array{
+     *     componentId: string,
+     *     componentName: string,
+     *     eventClass: string,
+     *     triggers: list<string>,
+     *     endpoint: string,
+     *     pagePath: string,
+     *     issuedAt: int,
+     *     sessionBinding: string,
+     *     signature: string
+     * }|null $manifest
+     */
     public static function annotateRoot(string $html, array $component, string $componentId, ?array $manifest = null): string
     {
         $attributes = self::buildRootAttributes($component, $componentId, $manifest);
@@ -142,6 +216,20 @@ final class ComponentEventBridge
         return false;
     }
 
+    /**
+     * @param array{name: string, event: ?string, triggers: list<string>, script?: ?string} $component
+     * @param array{
+     *     componentId: string,
+     *     componentName: string,
+     *     eventClass: string,
+     *     triggers: list<string>,
+     *     endpoint: string,
+     *     pagePath: string,
+     *     issuedAt: int,
+     *     sessionBinding: string,
+     *     signature: string
+     * }|null $manifest
+     */
     private static function buildRootAttributes(array $component, string $componentId, ?array $manifest = null): string
     {
         $attributes = [
@@ -161,6 +249,7 @@ final class ComponentEventBridge
             $attributes[] = 'data-semitexa-component-event-endpoint="' . self::escapeAttribute((string) $manifest['endpoint']) . '"';
             $attributes[] = 'data-semitexa-component-page="' . self::escapeAttribute((string) $manifest['pagePath']) . '"';
             $attributes[] = 'data-semitexa-component-issued-at="' . self::escapeAttribute((string) $manifest['issuedAt']) . '"';
+            $attributes[] = 'data-semitexa-component-session-binding="' . self::escapeAttribute($manifest['sessionBinding']) . '"';
             $attributes[] = 'data-semitexa-component-signature="' . self::escapeAttribute((string) $manifest['signature']) . '"';
         }
 
@@ -170,12 +259,26 @@ final class ComponentEventBridge
     private static function resolveCurrentPagePath(): string
     {
         $ctx = SwooleBootstrap::getCurrentSwooleRequestResponse();
-        $uri = $ctx !== null ? (string) ($ctx[0]->server['request_uri'] ?? '/') : '/';
+        $server = $ctx !== null && is_array($ctx[0]->server ?? null) ? $ctx[0]->server : [];
+        $uri = isset($server['request_uri']) && is_string($server['request_uri']) ? $server['request_uri'] : '/';
         $path = parse_url($uri, PHP_URL_PATH);
 
         return is_string($path) && $path !== '' ? $path : '/';
     }
 
+    /**
+     * @param array{
+     *     componentId: string,
+     *     componentName: string,
+     *     eventClass: string,
+     *     triggers: list<string>,
+     *     endpoint: string,
+     *     pagePath: string,
+     *     issuedAt: int,
+     *     sessionBinding: string,
+     *     signature?: string
+     * } $manifest
+     */
     private static function sign(array $manifest): string
     {
         $payload = self::canonicalize($manifest);
@@ -191,6 +294,11 @@ final class ComponentEventBridge
             return $explicit;
         }
 
+        $appEnv = strtolower((string) Environment::getEnvValue('APP_ENV', 'prod'));
+        if (!in_array($appEnv, ['dev', 'test'], true)) {
+            throw new \LogicException('APP_SECRET must be configured for component event signing outside dev/test environments.');
+        }
+
         return hash(
             'sha256',
             implode('|', [
@@ -199,6 +307,30 @@ final class ComponentEventBridge
                 (string) Environment::getEnvValue('APP_PORT', '8000'),
             ])
         );
+    }
+
+    private static function resolveManifestTtlSeconds(): int
+    {
+        $ttl = (int) (Environment::getEnvValue('COMPONENT_EVENT_MANIFEST_TTL_SECONDS') ?? (string) self::DEFAULT_MANIFEST_TTL_SECONDS);
+
+        return $ttl > 0 ? $ttl : self::DEFAULT_MANIFEST_TTL_SECONDS;
+    }
+
+    private static function resolveCurrentSessionBinding(): string
+    {
+        $ctx = SwooleBootstrap::getCurrentSwooleRequestResponse();
+        if ($ctx === null) {
+            return '';
+        }
+
+        $cookieName = Environment::getEnvValue('SESSION_COOKIE_NAME') ?? 'semitexa_session';
+        $cookies = is_array($ctx[0]->cookie ?? null) ? $ctx[0]->cookie : [];
+        $sessionId = isset($cookies[$cookieName]) && is_string($cookies[$cookieName]) ? trim($cookies[$cookieName]) : '';
+        if ($sessionId === '') {
+            return '';
+        }
+
+        return hash_hmac('sha256', $sessionId, self::resolveSecret());
     }
 
     private static function canonicalize(mixed $value): mixed

@@ -8,7 +8,9 @@ use Semitexa\Core\Attributes\AsPayloadHandler;
 use Semitexa\Core\Attributes\InjectAsReadonly;
 use Semitexa\Core\Contract\TypedHandlerInterface;
 use Semitexa\Core\Event\EventDispatcherInterface;
-use Semitexa\Core\Exception\DomainException;
+use Semitexa\Core\Exception\AccessDeniedException;
+use Semitexa\Core\Exception\NotFoundException;
+use Semitexa\Core\Exception\ValidationException;
 use Semitexa\Core\Http\Response\GenericResponse;
 use Semitexa\Core\Server\SwooleBootstrap;
 use Semitexa\Ssr\Application\Payload\Request\ComponentEventDispatchPayload;
@@ -24,36 +26,46 @@ final class ComponentEventDispatchHandler implements TypedHandlerInterface
     public function handle(ComponentEventDispatchPayload $payload, GenericResponse $resource): GenericResponse
     {
         if (!$this->isSameOriginRequest()) {
-            throw new DomainException('Cross-origin component event dispatch is not allowed.');
+            throw new AccessDeniedException('Cross-origin component event dispatch is not allowed.');
         }
 
         $component = ComponentRegistry::get($payload->getComponentName());
         if ($component === null || ($component['event'] ?? null) === null) {
-            throw new DomainException('Component event bridge metadata not found.');
+            throw new NotFoundException('Component event bridge metadata', $payload->getComponentName());
         }
 
+        /** @var array{event: string, triggers: list<string>} $component */
         $frontendEvent = strtolower(trim($payload->getFrontendEvent()));
-        if (!in_array($frontendEvent, (array) ($component['triggers'] ?? []), true)) {
-            throw new DomainException('Frontend trigger is not declared for this component.');
+        if (!in_array($frontendEvent, $component['triggers'], true)) {
+            throw new ValidationException([
+                'frontendEvent' => ['Frontend trigger is not declared for this component.'],
+            ]);
         }
 
-        if ((string) $component['event'] !== $payload->getEventClass()) {
-            throw new DomainException('Posted event class does not match component contract.');
+        if ($component['event'] !== $payload->getEventClass()) {
+            throw new ValidationException([
+                'eventClass' => ['Posted event class does not match component contract.'],
+            ]);
         }
 
         $manifest = [
             'componentId' => $payload->getComponentId(),
             'componentName' => $payload->getComponentName(),
             'eventClass' => $payload->getEventClass(),
-            'triggers' => (array) ($component['triggers'] ?? []),
+            'triggers' => $component['triggers'],
             'endpoint' => ComponentEventBridge::ENDPOINT_PATH,
             'pagePath' => $payload->getPagePath(),
             'issuedAt' => $payload->getIssuedAt(),
+            'sessionBinding' => $payload->getSessionBinding(),
             'signature' => $payload->getSignature(),
         ];
 
         if (!ComponentEventBridge::verifyManifest($manifest)) {
-            throw new DomainException('Component event signature validation failed.');
+            throw new AccessDeniedException('Component event signature validation failed.');
+        }
+
+        if (!ComponentEventBridge::matchesCurrentSessionBinding($payload->getSessionBinding())) {
+            throw new AccessDeniedException('Component event session validation failed.');
         }
 
         $eventPayload = array_merge(
@@ -95,31 +107,102 @@ final class ComponentEventDispatchHandler implements TypedHandlerInterface
         }
 
         $request = $ctx[0];
-        $host = trim((string) ($request->header['host'] ?? ''));
+        /** @var array<string, mixed> $headers */
+        $headers = is_array($request->header ?? null) ? $request->header : [];
+        $host = $this->readHeader($headers, 'host');
         if ($host === '') {
-            return true;
+            return false;
         }
 
+        $expectedOrigin = $this->parseAuthority($host, false);
+        if ($expectedOrigin === null) {
+            return false;
+        }
+
+        $checkedAnyOriginHeader = false;
+
         foreach (['origin', 'referer'] as $headerName) {
-            $value = trim((string) ($request->header[$headerName] ?? ''));
+            $value = $this->readHeader($headers, $headerName);
             if ($value === '') {
                 continue;
             }
 
-            $requestHost = parse_url($value, PHP_URL_HOST);
-            if (!is_string($requestHost) || $requestHost === '') {
-                continue;
+            $checkedAnyOriginHeader = true;
+
+            $requestOrigin = $this->parseAuthority($value, true);
+            if ($requestOrigin === null) {
+                return false;
             }
 
-            $requestPort = parse_url($value, PHP_URL_PORT);
-            $normalizedHost = strtolower($host);
-            $normalizedRequestHost = strtolower($requestHost . ($requestPort !== null ? ':' . $requestPort : ''));
-
-            if ($normalizedRequestHost !== $normalizedHost && strtolower($requestHost) !== $normalizedHost) {
+            if (!$this->authoritiesMatch($expectedOrigin, $requestOrigin)) {
                 return false;
             }
         }
 
-        return true;
+        return $checkedAnyOriginHeader;
+    }
+
+    /**
+     * @param array<string, mixed> $headers
+     */
+    private function readHeader(array $headers, string $name): string
+    {
+        $value = $headers[$name] ?? '';
+
+        return is_string($value) ? trim($value) : '';
+    }
+
+    /**
+     * @return array{host: string, port: ?int, scheme: ?string}|null
+     */
+    private function parseAuthority(string $value, bool $isUrl): ?array
+    {
+        $input = trim($value);
+        if ($input === '') {
+            return null;
+        }
+
+        if (!$isUrl) {
+            $input = 'http://' . $input;
+        }
+
+        $host = parse_url($input, PHP_URL_HOST);
+        if (!is_string($host) || $host === '') {
+            return null;
+        }
+
+        $scheme = parse_url($input, PHP_URL_SCHEME);
+        $port = parse_url($input, PHP_URL_PORT);
+
+        return [
+            'host' => strtolower($host),
+            'port' => is_int($port) ? $port : null,
+            'scheme' => is_string($scheme) && $scheme !== '' ? strtolower($scheme) : null,
+        ];
+    }
+
+    /**
+     * @param array{host: string, port: ?int, scheme: ?string} $expected
+     * @param array{host: string, port: ?int, scheme: ?string} $actual
+     */
+    private function authoritiesMatch(array $expected, array $actual): bool
+    {
+        if ($expected['host'] !== $actual['host']) {
+            return false;
+        }
+
+        $expectedPort = $expected['port'] ?? $this->defaultPortForScheme($actual['scheme']);
+        $actualPort = $actual['port'] ?? $this->defaultPortForScheme($actual['scheme']);
+
+        return $expectedPort === $actualPort;
+    }
+
+    private function defaultPortForScheme(?string $scheme): ?int
+    {
+        return match ($scheme) {
+            'http' => 80,
+            'https' => 443,
+            default => null,
+        };
     }
 }

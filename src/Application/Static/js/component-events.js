@@ -101,10 +101,15 @@
             frontend_event: trigger,
             signature: componentRoot.getAttribute('data-semitexa-component-signature') || '',
             page_path: componentRoot.getAttribute('data-semitexa-component-page') || window.location.pathname,
+            session_binding: componentRoot.getAttribute('data-semitexa-component-session-binding') || '',
             issued_at: parseInt(componentRoot.getAttribute('data-semitexa-component-issued-at') || '0', 10) || 0,
             declared_payload: parseJson(target.getAttribute('data-semitexa-component-payload'), {}),
             interaction: buildInteraction(target, event, trigger)
         };
+
+        if (trigger === 'submit' && event && typeof event.preventDefault === 'function') {
+            event.preventDefault();
+        }
 
         fetch(componentRoot.getAttribute('data-semitexa-component-event-endpoint') || '/__semitexa_component_event', {
             method: 'POST',

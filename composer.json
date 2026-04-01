@@ -1,7 +1,7 @@
 {
     "name": "semitexa/ssr",
     "description": "Semitexa SSR - Twig-based server rendering with components, layouts, assets, and deferred slots",
-    "version": "1.0.30",
+    "version": "v1.0.32",
     "type": "semitexa-module",
     "license": "MIT",
     "authors": [

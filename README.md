@@ -1,4 +1,4 @@
-# semitexa/ssr
+# Semitexa SSR
 
 Twig-based server-side rendering with components, layout slots, theme overrides, and locale-aware URL generation.
 

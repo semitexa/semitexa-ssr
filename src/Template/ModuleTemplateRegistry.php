@@ -59,6 +59,7 @@ final class ModuleTemplateRegistry
             $templatesDir = $moduleDir . '/Application/View/templates';
             if (is_dir($templatesDir)) {
                 self::$modulePaths[$module] = [
+                    'aliases' => [$module],
                     'path' => realpath($templatesDir) ?: $templatesDir,
                     'type' => 'standard',
                 ];
@@ -68,6 +69,7 @@ final class ModuleTemplateRegistry
             $layoutDir = $moduleDir . '/Layout';
             if (is_dir($layoutDir)) {
                 self::$modulePaths[$module] = [
+                    'aliases' => [$module],
                     'path' => realpath($layoutDir) ?: $layoutDir,
                     'type' => 'legacy',
                 ];
@@ -80,6 +82,7 @@ final class ModuleTemplateRegistry
             foreach ($templatePaths as $path) {
                 if (is_dir($path)) {
                     self::$modulePaths[$module['name']] = [
+                        'aliases' => self::aliasesForRegisteredModule($module),
                         'path' => $path,
                         'type' => 'package',
                     ];
@@ -128,10 +131,14 @@ final class ModuleTemplateRegistry
         // Register both theme and module paths per namespace — theme first, module as fallback.
         // Twig searches registered paths in registration order, so theme overrides are transparent.
         foreach (self::$modulePaths as $module => $config) {
-            if (isset(self::$themePaths[$module])) {
-                $loader->addPath(self::$themePaths[$module], self::aliasForModule($module));
+            $aliases = self::normalizeAliases($config['aliases'] ?? [$module], $module);
+
+            foreach ($aliases as $alias) {
+                if (isset(self::$themePaths[$module])) {
+                    $loader->addPath(self::$themePaths[$module], self::aliasForModule($alias));
+                }
+                $loader->addPath($config['path'], self::aliasForModule($alias));
             }
-            $loader->addPath($config['path'], self::aliasForModule($module));
         }
 
         self::$loader = $loader;
@@ -161,6 +168,48 @@ final class ModuleTemplateRegistry
     private static function aliasForModule(string $module): string
     {
         return 'project-layouts-' . $module;
+    }
+
+    /**
+     * @param array{name?: mixed, aliases?: mixed} $module
+     * @return list<string>
+     */
+    private static function aliasesForRegisteredModule(array $module): array
+    {
+        $name = is_string($module['name'] ?? null) ? trim($module['name']) : '';
+        $aliases = is_array($module['aliases'] ?? null) ? $module['aliases'] : [];
+
+        return self::normalizeAliases($aliases, $name);
+    }
+
+    /**
+     * @param list<mixed> $aliases
+     * @return list<string>
+     */
+    private static function normalizeAliases(array $aliases, string $name): array
+    {
+        $normalized = [];
+
+        foreach ($aliases as $alias) {
+            if (!is_string($alias)) {
+                continue;
+            }
+
+            $alias = trim($alias);
+            if ($alias !== '') {
+                $normalized[] = $alias;
+            }
+        }
+
+        if ($name !== '') {
+            $normalized[] = $name;
+
+            if (!str_starts_with($name, 'semitexa-')) {
+                $normalized[] = 'semitexa-' . $name;
+            }
+        }
+
+        return array_values(array_unique($normalized));
     }
 
     private static function getWritableCacheDir(): string

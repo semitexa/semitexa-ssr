@@ -11,11 +11,11 @@ use Semitexa\Core\Http\Response\GenericResponse;
 use Semitexa\Core\Request;
 use Semitexa\Core\Tenant\TenantContextInterface;
 use Semitexa\Core\Util\ProjectRoot;
-use Semitexa\Ssr\Application\Payload\Request\RobotsTxtPayload;
-use Semitexa\Ssr\Seo\RobotsTxtRenderer;
+use Semitexa\Ssr\Application\Payload\Request\LlmsTxtPayload;
+use Semitexa\Ssr\Seo\LlmsTxtRenderer;
 
-#[AsPayloadHandler(payload: RobotsTxtPayload::class, resource: GenericResponse::class)]
-final class RobotsTxtHandler implements TypedHandlerInterface
+#[AsPayloadHandler(payload: LlmsTxtPayload::class, resource: GenericResponse::class)]
+final class LlmsTxtHandler implements TypedHandlerInterface
 {
     #[InjectAsMutable]
     protected Request $request;
@@ -23,7 +23,7 @@ final class RobotsTxtHandler implements TypedHandlerInterface
     #[InjectAsMutable]
     protected TenantContextInterface $tenantContext;
 
-    public function handle(RobotsTxtPayload $payload, GenericResponse $resource): GenericResponse
+    public function handle(LlmsTxtPayload $payload, GenericResponse $resource): GenericResponse
     {
         return $resource
             ->setContent($this->resolveContent())
@@ -34,8 +34,8 @@ final class RobotsTxtHandler implements TypedHandlerInterface
     {
         $projectRoot = ProjectRoot::get();
 
-        foreach ([$projectRoot . '/robots.txt', $projectRoot . '/public/robots.txt'] as $candidate) {
-            if (!is_file($candidate)) {
+        foreach ([$projectRoot . '/llms.txt', $projectRoot . '/public/llms.txt'] as $candidate) {
+            if (!is_file($candidate) || !is_readable($candidate)) {
                 continue;
             }
 
@@ -45,6 +45,6 @@ final class RobotsTxtHandler implements TypedHandlerInterface
             }
         }
 
-        return RobotsTxtRenderer::render($this->request, $this->tenantContext);
+        return LlmsTxtRenderer::render($this->request, $this->tenantContext);
     }
 }

@@ -5,8 +5,11 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Handler\PayloadHandler;
 
 use Semitexa\Core\Attributes\AsPayloadHandler;
+use Semitexa\Core\Attributes\InjectAsMutable;
 use Semitexa\Core\Contract\TypedHandlerInterface;
 use Semitexa\Core\Http\Response\GenericResponse;
+use Semitexa\Core\Request;
+use Semitexa\Core\Tenant\TenantContextInterface;
 use Semitexa\Core\Util\ProjectRoot;
 use Semitexa\Ssr\Application\Payload\Request\SitemapJsonPayload;
 use Semitexa\Ssr\Seo\AiSitemapJsonRenderer;
@@ -14,6 +17,12 @@ use Semitexa\Ssr\Seo\AiSitemapJsonRenderer;
 #[AsPayloadHandler(payload: SitemapJsonPayload::class, resource: GenericResponse::class)]
 final class SitemapJsonHandler implements TypedHandlerInterface
 {
+    #[InjectAsMutable]
+    protected Request $request;
+
+    #[InjectAsMutable]
+    protected TenantContextInterface $tenantContext;
+
     public function handle(SitemapJsonPayload $payload, GenericResponse $resource): GenericResponse
     {
         return $resource
@@ -36,6 +45,6 @@ final class SitemapJsonHandler implements TypedHandlerInterface
             }
         }
 
-        return AiSitemapJsonRenderer::render();
+        return AiSitemapJsonRenderer::render($this->request, $this->tenantContext);
     }
 }

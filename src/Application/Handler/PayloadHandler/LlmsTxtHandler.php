@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Handler\PayloadHandler;
 
 use Semitexa\Core\Attributes\AsPayloadHandler;
-use Semitexa\Core\Attributes\InjectAsReadonly;
+use Semitexa\Core\Attributes\InjectAsMutable;
 use Semitexa\Core\Contract\TypedHandlerInterface;
 use Semitexa\Core\Http\Response\GenericResponse;
 use Semitexa\Core\Request;
@@ -17,10 +17,10 @@ use Semitexa\Ssr\Seo\LlmsTxtRenderer;
 #[AsPayloadHandler(payload: LlmsTxtPayload::class, resource: GenericResponse::class)]
 final class LlmsTxtHandler implements TypedHandlerInterface
 {
-    #[InjectAsReadonly]
+    #[InjectAsMutable]
     protected Request $request;
 
-    #[InjectAsReadonly]
+    #[InjectAsMutable]
     protected TenantContextInterface $tenantContext;
 
     public function handle(LlmsTxtPayload $payload, GenericResponse $resource): GenericResponse

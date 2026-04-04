@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Http\Response;
 
-use Semitexa\Core\Attributes\AsResource;
-use Semitexa\Core\Http\Response\GenericResponse;
-use Semitexa\Core\Response as CoreResponse;
+use Semitexa\Core\Attribute\AsResource;
+use Semitexa\Core\Http\Response\ResourceResponse;
+use Semitexa\Core\HttpResponse as CoreResponse;
 use Semitexa\Core\Server\SwooleBootstrap;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Semitexa\Ssr\Context\IsomorphicContextStore;
@@ -18,7 +18,7 @@ use Semitexa\Ssr\Layout\LayoutSlotRegistry;
 use Semitexa\Ssr\Seo\SeoMeta;
 use Semitexa\Ssr\Template\ModuleTemplateRegistry;
 
-class HtmlResponse extends GenericResponse
+class HtmlResponse extends ResourceResponse
 {
     private ?string $declaredTemplate = null;
     private static array $attributeCache = [];
@@ -209,7 +209,7 @@ class HtmlResponse extends GenericResponse
         $cacheKey = $class;
         if (!array_key_exists($cacheKey, self::$attributeCache)) {
             // Walk up the parent chain to find #[AsResource].
-            // This is necessary when PayloadDtoFactory creates a dynamic wrapper class
+            // This is necessary when PayloadFactory creates a dynamic wrapper class
             // (via eval) that extends the real Resource subclass — the wrapper has no
             // attributes of its own, but its parent does.
             $ref = new \ReflectionClass($class);

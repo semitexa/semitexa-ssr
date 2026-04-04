@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Async;
 
-use Semitexa\Core\Attributes\AsEventListener;
-use Semitexa\Core\Events\HandlerCompleted;
+use Semitexa\Core\Attribute\AsEventListener;
+use Semitexa\Core\Event\HandlerCompleted;
 use Semitexa\Core\Event\EventExecution;
 
 #[AsEventListener(event: HandlerCompleted::class, execution: EventExecution::Async)]

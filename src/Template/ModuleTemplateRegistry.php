@@ -6,7 +6,7 @@ namespace Semitexa\Ssr\Template;
 
 use Semitexa\Core\Environment;
 use Semitexa\Core\ModuleRegistry;
-use Semitexa\Core\Util\ProjectRoot;
+use Semitexa\Core\Support\ProjectRoot;
 use Twig\Environment as TwigEnvironment;
 use Twig\Loader\FilesystemLoader;
 use Twig\TwigFunction;
@@ -19,6 +19,12 @@ final class ModuleTemplateRegistry
     private static array $modulePaths = [];
     private static array $themePaths = [];
     private static bool $initialized = false;
+    private static ?ModuleRegistry $moduleRegistry = null;
+
+    public static function setModuleRegistry(ModuleRegistry $moduleRegistry): void
+    {
+        self::$moduleRegistry = $moduleRegistry;
+    }
 
     public static function initialize(): void
     {
@@ -76,7 +82,11 @@ final class ModuleTemplateRegistry
             }
         }
 
-        $modules = ModuleRegistry::getModules();
+        if (self::$moduleRegistry === null) {
+            throw new \LogicException('ModuleTemplateRegistry requires ModuleRegistry instance. Call setModuleRegistry() first.');
+        }
+
+        $modules = self::$moduleRegistry->getModules();
         foreach ($modules as $module) {
             if (!is_array($module)) {
                 continue;

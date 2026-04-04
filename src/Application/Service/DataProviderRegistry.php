@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service;
 
 use Psr\Container\ContainerInterface;
-use Semitexa\Core\Attributes\AsService;
-use Semitexa\Core\Attributes\InjectAsReadonly;
+use Semitexa\Core\Attribute\AsService;
+use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Ssr\Domain\Contract\DataProviderInterface;
 
 #[AsService]

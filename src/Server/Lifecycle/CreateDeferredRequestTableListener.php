@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Server\Lifecycle;
 
-use Semitexa\Core\Attributes\AsServerLifecycleListener;
+use Semitexa\Core\Attribute\AsServerLifecycleListener;
 use Semitexa\Core\Server\Lifecycle\ServerLifecycleContext;
 use Semitexa\Core\Server\Lifecycle\ServerLifecycleListenerInterface;
 use Semitexa\Core\Server\Lifecycle\ServerLifecyclePhase;

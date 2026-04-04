@@ -4,12 +4,12 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Handler\PayloadHandler;
 
-use Semitexa\Core\Attributes\AsPayloadHandler;
-use Semitexa\Core\Attributes\InjectAsMutable;
-use Semitexa\Core\Attributes\InjectAsReadonly;
+use Semitexa\Core\Attribute\AsPayloadHandler;
+use Semitexa\Core\Attribute\InjectAsMutable;
+use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Contract\TypedHandlerInterface;
 use Semitexa\Core\Exception\NotFoundException;
-use Semitexa\Core\Http\Response\GenericResponse;
+use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Request;
 use Semitexa\Ssr\Application\Payload\Request\SsrLocaleSwitchPayload;
 use Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator;
@@ -17,7 +17,7 @@ use Semitexa\Ssr\Async\AsyncResourceSseServer;
 use Semitexa\Ssr\Isomorphic\DeferredRequestRegistry;
 use Swoole\Coroutine;
 
-#[AsPayloadHandler(payload: SsrLocaleSwitchPayload::class, resource: GenericResponse::class)]
+#[AsPayloadHandler(payload: SsrLocaleSwitchPayload::class, resource: ResourceResponse::class)]
 final class SsrLocaleSwitchHandler implements TypedHandlerInterface
 {
     #[InjectAsReadonly]
@@ -26,7 +26,7 @@ final class SsrLocaleSwitchHandler implements TypedHandlerInterface
     #[InjectAsMutable]
     protected Request $request;
 
-    public function handle(SsrLocaleSwitchPayload $payload, GenericResponse $resource): GenericResponse
+    public function handle(SsrLocaleSwitchPayload $payload, ResourceResponse $resource): ResourceResponse
     {
         $locale = trim($payload->getLocale());
         if ($locale === '') {

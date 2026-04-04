@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Component;
 
-use Semitexa\Core\Attributes\AsEvent;
+use Semitexa\Core\Attribute\AsEvent;
 use Semitexa\Ssr\Attributes\AsComponent;
 use Semitexa\Ssr\Asset\AssetEntry;
 use Semitexa\Core\Discovery\ClassDiscovery;
@@ -14,6 +14,12 @@ final class ComponentRegistry
     /** @var array<string, array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string}> */
     private static array $components = [];
     private static bool $initialized = false;
+    private static ?ClassDiscovery $classDiscovery = null;
+
+    public static function setClassDiscovery(ClassDiscovery $classDiscovery): void
+    {
+        self::$classDiscovery = $classDiscovery;
+    }
 
     public static function initialize(): void
     {
@@ -21,7 +27,11 @@ final class ComponentRegistry
             return;
         }
 
-        $componentClasses = ClassDiscovery::findClassesWithAttribute(AsComponent::class);
+        if (self::$classDiscovery === null) {
+            throw new \LogicException('ComponentRegistry requires ClassDiscovery instance. Call setClassDiscovery() first.');
+        }
+
+        $componentClasses = self::$classDiscovery->findClassesWithAttribute(AsComponent::class);
 
         foreach ($componentClasses as $class) {
             $reflection = new \ReflectionClass($class);

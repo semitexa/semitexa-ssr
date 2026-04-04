@@ -6,7 +6,7 @@ namespace Semitexa\Ssr\Asset;
 
 use Semitexa\Core\Environment;
 use Semitexa\Core\ModuleRegistry;
-use Semitexa\Core\Util\ProjectRoot;
+use Semitexa\Core\Support\ProjectRoot;
 
 /**
  * Maps module aliases to their Application/Static/ directories for asset serving.
@@ -36,6 +36,12 @@ class ModuleAssetRegistry
     private static array $themeMap = [];
 
     private static bool $initialized = false;
+    private static ?ModuleRegistry $moduleRegistry = null;
+
+    public static function setModuleRegistry(ModuleRegistry $moduleRegistry): void
+    {
+        self::$moduleRegistry = $moduleRegistry;
+    }
 
     public static function initialize(): void
     {
@@ -43,12 +49,14 @@ class ModuleAssetRegistry
             return;
         }
 
-        ModuleRegistry::initialize();
+        if (self::$moduleRegistry === null) {
+            throw new \LogicException('ModuleAssetRegistry requires ModuleRegistry instance. Call setModuleRegistry() first.');
+        }
 
         $activeTheme = self::resolveActiveTheme();
         $themeRoot   = $activeTheme !== '' ? ProjectRoot::get() . '/src/theme/' . $activeTheme : null;
 
-        foreach (ModuleRegistry::getModules() as $module) {
+        foreach (self::$moduleRegistry->getModules() as $module) {
             $modulePath = $module['path'];
 
             // Locate Application/Static/ — check src/ first (PSR-4 packages), then bare (local modules)

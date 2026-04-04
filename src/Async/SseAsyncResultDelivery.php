@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Async;
 
-use Semitexa\Core\Attributes\SatisfiesServiceContract;
+use Semitexa\Core\Attribute\SatisfiesServiceContract;
 use Semitexa\Core\Contract\AsyncResultDeliveryInterface;
 use Semitexa\Ssr\Domain\Model\DeferredBlockPayload;
 

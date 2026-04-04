@@ -10,9 +10,20 @@ use Semitexa\Locale\Context\LocaleContextStore;
 
 final class UrlGenerator
 {
+    private static ?AttributeDiscovery $attributeDiscovery = null;
+
+    public static function setAttributeDiscovery(AttributeDiscovery $attributeDiscovery): void
+    {
+        self::$attributeDiscovery = $attributeDiscovery;
+    }
+
     public static function to(string $routeName, array $params = []): string
     {
-        $route = AttributeDiscovery::findRouteByName($routeName);
+        if (self::$attributeDiscovery === null) {
+            throw new \LogicException('UrlGenerator requires AttributeDiscovery instance. Call setAttributeDiscovery() first.');
+        }
+
+        $route = self::$attributeDiscovery->findRouteByName($routeName);
 
         if ($route === null) {
             $route = self::findByPath($routeName);
@@ -69,6 +80,6 @@ final class UrlGenerator
 
     private static function findByPath(string $path): ?array
     {
-        return AttributeDiscovery::findRoute($path, 'GET');
+        return self::$attributeDiscovery->findRoute($path, 'GET');
     }
 }

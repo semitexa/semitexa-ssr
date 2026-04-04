@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\I18n;
 
 use Semitexa\Core\Locale\LocaleContextInterface;
-use Semitexa\Core\Util\ProjectRoot;
+use Semitexa\Core\Support\ProjectRoot;
 use Semitexa\Locale\Context\LocaleManager;
 use Semitexa\Locale\I18n\Loader\JsonFileLoader;
 use Semitexa\Locale\I18n\TranslationCatalog;

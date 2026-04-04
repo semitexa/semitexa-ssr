@@ -13,11 +13,17 @@ final class TwigExtensionRegistry
 {
     /** @var array<string, array{callback: callable, options: array}> */
     private static array $functions = [];
-    
+
     /** @var array<string, callable> */
     private static array $filters = [];
-    
+
     private static bool $initialized = false;
+    private static ?ClassDiscovery $classDiscovery = null;
+
+    public static function setClassDiscovery(ClassDiscovery $classDiscovery): void
+    {
+        self::$classDiscovery = $classDiscovery;
+    }
 
     public static function initialize(): void
     {
@@ -25,7 +31,11 @@ final class TwigExtensionRegistry
             return;
         }
 
-        $extensionClasses = ClassDiscovery::findClassesWithAttribute(AsTwigExtension::class);
+        if (self::$classDiscovery === null) {
+            throw new \LogicException('TwigExtensionRegistry requires ClassDiscovery instance. Call setClassDiscovery() first.');
+        }
+
+        $extensionClasses = self::$classDiscovery->findClassesWithAttribute(AsTwigExtension::class);
 
         foreach ($extensionClasses as $class) {
             $reflection = new \ReflectionClass($class);

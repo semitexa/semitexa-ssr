@@ -4,18 +4,18 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Handler\PayloadHandler;
 
-use Semitexa\Core\Attributes\AsPayloadHandler;
+use Semitexa\Core\Attribute\AsPayloadHandler;
 use Semitexa\Core\Contract\TypedHandlerInterface;
 use Semitexa\Core\Exception\NotFoundException;
-use Semitexa\Core\Http\Response\GenericResponse;
+use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Server\SwooleBootstrap;
 use Semitexa\Ssr\Application\Payload\Request\SseKissPayload;
 use Semitexa\Ssr\Async\AsyncResourceSseServer;
 
-#[AsPayloadHandler(payload: SseKissPayload::class, resource: GenericResponse::class)]
+#[AsPayloadHandler(payload: SseKissPayload::class, resource: ResourceResponse::class)]
 final class SseKissHandler implements TypedHandlerInterface
 {
-    public function handle(SseKissPayload $payload, GenericResponse $resource): GenericResponse
+    public function handle(SseKissPayload $payload, ResourceResponse $resource): ResourceResponse
     {
         $context = SwooleBootstrap::getCurrentSwooleRequestResponse();
         if ($context === null || $context[2] === null) {

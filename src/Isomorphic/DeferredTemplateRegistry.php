@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Isomorphic;
 
-use Semitexa\Core\Util\ProjectRoot;
+use Semitexa\Core\Support\ProjectRoot;
 use Semitexa\Ssr\Asset\ModuleAssetRegistry;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Semitexa\Ssr\Layout\LayoutSlotRegistry;

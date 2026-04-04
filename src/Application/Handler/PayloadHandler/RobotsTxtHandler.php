@@ -4,17 +4,17 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Handler\PayloadHandler;
 
-use Semitexa\Core\Attributes\AsPayloadHandler;
-use Semitexa\Core\Attributes\InjectAsMutable;
+use Semitexa\Core\Attribute\AsPayloadHandler;
+use Semitexa\Core\Attribute\InjectAsMutable;
 use Semitexa\Core\Contract\TypedHandlerInterface;
-use Semitexa\Core\Http\Response\GenericResponse;
+use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Request;
 use Semitexa\Core\Tenant\TenantContextInterface;
-use Semitexa\Core\Util\ProjectRoot;
+use Semitexa\Core\Support\ProjectRoot;
 use Semitexa\Ssr\Application\Payload\Request\RobotsTxtPayload;
 use Semitexa\Ssr\Seo\RobotsTxtRenderer;
 
-#[AsPayloadHandler(payload: RobotsTxtPayload::class, resource: GenericResponse::class)]
+#[AsPayloadHandler(payload: RobotsTxtPayload::class, resource: ResourceResponse::class)]
 final class RobotsTxtHandler implements TypedHandlerInterface
 {
     #[InjectAsMutable]
@@ -23,7 +23,7 @@ final class RobotsTxtHandler implements TypedHandlerInterface
     #[InjectAsMutable]
     protected TenantContextInterface $tenantContext;
 
-    public function handle(RobotsTxtPayload $payload, GenericResponse $resource): GenericResponse
+    public function handle(RobotsTxtPayload $payload, ResourceResponse $resource): ResourceResponse
     {
         return $resource
             ->setContent($this->resolveContent())

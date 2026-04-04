@@ -10,6 +10,13 @@ use Semitexa\Core\Tenant\TenantContextInterface;
 
 final class AiSitemapJsonRenderer
 {
+    private static ?AttributeDiscovery $attributeDiscovery = null;
+
+    public static function setAttributeDiscovery(AttributeDiscovery $attributeDiscovery): void
+    {
+        self::$attributeDiscovery = $attributeDiscovery;
+    }
+
     public static function render(?Request $request = null, ?TenantContextInterface $tenantContext = null): string
     {
         return json_encode(
@@ -23,13 +30,15 @@ final class AiSitemapJsonRenderer
      */
     public static function buildDocument(?Request $request = null, ?TenantContextInterface $tenantContext = null): array
     {
-        AttributeDiscovery::initialize();
+        if (self::$attributeDiscovery === null) {
+            throw new \LogicException('AiSitemapJsonRenderer requires AttributeDiscovery instance. Call setAttributeDiscovery() first.');
+        }
 
         $pages = [];
         $endpoints = [];
         $templates = [];
 
-        $routes = AttributeDiscovery::getRoutes();
+        $routes = self::$attributeDiscovery->getRoutes();
         usort($routes, static fn (array $a, array $b): int => ($a['path'] ?? '') <=> ($b['path'] ?? ''));
 
         foreach ($routes as $route) {

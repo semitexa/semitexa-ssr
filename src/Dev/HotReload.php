@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Dev;
 
 use Semitexa\Core\Environment;
-use Semitexa\Core\Util\ProjectRoot;
+use Semitexa\Core\Support\ProjectRoot;
 use Swoole\Http\Request;
 use Swoole\Http\Response;
 

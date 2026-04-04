@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Asset;
 
 use Semitexa\Core\Environment;
-use Semitexa\Core\Util\ProjectRoot;
+use Semitexa\Core\Support\ProjectRoot;
 
 final class AssetManager
 {

@@ -4,26 +4,26 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Handler\PayloadHandler;
 
-use Semitexa\Core\Attributes\AsPayloadHandler;
-use Semitexa\Core\Attributes\InjectAsReadonly;
+use Semitexa\Core\Attribute\AsPayloadHandler;
+use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Contract\TypedHandlerInterface;
 use Semitexa\Core\Event\EventDispatcherInterface;
 use Semitexa\Core\Exception\AccessDeniedException;
 use Semitexa\Core\Exception\NotFoundException;
 use Semitexa\Core\Exception\ValidationException;
-use Semitexa\Core\Http\Response\GenericResponse;
+use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Server\SwooleBootstrap;
 use Semitexa\Ssr\Application\Payload\Request\ComponentEventDispatchPayload;
 use Semitexa\Ssr\Component\ComponentEventBridge;
 use Semitexa\Ssr\Component\ComponentRegistry;
 
-#[AsPayloadHandler(payload: ComponentEventDispatchPayload::class, resource: GenericResponse::class)]
+#[AsPayloadHandler(payload: ComponentEventDispatchPayload::class, resource: ResourceResponse::class)]
 final class ComponentEventDispatchHandler implements TypedHandlerInterface
 {
     #[InjectAsReadonly]
     protected EventDispatcherInterface $eventDispatcher;
 
-    public function handle(ComponentEventDispatchPayload $payload, GenericResponse $resource): GenericResponse
+    public function handle(ComponentEventDispatchPayload $payload, ResourceResponse $resource): ResourceResponse
     {
         if (!$this->isSameOriginRequest()) {
             throw new AccessDeniedException('Cross-origin component event dispatch is not allowed.');

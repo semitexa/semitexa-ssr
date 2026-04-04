@@ -25,6 +25,12 @@ final class AssetCollector
     private static array $declarations = [];
 
     private static bool $booted = false;
+    private static ?ModuleRegistry $moduleRegistry = null;
+
+    public static function setModuleRegistry(ModuleRegistry $moduleRegistry): void
+    {
+        self::$moduleRegistry = $moduleRegistry;
+    }
 
     /** @var array<string, AssetEntry> Per-request required assets keyed by canonical key */
     private array $required = [];
@@ -165,8 +171,11 @@ final class AssetCollector
      */
     private static function discoverManifests(): void
     {
-        ModuleRegistry::initialize();
-        $modules = ModuleRegistry::getModules();
+        if (self::$moduleRegistry === null) {
+            throw new \LogicException('AssetCollector requires ModuleRegistry instance. Call setModuleRegistry() first.');
+        }
+
+        $modules = self::$moduleRegistry->getModules();
 
         foreach ($modules as $module) {
             $moduleName = $module['name'] ?? '';

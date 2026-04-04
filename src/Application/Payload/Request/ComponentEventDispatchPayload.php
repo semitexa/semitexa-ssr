@@ -5,14 +5,14 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Payload\Request;
 
 use Semitexa\Authorization\Attributes\PublicEndpoint;
-use Semitexa\Core\Attributes\AsPayload;
+use Semitexa\Core\Attribute\AsPayload;
 use Semitexa\Core\Contract\ValidatablePayload;
-use Semitexa\Core\Http\Response\GenericResponse;
+use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Http\PayloadValidationResult;
 use Semitexa\Core\Validation\Trait\NotBlankValidationTrait;
 
 #[AsPayload(
-    responseWith: GenericResponse::class,
+    responseWith: ResourceResponse::class,
     path: '/__semitexa_component_event',
     methods: ['POST'],
     consumes: ['application/json'],

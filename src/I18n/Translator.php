@@ -38,6 +38,7 @@ final class Translator
     {
         self::$service = $service;
         self::$localeContext = $localeContext ?? self::resolveLocaleContext();
+        self::clearRequestLocaleContext();
         self::$initialized = true;
     }
 
@@ -124,7 +125,13 @@ final class Translator
 
         self::$service = null;
         self::$localeContext = null;
+        self::clearRequestLocaleContext();
         self::$initialized = false;
+    }
+
+    private static function clearRequestLocaleContext(): void
+    {
+        CoroutineLocal::set(self::CTX_LOCALE, null);
     }
 
     private static function resolveLocaleContext(): LocaleContextInterface

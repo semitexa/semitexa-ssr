@@ -35,7 +35,7 @@ final class LlmsTxtHandler implements TypedHandlerInterface
         $projectRoot = ProjectRoot::get();
 
         foreach ([$projectRoot . '/llms.txt', $projectRoot . '/public/llms.txt'] as $candidate) {
-            if (!is_file($candidate)) {
+            if (!is_file($candidate) || !is_readable($candidate)) {
                 continue;
             }
 

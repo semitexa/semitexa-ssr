@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Component;
 
 use Semitexa\Core\Attribute\AsEvent;
-use Semitexa\Ssr\Attributes\AsComponent;
+use Semitexa\Ssr\Attribute\AsComponent;
 use Semitexa\Ssr\Asset\AssetEntry;
 use Semitexa\Core\Discovery\ClassDiscovery;
 

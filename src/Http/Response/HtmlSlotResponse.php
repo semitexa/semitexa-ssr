@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Http\Response;
 
-use Semitexa\Ssr\Attributes\AsSlotResource;
+use Semitexa\Ssr\Attribute\AsSlotResource;
 use Semitexa\Ssr\Template\ModuleTemplateRegistry;
 
 abstract class HtmlSlotResponse

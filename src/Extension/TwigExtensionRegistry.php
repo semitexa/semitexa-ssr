@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Extension;
 
 use Semitexa\Core\Discovery\ClassDiscovery;
-use Semitexa\Ssr\Attributes\AsTwigExtension;
+use Semitexa\Ssr\Attribute\AsTwigExtension;
 use Twig\TwigFunction;
 use Twig\TwigFilter;
 

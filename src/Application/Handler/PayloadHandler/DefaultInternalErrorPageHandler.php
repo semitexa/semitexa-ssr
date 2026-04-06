@@ -28,6 +28,8 @@ final class DefaultInternalErrorPageHandler implements TypedHandlerInterface
 
         return $resource
             ->pageTitle('500 Internal Server Error')
+            ->seoTagDefault('description', 'The request reached Semitexa, but rendering failed before a page could complete.')
+            ->seoKeywords(['500 Internal Server Error', 'Semitexa', 'server error', 'rendering failed'])
             ->withStatusCode(HttpStatus::InternalServerError->value)
             ->withReasonPhrase(HttpStatus::InternalServerError->reason())
             ->withEyebrow('Default SSR Error Page')

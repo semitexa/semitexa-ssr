@@ -37,6 +37,7 @@ class HtmlResponse extends ResourceResponse
     public function pageTitle(string $title, ?string $suffix = null, ?string $prefix = null): static
     {
         SeoMeta::setTitle($title, $suffix, $prefix);
+        SeoMeta::setDefault('og:title', $title);
         return $this;
     }
 
@@ -46,6 +47,50 @@ class HtmlResponse extends ResourceResponse
     public function seoTag(string $name, string $content): static
     {
         SeoMeta::tag($name, $content);
+        return $this;
+    }
+
+    public function seoTagDefault(string $name, string $content): static
+    {
+        SeoMeta::setDefault($name, $content);
+        return $this;
+    }
+
+    /**
+     * @param array<int, string|array{term?: string, title?: string, label?: string, name?: string}> $keywords
+     */
+    public function seoKeywords(array $keywords): static
+    {
+        $existing = SeoMeta::get('keywords');
+        $items = $existing !== null
+            ? array_values(array_filter(array_map('trim', explode(',', $existing)), static fn (string $item): bool => $item !== ''))
+            : [];
+
+        foreach ($keywords as $keyword) {
+            $value = null;
+
+            if (is_string($keyword)) {
+                $value = trim($keyword);
+            } elseif (is_array($keyword)) {
+                foreach (['term', 'title', 'label', 'name'] as $key) {
+                    if (isset($keyword[$key]) && is_string($keyword[$key])) {
+                        $value = trim($keyword[$key]);
+                        break;
+                    }
+                }
+            }
+
+            if ($value !== null && $value !== '') {
+                $items[] = $value;
+            }
+        }
+
+        $items = array_values(array_unique($items));
+        if ($items === []) {
+            return $this;
+        }
+
+        SeoMeta::tag('keywords', implode(', ', $items));
         return $this;
     }
 
@@ -96,6 +141,7 @@ class HtmlResponse extends ResourceResponse
         $context['response'] ??= $this;
 
         $context = $this->applyIsomorphicContext($context);
+        self::applySeoDefaults($context);
         PageRenderContextStore::set($context);
 
         try {
@@ -111,6 +157,9 @@ class HtmlResponse extends ResourceResponse
     public function renderString(string $templateSource, array $context = []): static
     {
         $this->beginTopLevelRender();
+
+        $context = $this->applyIsomorphicContext($context);
+        self::applySeoDefaults($context);
 
         $twig = ModuleTemplateRegistry::getTwig();
         $template = $twig->createTemplate($templateSource);
@@ -297,6 +346,191 @@ class HtmlResponse extends ResourceResponse
         $context['__ssr_handle_attr'] = ' data-ssr-handle="' . htmlspecialchars($handle, ENT_QUOTES, 'UTF-8') . '"';
 
         return $context;
+    }
+
+    /**
+     * Populate SEO metadata from the current render context when handlers did not set it explicitly.
+     *
+     * This keeps page metadata valid even for older pages or future pages that only provide
+     * a title/summary/feature context instead of calling seo helpers directly.
+     */
+    private static function applySeoDefaults(array $context): void
+    {
+        $title = SeoMeta::getTitle();
+        if ($title === '') {
+            $title = self::deriveSeoTitle($context);
+            if ($title !== '') {
+                SeoMeta::setTitle($title);
+            }
+        }
+
+        if (!SeoMeta::has('og:title') && $title !== '') {
+            SeoMeta::setDefault('og:title', $title);
+        }
+
+        $description = SeoMeta::get('description');
+        if ($description === null) {
+            $description = self::deriveSeoDescription($context);
+            if ($description !== null) {
+                SeoMeta::setDefault('description', $description);
+            }
+        }
+
+        if (!SeoMeta::has('og:description') && $description !== null) {
+            SeoMeta::setDefault('og:description', $description);
+        }
+
+        if (!SeoMeta::has('keywords')) {
+            $keywords = self::deriveSeoKeywords($context);
+            if ($keywords !== []) {
+                SeoMeta::tag('keywords', implode(', ', $keywords));
+            }
+        }
+
+        if (!SeoMeta::has('og:type')) {
+            SeoMeta::setDefault('og:type', 'website');
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $context
+     */
+    private static function deriveSeoTitle(array $context): string
+    {
+        foreach ([
+            $context['page_title'] ?? null,
+            $context['featureTitle'] ?? null,
+            $context['sectionLabel'] ?? null,
+            $context['title'] ?? null,
+        ] as $candidate) {
+            if (is_string($candidate) && trim($candidate) !== '') {
+                return trim($candidate);
+            }
+        }
+
+        foreach (['hero', 'feature', 'section'] as $bagKey) {
+            if (!isset($context[$bagKey]) || !is_array($context[$bagKey])) {
+                continue;
+            }
+
+            foreach (['title', 'label', 'name'] as $field) {
+                $candidate = $context[$bagKey][$field] ?? null;
+                if (is_string($candidate) && trim($candidate) !== '') {
+                    return trim($candidate);
+                }
+            }
+        }
+
+        foreach (['headline', 'entryLine', 'summary', 'sectionSummary', 'infoWhat'] as $field) {
+            $candidate = $context[$field] ?? null;
+            if (is_string($candidate) && trim($candidate) !== '') {
+                return trim($candidate);
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * @param array<string, mixed> $context
+     */
+    private static function deriveSeoDescription(array $context): ?string
+    {
+        foreach ([
+            $context['summary'] ?? null,
+            $context['entryLine'] ?? null,
+            $context['sectionSummary'] ?? null,
+            $context['infoWhat'] ?? null,
+            $context['headline'] ?? null,
+        ] as $candidate) {
+            if (is_string($candidate) && trim($candidate) !== '') {
+                return trim($candidate);
+            }
+        }
+
+        foreach (['hero', 'feature', 'section'] as $bagKey) {
+            if (!isset($context[$bagKey]) || !is_array($context[$bagKey])) {
+                continue;
+            }
+
+            foreach (['lede', 'summary', 'title'] as $field) {
+                $candidate = $context[$bagKey][$field] ?? null;
+                if (is_string($candidate) && trim($candidate) !== '') {
+                    return trim($candidate);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<string, mixed> $context
+     * @return list<string>
+     */
+    private static function deriveSeoKeywords(array $context): array
+    {
+        $keywords = [];
+
+        foreach ([
+            $context['featureTitle'] ?? null,
+            $context['sectionLabel'] ?? null,
+            $context['title'] ?? null,
+        ] as $candidate) {
+            if (is_string($candidate) && trim($candidate) !== '') {
+                $keywords[] = trim($candidate);
+            }
+        }
+
+        foreach (['infoKeywords', 'highlights', 'chips'] as $listKey) {
+            if (!isset($context[$listKey]) || !is_array($context[$listKey])) {
+                continue;
+            }
+
+            foreach ($context[$listKey] as $item) {
+                if (is_string($item)) {
+                    $item = trim($item);
+                    if ($item !== '') {
+                        $keywords[] = $item;
+                    }
+                    continue;
+                }
+
+                if (!is_array($item)) {
+                    continue;
+                }
+
+                foreach (['term', 'title', 'label', 'name', 'eyebrow'] as $field) {
+                    if (isset($item[$field]) && is_string($item[$field]) && trim($item[$field]) !== '') {
+                        $keywords[] = trim($item[$field]);
+                        break;
+                    }
+                }
+            }
+        }
+
+        foreach (['features', 'sections', 'products', 'links'] as $listKey) {
+            if (!isset($context[$listKey]) || !is_array($context[$listKey])) {
+                continue;
+            }
+
+            foreach ($context[$listKey] as $item) {
+                if (!is_array($item)) {
+                    continue;
+                }
+
+                foreach (['title', 'label', 'name', 'hint'] as $field) {
+                    if (isset($item[$field]) && is_string($item[$field]) && trim($item[$field]) !== '') {
+                        $keywords[] = trim($item[$field]);
+                        break;
+                    }
+                }
+            }
+        }
+
+        $keywords = array_values(array_unique(array_filter($keywords, static fn (string $item): bool => $item !== '')));
+
+        return array_slice($keywords, 0, 12);
     }
 
     private static function sanitizeDeferredContext(array $context, int $depth = 0): array

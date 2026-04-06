@@ -10,20 +10,30 @@ use Semitexa\Core\Support\ProjectRoot;
 final class AssetManager
 {
     private static ?array $manifest = null;
-    private static string $publicPath = '/static';
+    private static string $publicPath = '/assets';
     private static array $moduleVersions = [];
+    private static array $fingerprintCache = [];
 
     public static function getUrl(string $path, ?string $module = null): string
     {
         $module = $module ?? self::detectCurrentModule();
-        $version = self::getVersion($module);
 
         $hashed = self::getManifestPath($path, $module);
         if ($hashed) {
             return self::$publicPath . "/{$module}/{$hashed}";
         }
 
-        return self::$publicPath . "/{$module}/{$path}?v={$version}";
+        $url = self::$publicPath . "/{$module}/" . ltrim($path, '/');
+        $version = self::getAssetFingerprint($module, $path);
+
+        return $url . '?v=' . rawurlencode($version);
+    }
+
+    public static function reset(): void
+    {
+        self::$manifest = null;
+        self::$moduleVersions = [];
+        self::$fingerprintCache = [];
     }
 
     public static function mix(string $path): string
@@ -40,10 +50,13 @@ final class AssetManager
     public static function version(string $path): string
     {
         $module = self::detectCurrentModule();
-        $version = self::getVersion($module);
-        
+        $hashed = self::getManifestPath($path, $module);
+        if ($hashed) {
+            return '/' . ltrim($hashed, '/');
+        }
+
         $path = ltrim($path, '/');
-        return "/{$path}?v={$version}";
+        return '/' . $path . '?v=' . rawurlencode(self::getBuildVersion());
     }
 
     /** @return array<string, string> */
@@ -86,11 +99,57 @@ final class AssetManager
             return self::$moduleVersions[$module];
         }
 
-        $version = '1.0.0';
-        
+        $version = self::getBuildVersion();
         self::$moduleVersions[$module] = $version;
-        
+
         return $version;
+    }
+
+    private static function getBuildVersion(): string
+    {
+        foreach (['SEMITEXA_ASSET_VERSION', 'SEMITEXA_RELEASE_VERSION', 'APP_VERSION'] as $envKey) {
+            $value = Environment::getEnvValue($envKey);
+            if (is_string($value) && $value !== '') {
+                return $value;
+            }
+        }
+
+        $lockPath = ProjectRoot::get() . '/composer.lock';
+        if (is_file($lockPath)) {
+            $hash = hash_file('sha256', $lockPath);
+            if (is_string($hash) && $hash !== '') {
+                return substr($hash, 0, 12);
+            }
+        }
+
+        return '1';
+    }
+
+    private static function getAssetFingerprint(string $module, string $path): string
+    {
+        $resolved = ModuleAssetRegistry::resolve($module, $path);
+        if ($resolved === null) {
+            return self::getVersion($module);
+        }
+
+        clearstatcache(true, $resolved);
+        $mtime = @filemtime($resolved) ?: 0;
+        $size = @filesize($resolved) ?: 0;
+        $cacheKey = $resolved . '|' . $mtime . '|' . $size;
+
+        if (isset(self::$fingerprintCache[$cacheKey])) {
+            return self::$fingerprintCache[$cacheKey];
+        }
+
+        $hash = hash_file('sha256', $resolved);
+        if (!is_string($hash) || $hash === '') {
+            return self::getVersion($module);
+        }
+
+        $fingerprint = substr($hash, 0, 12);
+        self::$fingerprintCache[$cacheKey] = $fingerprint;
+
+        return $fingerprint;
     }
 
     private static function detectCurrentModule(): string

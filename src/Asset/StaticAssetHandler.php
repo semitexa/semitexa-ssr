@@ -9,7 +9,7 @@ use Swoole\Http\Response as SwooleResponse;
 
 readonly class StaticAssetHandler
 {
-    private const PREFIX = '/assets/';
+    private const PREFIXES = ['/assets/', '/static/'];
 
     private const CONTENT_TYPES = [
         'js'   => 'application/javascript',
@@ -34,11 +34,12 @@ readonly class StaticAssetHandler
             $uri = explode('?', $uri, 2)[0];
         }
 
-        if (!str_starts_with($uri, self::PREFIX)) {
+        $prefix = self::matchPrefix($uri);
+        if ($prefix === null) {
             return false;
         }
 
-        $rest = substr($uri, strlen(self::PREFIX));
+        $rest = substr($uri, strlen($prefix));
 
         // Parse {module}/{path}
         $slashPos = strpos($rest, '/');
@@ -81,5 +82,16 @@ readonly class StaticAssetHandler
         $response->sendfile($filePath);
 
         return true;
+    }
+
+    private static function matchPrefix(string $uri): ?string
+    {
+        foreach (self::PREFIXES as $candidate) {
+            if (str_starts_with($uri, $candidate)) {
+                return $candidate;
+            }
+        }
+
+        return null;
     }
 }

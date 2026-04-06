@@ -24,6 +24,8 @@ final class DefaultNotFoundPageHandler implements TypedHandlerInterface
     ): DefaultErrorPageResource {
         return $resource
             ->pageTitle('404 Not Found')
+            ->seoTagDefault('description', 'Semitexa could not match this browser request to an application route.')
+            ->seoKeywords(['404 Not Found', 'Semitexa', 'not found', 'missing route'])
             ->withStatusCode(HttpStatus::NotFound->value)
             ->withReasonPhrase(HttpStatus::NotFound->reason())
             ->withEyebrow('Default SSR Error Page')

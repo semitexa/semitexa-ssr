@@ -38,6 +38,8 @@ final class DefaultErrorPageResource extends HtmlResponse implements ResourceInt
 
     public function withSummary(string $summary): self
     {
+        $this->seoTagDefault('description', $summary);
+
         return $this->with('summary', $summary);
     }
 

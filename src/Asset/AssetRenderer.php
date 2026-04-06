@@ -94,7 +94,7 @@ final class AssetRenderer
     private static function renderCssLink(AssetEntry $entry): string
     {
         $attrs = self::buildAttributes($entry->attributes);
-        $url = htmlspecialchars($entry->toUrl(), ENT_QUOTES, 'UTF-8');
+        $url = htmlspecialchars(AssetManager::getUrl($entry->path, $entry->module), ENT_QUOTES, 'UTF-8');
 
         return '<link rel="stylesheet" href="' . $url . '"' . $attrs . '>' . "\n";
     }
@@ -102,7 +102,7 @@ final class AssetRenderer
     private static function renderScript(AssetEntry $entry): string
     {
         $attrs = self::buildAttributes($entry->attributes);
-        $url = htmlspecialchars($entry->toUrl(), ENT_QUOTES, 'UTF-8');
+        $url = htmlspecialchars(AssetManager::getUrl($entry->path, $entry->module), ENT_QUOTES, 'UTF-8');
 
         return '<script src="' . $url . '"' . $attrs . '></script>' . "\n";
     }
@@ -118,7 +118,7 @@ final class AssetRenderer
         };
 
         $attrs = self::buildAttributes($entry->attributes);
-        $url = htmlspecialchars($entry->toUrl(), ENT_QUOTES, 'UTF-8');
+        $url = htmlspecialchars(AssetManager::getUrl($entry->path, $entry->module), ENT_QUOTES, 'UTF-8');
         $crossOrigin = ($as === 'font') ? ' crossorigin' : '';
 
         return '<link rel="preload" href="' . $url . '" as="' . $as . '"' . $crossOrigin . $attrs . '>' . "\n";
@@ -195,7 +195,7 @@ final class AssetRenderer
     {
         $identity = match ($entry->type) {
             'inline-css', 'inline-js' => $entry->module . '|' . $entry->path,
-            default => $entry->toUrl(),
+            default => AssetManager::getUrl($entry->path, $entry->module),
         };
 
         return $entry->type . '|' . $entry->position . '|' . $identity;

@@ -3,7 +3,12 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{{ statusCode|default(500) }} {{ reasonPhrase|default('Error') }}</title>
+    <title>{{ page_title()|default(statusCode|default(500) ~ ' ' ~ reasonPhrase|default('Error')) }}</title>
+    {{ meta('description') }}
+    {{ meta('keywords') }}
+    {{ meta('og:title') }}
+    {{ meta('og:description') }}
+    {{ meta('og:type') }}
     {{ semantic_head() }}
     {{ asset_head() }}
     <style>

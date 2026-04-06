@@ -23,12 +23,12 @@ final class SeoMeta
         if (self::inCoroutine()) {
             $ctx = Coroutine::getContext();
             $ctx[self::KEY_TITLE] = $title;
-            $ctx[self::KEY_TITLE_SUFFIX] = $suffix ?? ($ctx[self::KEY_TITLE_SUFFIX] ?? ' | My Site');
+            $ctx[self::KEY_TITLE_SUFFIX] = $suffix ?? ($ctx[self::KEY_TITLE_SUFFIX] ?? '');
             $ctx[self::KEY_TITLE_PREFIX] = $prefix ?? ($ctx[self::KEY_TITLE_PREFIX] ?? '');
             return;
         }
         self::$staticTitle = $title;
-        self::$staticTitleSuffix = $suffix ?? self::$staticTitleSuffix ?? ' | My Site';
+        self::$staticTitleSuffix = $suffix ?? self::$staticTitleSuffix ?? '';
         self::$staticTitlePrefix = $prefix ?? self::$staticTitlePrefix ?? '';
     }
 
@@ -82,6 +82,30 @@ final class SeoMeta
         }
 
         return "<meta name=\"{$safeName}\" content=\"{$safeContent}\">";
+    }
+
+    public static function get(string $name): ?string
+    {
+        $meta = self::getMeta();
+        $value = $meta[$name] ?? null;
+
+        return is_string($value) && $value !== '' ? $value : null;
+    }
+
+    public static function has(string $name): bool
+    {
+        return self::get($name) !== null;
+    }
+
+    public static function setDefault(string $name, string $content): void
+    {
+        if ($content === '' || self::has($name)) {
+            return;
+        }
+
+        $meta = self::getMeta();
+        $meta[$name] = $content;
+        self::setMeta($meta);
     }
 
     public static function all(): array

@@ -98,6 +98,14 @@ class ModuleAssetRegistry
         self::$initialized = true;
     }
 
+    public static function reset(): void
+    {
+        self::$map = [];
+        self::$themeMap = [];
+        self::$initialized = false;
+        self::$moduleRegistry = null;
+    }
+
     /**
      * Register a custom alias pointing to an absolute directory path.
      * If the alias already has base directories registered, the new path is prepended

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Asset;
 
-use Semitexa\Core\Container\ContainerFactory;
 use Semitexa\Core\ModuleRegistry;
 
 /**
@@ -175,7 +174,6 @@ final class AssetCollector
      */
     private static function discoverManifests(): void
     {
-        self::ensureModuleRegistry();
         if (self::$moduleRegistry === null) {
             throw new \LogicException('AssetCollector requires ModuleRegistry instance. Call setModuleRegistry() first.');
         }
@@ -433,15 +431,4 @@ final class AssetCollector
         return (bool) preg_match('#^' . $regex . '$#', $path);
     }
 
-    private static function ensureModuleRegistry(): void
-    {
-        if (self::$moduleRegistry !== null) {
-            return;
-        }
-
-        try {
-            self::$moduleRegistry = ContainerFactory::get()->get(ModuleRegistry::class);
-        } catch (\Throwable) {
-        }
-    }
 }

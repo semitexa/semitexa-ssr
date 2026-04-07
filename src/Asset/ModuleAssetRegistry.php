@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Asset;
 
 use Semitexa\Core\Environment;
-use Semitexa\Core\Container\ContainerFactory;
 use Semitexa\Core\ModuleRegistry;
 use Semitexa\Core\Support\ProjectRoot;
 
@@ -50,7 +49,6 @@ class ModuleAssetRegistry
             return;
         }
 
-        self::ensureModuleRegistry();
         if (self::$moduleRegistry === null) {
             throw new \LogicException('ModuleAssetRegistry requires ModuleRegistry instance. Call setModuleRegistry() first.');
         }
@@ -194,15 +192,4 @@ class ModuleAssetRegistry
         }
     }
 
-    private static function ensureModuleRegistry(): void
-    {
-        if (self::$moduleRegistry !== null) {
-            return;
-        }
-
-        try {
-            self::$moduleRegistry = ContainerFactory::get()->get(ModuleRegistry::class);
-        } catch (\Throwable) {
-        }
-    }
 }

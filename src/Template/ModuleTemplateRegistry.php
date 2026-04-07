@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Template;
 
 use Semitexa\Core\Environment;
-use Semitexa\Core\Container\ContainerFactory;
 use Semitexa\Core\ModuleRegistry;
 use Semitexa\Core\Support\ProjectRoot;
 use Twig\Environment as TwigEnvironment;
@@ -83,7 +82,6 @@ final class ModuleTemplateRegistry
             }
         }
 
-        self::ensureModuleRegistry();
         if (self::$moduleRegistry === null) {
             throw new \LogicException('ModuleTemplateRegistry requires ModuleRegistry instance. Call setModuleRegistry() first.');
         }
@@ -247,18 +245,6 @@ final class ModuleTemplateRegistry
         }
 
         return array_values(array_unique($normalized));
-    }
-
-    private static function ensureModuleRegistry(): void
-    {
-        if (self::$moduleRegistry !== null) {
-            return;
-        }
-
-        try {
-            self::$moduleRegistry = ContainerFactory::get()->get(ModuleRegistry::class);
-        } catch (\Throwable) {
-        }
     }
 
     private static function getWritableCacheDir(): string

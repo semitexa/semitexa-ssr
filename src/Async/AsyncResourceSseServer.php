@@ -79,9 +79,10 @@ final class AsyncResourceSseServer
 
     public static function handle(Request $request, Response $response): bool
     {
-        $path = $request->server['path_info'] ?? '';
+        $server = is_array($request->server) ? $request->server : [];
+        $path = $server['path_info'] ?? '';
         if ($path === '') {
-            $uri = $request->server['request_uri'] ?? '/';
+            $uri = $server['request_uri'] ?? '/';
             $path = parse_url($uri, PHP_URL_PATH) ?: '/';
         }
 
@@ -107,6 +108,7 @@ final class AsyncResourceSseServer
         }
 
         $get = is_array($request->get) ? $request->get : [];
+        $header = is_array($request->header) ? $request->header : [];
         $sessionId = trim((string) (($get['session_id'] ?? null) ?: uniqid('sse_', true)));
         $demoStream = '';
         if (isset($get['demo_stream'])) {
@@ -211,8 +213,8 @@ final class AsyncResourceSseServer
         }
 
         // Trigger deferred block streaming if deferred_request_id is present
-        $deferredRequestId = trim((string) ($request->get['deferred_request_id'] ?? ''));
-        $lastEventId = $request->header['last-event-id'] ?? null;
+        $deferredRequestId = trim((string) ($get['deferred_request_id'] ?? ''));
+        $lastEventId = $header['last-event-id'] ?? null;
         if ($deferredRequestId !== '') {
             $bindToken = self::getSsrBindToken($request);
             if (!\Semitexa\Ssr\Isomorphic\DeferredRequestRegistry::matchesBindToken($deferredRequestId, $bindToken)) {
@@ -702,7 +704,9 @@ final class AsyncResourceSseServer
     private static function getSsrBindToken(Request $request): string
     {
         $cookieName = 'semitexa_ssr_bind';
-        return trim((string) (($request->cookie[$cookieName] ?? '')));
+        $cookie = is_array($request->cookie) ? $request->cookie : [];
+
+        return trim((string) ($cookie[$cookieName] ?? ''));
     }
 
     private static function canUsePersistentDeferredSse(Request $request): bool
@@ -722,7 +726,8 @@ final class AsyncResourceSseServer
     private static function hasAuthenticatedSession(Request $request): bool
     {
         $cookieName = Environment::getEnvValue('SESSION_COOKIE_NAME') ?? 'semitexa_session';
-        $sessionId = trim((string) ($request->cookie[$cookieName] ?? ''));
+        $cookie = is_array($request->cookie) ? $request->cookie : [];
+        $sessionId = trim((string) ($cookie[$cookieName] ?? ''));
         if ($sessionId === '' || !preg_match('/^[a-f0-9]{32}$/', $sessionId)) {
             return false;
         }
@@ -757,13 +762,14 @@ final class AsyncResourceSseServer
 
     private static function isSameOriginRequest(Request $request): bool
     {
-        $host = trim((string) (($request->header['host'] ?? '')));
+        $header = is_array($request->header) ? $request->header : [];
+        $host = trim((string) ($header['host'] ?? ''));
         if ($host === '') {
             return true;
         }
 
         foreach (['origin', 'referer'] as $headerName) {
-            $rawHeader = is_array($request->header) ? ($request->header[$headerName] ?? '') : '';
+            $rawHeader = $header[$headerName] ?? '';
             $value = is_scalar($rawHeader) ? trim((string) $rawHeader) : '';
             if ($value === '') {
                 continue;

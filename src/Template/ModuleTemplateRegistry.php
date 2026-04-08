@@ -471,6 +471,39 @@ final class ModuleTemplateRegistry
                     return $path;
                 }
             ));
+
+            self::$twig->addFunction(new TwigFunction(
+                'current_absolute_url',
+                function (array $overrides = []) {
+                    $ctx = \Semitexa\Core\Server\SwooleBootstrap::getCurrentSwooleRequestResponse();
+                    $path = $ctx !== null
+                        ? ($ctx[0]->server['request_uri'] ?? '/')
+                        : '/';
+                    if (!empty($overrides)) {
+                        $query = http_build_query($overrides);
+                        $path = strtok($path, '?') . '?' . $query;
+                    }
+
+                    $origin = '';
+                    if ($ctx !== null) {
+                        $request = $ctx[0];
+                        $host = trim((string) ($request->header['x-forwarded-host'] ?? $request->header['host'] ?? ''));
+                        if ($host !== '') {
+                            $scheme = trim((string) ($request->header['x-forwarded-proto'] ?? ''));
+                            if ($scheme === '') {
+                                $https = strtolower((string) ($request->server['https'] ?? ''));
+                                $scheme = ($https === 'on' || $https === '1') ? 'https' : '';
+                            }
+                            if ($scheme === '') {
+                                $scheme = trim((string) (Environment::getEnvValue('APP_SCHEME') ?? 'http'));
+                            }
+                            $origin = sprintf('%s://%s', $scheme, $host);
+                        }
+                    }
+
+                    return $origin !== '' ? rtrim($origin, '/') . $path : $path;
+                }
+            ));
         }
 
         // Locale URL functions - locale_url(), locale_switch_url()

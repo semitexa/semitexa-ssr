@@ -46,6 +46,7 @@ class LayoutRenderer
 
             // Isomorphic deferred rendering support
             $config = self::getConfig();
+            $bindToken = '';
             if ($config->enabled && !self::isCrawler()) {
                 if (DeferredRequestRegistry::getTable() === null) {
                     DeferredRequestRegistry::initialize($config);
@@ -104,10 +105,13 @@ class LayoutRenderer
             );
 
             $requestId = $baseContext['__ssr_deferred_request_id'] ?? null;
-            if (is_string($requestId) && $requestId !== '') {
+            if (is_string($requestId)) {
+                /** @var array<\Semitexa\Ssr\Domain\Model\DeferredSlotDefinition> $deferredSlots */
+                $deferredSlots = $baseContext['__ssr_deferred_slots'] ?? [];
+
                 $renderedSlots = PlaceholderRenderer::filterRenderedSlotsFromHtml(
                     $html,
-                    $baseContext['__ssr_deferred_slots'] ?? []
+                    $deferredSlots
                 );
                 $renderedSlotIds = array_map(static fn ($slot) => $slot->slotId, $renderedSlots);
                 DeferredRequestRegistry::updateSlots($requestId, $renderedSlotIds);

@@ -42,7 +42,7 @@ final class DeferredTemplateRegistry
         }
 
         if (!is_dir($outputDir)) {
-            $created = mkdir($outputDir, 0755, true);
+            $created = @mkdir($outputDir, 0755, true);
             if (!$created && !is_dir($outputDir)) {
                 error_log(sprintf(
                     'Deferred template publishing skipped: unable to create output directory "%s".',
@@ -120,6 +120,36 @@ final class DeferredTemplateRegistry
         return null;
     }
 
+    public static function ensurePublishedPath(
+        string $slotId,
+        string $pageHandle,
+        ?IsomorphicConfig $config = null,
+        ?string $tenantId = null,
+    ): ?string {
+        $existing = self::getPublishedPath($slotId, $pageHandle);
+        if ($existing !== null && $existing !== '') {
+            return $existing;
+        }
+
+        $config ??= IsomorphicConfig::fromEnvironment();
+        if (!$config->enabled) {
+            return null;
+        }
+
+        foreach (LayoutSlotRegistry::getDeferredSlots($pageHandle) as $slot) {
+            if (
+                $slot->mode !== 'template'
+                || strcasecmp($slot->slotId, $slotId) !== 0
+            ) {
+                continue;
+            }
+
+            return self::publishSlot($slot, $config, $tenantId);
+        }
+
+        return null;
+    }
+
     /**
      * @return array<string, string> slot_id => public URL path
      */
@@ -153,5 +183,75 @@ final class DeferredTemplateRegistry
     private static function keyFor(string $slotId, string $pageHandle): string
     {
         return strtolower($pageHandle) . '::' . strtolower($slotId);
+    }
+
+    private static function publishSlot(
+        \Semitexa\Ssr\Domain\Model\DeferredSlotDefinition $slot,
+        IsomorphicConfig $config,
+        ?string $tenantId = null,
+    ): ?string {
+        $projectRoot = ProjectRoot::get();
+        $basePath = rtrim($config->templateAssetsPath, '/');
+        $assetBasePath = rtrim(dirname($basePath), '/');
+
+        $outputDir = $projectRoot . '/' . $basePath;
+        if ($tenantId !== null && $tenantId !== '') {
+            $outputDir .= '/' . $tenantId;
+        }
+
+        if (!is_dir($outputDir)) {
+            $created = @mkdir($outputDir, 0755, true);
+            if (!$created && !is_dir($outputDir)) {
+                error_log(sprintf(
+                    'Deferred template publishing skipped: unable to create output directory "%s".',
+                    $outputDir,
+                ));
+                return null;
+            }
+        }
+
+        if ($assetBasePath !== '' && $assetBasePath !== '.' && $assetBasePath !== $basePath) {
+            $assetRoot = $projectRoot . '/' . $assetBasePath;
+            ModuleAssetRegistry::registerAlias('ssr', $assetRoot);
+        }
+
+        $templatePath = self::resolveTemplatePath($slot->templateName);
+        if ($templatePath === null) {
+            return null;
+        }
+
+        $content = file_get_contents($templatePath);
+        if ($content === false) {
+            return null;
+        }
+
+        $hash = substr(md5($content), 0, 8);
+        $safeName = preg_replace('/[^a-zA-Z0-9_-]/', '_', $slot->slotId);
+        $filename = "{$safeName}.{$hash}.twig";
+        $outputFile = $outputDir . '/' . $filename;
+
+        if (is_file($outputFile)) {
+            $existing = file_get_contents($outputFile);
+            if ($existing === false) {
+                return null;
+            }
+
+            if ($existing !== $content && file_put_contents($outputFile, $content) === false) {
+                return null;
+            }
+        } elseif (file_put_contents($outputFile, $content) === false) {
+            return null;
+        }
+
+        $publicBase = preg_replace('#^public/?#', '', ltrim($basePath, '/')) ?? $basePath;
+        $urlBase = '/' . ltrim($publicBase, '/');
+        if ($tenantId !== null && $tenantId !== '') {
+            $urlBase .= '/' . $tenantId;
+        }
+
+        $path = $urlBase . '/' . $filename;
+        self::$publishedPaths[self::keyFor($slot->slotId, $slot->pageHandle)] = $path;
+
+        return $path;
     }
 }

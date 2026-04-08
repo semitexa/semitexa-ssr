@@ -376,7 +376,10 @@ class HtmlResponse extends ResourceResponse
 
         $renderedSlots = PlaceholderRenderer::filterRenderedSlotsFromHtml(
             $html,
-            is_array($context['__ssr_deferred_slots'] ?? null) ? $context['__ssr_deferred_slots'] : []
+            array_values(array_filter(
+                is_array($context['__ssr_deferred_slots'] ?? null) ? $context['__ssr_deferred_slots'] : [],
+                static fn (mixed $slot): bool => $slot instanceof \Semitexa\Ssr\Domain\Model\DeferredSlotDefinition
+            ))
         );
         $renderedSlotIds = array_map(static fn ($slot) => $slot->slotId, $renderedSlots);
         DeferredRequestRegistry::updateSlots($requestId, $renderedSlotIds);
@@ -384,13 +387,13 @@ class HtmlResponse extends ResourceResponse
         $updatedPreloadHints = PlaceholderRenderer::renderPreloadHints($renderedSlots);
         $updatedManifest = PlaceholderRenderer::renderManifest(
             $requestId,
-            (string) ($context['__ssr_deferred_session_id'] ?? ''),
+            is_string($context['__ssr_deferred_session_id'] ?? null) ? $context['__ssr_deferred_session_id'] : '',
             $renderedSlots,
-            (string) ($context['__ssr_deferred_bind_token'] ?? ''),
+            is_string($context['__ssr_deferred_bind_token'] ?? null) ? $context['__ssr_deferred_bind_token'] : '',
         );
 
-        $html = str_replace((string) ($context['__ssr_preload_hints'] ?? ''), $updatedPreloadHints, $html);
-        $html = str_replace((string) ($context['__ssr_deferred_manifest'] ?? ''), $updatedManifest, $html);
+        $html = str_replace(is_string($context['__ssr_preload_hints'] ?? null) ? $context['__ssr_preload_hints'] : '', $updatedPreloadHints, $html);
+        $html = str_replace(is_string($context['__ssr_deferred_manifest'] ?? null) ? $context['__ssr_deferred_manifest'] : '', $updatedManifest, $html);
 
         return $html;
     }

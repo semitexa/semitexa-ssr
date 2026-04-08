@@ -466,13 +466,20 @@
             var es = new EventSource(sseUrl);
             self._eventSource = es;
             self._connected = true;
+            var connectedSignaled = false;
 
-            es.onopen = function () {
+            function emitConnected() {
+                if (connectedSignaled) return;
+                connectedSignaled = true;
                 self._fireEvent('semitexa:deferred:stream', {
                     phase: 'connected',
                     requestId: manifest.requestId,
                     sessionId: manifest.sessionId
                 });
+            }
+
+            es.onopen = function () {
+                emitConnected();
             };
 
             es.onmessage = function (event) {
@@ -507,11 +514,7 @@
                         return;
                     }
                     if (payload.connected) {
-                        self._fireEvent('semitexa:deferred:stream', {
-                            phase: 'connected',
-                            requestId: manifest.requestId,
-                            sessionId: manifest.sessionId
-                        });
+                        emitConnected();
                         return;
                     }
                     if (payload.type === 'deferred_block') {
@@ -632,6 +635,7 @@
                         var el = document.querySelector('[data-ssr-deferred="' + slotId + '"]');
                         if (el) {
                             el.innerHTML = data[slotId];
+                            el.setAttribute('data-ssr-loaded', '1');
                             self._fireEvent('semitexa:block:rendered', {
                                 block: el.firstElementChild || el,
                                 slotId: slotId,
@@ -661,6 +665,7 @@
                 .then(function (data) {
                     if (data && data[slotId]) {
                         el.innerHTML = data[slotId];
+                        el.setAttribute('data-ssr-loaded', '1');
                         self._fireEvent('semitexa:block:rendered', {
                             block: el.firstElementChild || el,
                             slotId: slotId,

@@ -11,6 +11,7 @@ use Semitexa\Core\Session\SessionHandlerInterface;
 use Semitexa\Core\Session\SwooleTableSessionHandler;
 use Semitexa\Core\Container\ContainerFactory;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
+use Predis\Client;
 use Swoole\Http\Request;
 use Swoole\Http\Response;
 
@@ -48,6 +49,7 @@ final class AsyncResourceSseServer
 
     /** @var \Swoole\Table|null pending messages when client not connected yet: key -> session_id, payload */
     private static ?\Swoole\Table $pendingDeliverTable = null;
+    private static ?RedisConnectionPool $redisPool = null;
 
     public static function handle(Request $request, Response $response): bool
     {
@@ -204,9 +206,7 @@ final class AsyncResourceSseServer
         while (!$closed && isset(self::$sessions[$sessionId])) {
             if ((time() - $lastAuthTouchAt) >= self::AUTH_SESSION_TOUCH_INTERVAL_SECONDS) {
                 self::touchActiveSession($sessionId);
-                if ($authenticatedUserId !== '') {
-                    self::registerAuthenticatedSession($sessionId, $authenticatedUserId);
-                }
+                $authenticatedUserId = self::refreshAuthenticatedSessionMapping($request, $sessionId, $authenticatedUserId);
                 $lastAuthTouchAt = time();
             }
 
@@ -301,7 +301,7 @@ final class AsyncResourceSseServer
             return;
         }
 
-        $locale = $registry['locale'] ?? '';
+        $locale = $registry['locale'];
 
         $debugLog('registry_found', [
             'deferred_request_id' => $deferredRequestId,
@@ -372,6 +372,7 @@ final class AsyncResourceSseServer
         }
 
         $payloads = $pool->withConnection(static function ($redis) use ($sessionId): array {
+            /** @var Client $redis */
             $queueKey = self::redisSessionQueueKey($sessionId);
             $messages = [];
 
@@ -533,13 +534,22 @@ final class AsyncResourceSseServer
         $pool = self::getRedisPool();
         if ($pool !== null) {
             $payload = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-            if (is_string($payload) && $payload !== '') {
-                $pool->withConnection(static function ($redis) use ($sessionId, $payload): void {
-                    $queueKey = self::redisSessionQueueKey($sessionId);
-                    $redis->rpush($queueKey, [$payload]);
-                    $redis->expire($queueKey, self::REDIS_SESSION_QUEUE_TTL_SECONDS);
-                });
-                return;
+            if (is_string($payload)) {
+                try {
+                    $pool->withConnection(static function ($redis) use ($sessionId, $payload): void {
+                        /** @var Client $redis */
+                        $queueKey = self::redisSessionQueueKey($sessionId);
+                        $redis->rpush($queueKey, [$payload]);
+                        $redis->expire($queueKey, self::REDIS_SESSION_QUEUE_TTL_SECONDS);
+                    });
+                    return;
+                } catch (\Throwable $e) {
+                    error_log(sprintf(
+                        '[Semitexa SSR] Redis SSE enqueue failed for session %s: %s',
+                        $sessionId,
+                        $e->getMessage(),
+                    ));
+                }
             }
         }
 
@@ -619,8 +629,23 @@ final class AsyncResourceSseServer
             return true;
         }
 
-        if (self::$sessionWorkerTable !== null) {
-            return self::$sessionWorkerTable->get(self::sessionTableKey($sessionId)) !== false;
+        if (self::$sessionWorkerTable !== null && self::$sessionWorkerTable->get(self::sessionTableKey($sessionId)) !== false) {
+            return true;
+        }
+
+        $pool = self::getRedisPool();
+        if ($pool !== null) {
+            try {
+                $isActive = $pool->withConnection(static function ($redis) use ($sessionId): bool {
+                    /** @var Client $redis */
+                    return (string) ($redis->get(self::redisActiveSessionKey($sessionId)) ?? '') === '1';
+                });
+                if ($isActive) {
+                    return true;
+                }
+            } catch (\Throwable) {
+                return false;
+            }
         }
 
         return false;
@@ -642,6 +667,9 @@ final class AsyncResourceSseServer
         self::$pendingDeliverTable = $pendingDeliverTable;
     }
 
+    /**
+     * @param array<string, mixed> $data
+     */
     public static function deliverToUser(string $userId, array $data): int
     {
         $userId = trim($userId);
@@ -659,6 +687,9 @@ final class AsyncResourceSseServer
         return $delivered;
     }
 
+    /**
+     * @param array<string, mixed> $data
+     */
     public static function deliverToAuthenticatedUsers(array $data): int
     {
         $sessionIds = self::getAllAuthenticatedSessionIds();
@@ -709,6 +740,7 @@ final class AsyncResourceSseServer
         }
 
         $pool->withConnection(static function ($redis) use ($sessionId, $userId): void {
+            /** @var Client $redis */
             $redis->sadd(self::REDIS_AUTH_ALL_SESSIONS_KEY, [$sessionId]);
             $redis->sadd(self::redisUserSessionsKey($userId), [$sessionId]);
             $redis->setex(self::redisSessionUserKey($sessionId), self::AUTH_SESSION_TTL_SECONDS, $userId);
@@ -730,6 +762,7 @@ final class AsyncResourceSseServer
         }
 
         $pool->withConnection(static function ($redis) use ($sessionId): void {
+            /** @var Client $redis */
             $userId = trim((string) ($redis->get(self::redisSessionUserKey($sessionId)) ?? ''));
             if ($userId !== '') {
                 $redis->srem(self::redisUserSessionsKey($userId), $sessionId);
@@ -753,8 +786,31 @@ final class AsyncResourceSseServer
         }
 
         $pool->withConnection(static function ($redis) use ($sessionId): void {
+            /** @var Client $redis */
             $redis->setex(self::redisActiveSessionKey($sessionId), self::ACTIVE_SESSION_TTL_SECONDS, '1');
         });
+    }
+
+    private static function refreshAuthenticatedSessionMapping(
+        Request $request,
+        string $sessionId,
+        string $authenticatedUserId,
+    ): string {
+        $currentUserId = self::resolveAuthenticatedUserId($request);
+        if ($currentUserId === '') {
+            if ($authenticatedUserId !== '') {
+                self::unregisterAuthenticatedSession($sessionId);
+            }
+            return '';
+        }
+
+        if ($authenticatedUserId !== '' && $currentUserId !== $authenticatedUserId) {
+            self::unregisterAuthenticatedSession($sessionId);
+        }
+
+        self::registerAuthenticatedSession($sessionId, $currentUserId);
+
+        return $currentUserId;
     }
 
     private static function canUsePersistentDeferredSse(Request $request): bool
@@ -808,15 +864,8 @@ final class AsyncResourceSseServer
 
     private static function getRedisPool(): ?RedisConnectionPool
     {
-        try {
-            $container = ContainerFactory::get();
-            if ($container->has(RedisConnectionPool::class)) {
-                $pool = $container->get(RedisConnectionPool::class);
-                if ($pool instanceof RedisConnectionPool) {
-                    return $pool;
-                }
-            }
-        } catch (\Throwable) {
+        if (self::$redisPool instanceof RedisConnectionPool) {
+            return self::$redisPool;
         }
 
         $redisHost = Environment::getEnvValue('REDIS_HOST');
@@ -824,12 +873,14 @@ final class AsyncResourceSseServer
             return null;
         }
 
-        return new RedisConnectionPool(1, [
+        self::$redisPool = new RedisConnectionPool(1, [
             'scheme' => (string) (Environment::getEnvValue('REDIS_SCHEME', 'tcp') ?? 'tcp'),
             'host' => $redisHost,
             'port' => (int) (Environment::getEnvValue('REDIS_PORT', '6379') ?? '6379'),
             'password' => (string) (Environment::getEnvValue('REDIS_PASSWORD', '') ?? ''),
         ]);
+
+        return self::$redisPool;
     }
 
     /** @return list<string> */
@@ -846,8 +897,9 @@ final class AsyncResourceSseServer
         }
 
         return $pool->withConnection(static function ($redis) use ($userId): array {
+            /** @var Client $redis */
             $members = $redis->smembers(self::redisUserSessionsKey($userId));
-            return self::filterActiveSessionIds($redis, is_array($members) ? $members : [], $userId);
+            return self::filterActiveSessionIds($redis, array_values($members), $userId);
         });
     }
 
@@ -860,8 +912,9 @@ final class AsyncResourceSseServer
         }
 
         return $pool->withConnection(static function ($redis): array {
+            /** @var Client $redis */
             $members = $redis->smembers(self::REDIS_AUTH_ALL_SESSIONS_KEY);
-            return self::filterActiveSessionIds($redis, is_array($members) ? $members : []);
+            return self::filterActiveSessionIds($redis, array_values($members));
         });
     }
 
@@ -869,9 +922,13 @@ final class AsyncResourceSseServer
      * @param list<mixed> $sessionIds
      * @return list<string>
      */
-    private static function filterActiveSessionIds(object $redis, array $sessionIds, ?string $expectedUserId = null): array
+    private static function filterActiveSessionIds(mixed $redis, array $sessionIds, ?string $expectedUserId = null): array
     {
         $active = [];
+        if (!$redis instanceof Client) {
+            return $active;
+        }
+
         foreach ($sessionIds as $rawSessionId) {
             $sessionId = trim((string) $rawSessionId);
             if ($sessionId === '') {
@@ -924,15 +981,22 @@ final class AsyncResourceSseServer
 
     private static function isSameOriginRequest(Request $request): bool
     {
-        $header = is_array($request->header) ? $request->header : [];
-        $host = trim((string) ($header['host'] ?? ''));
+        $header = [];
+        if (is_array($request->header)) {
+            foreach ($request->header as $key => $value) {
+                if (is_string($key) && (is_scalar($value) || $value === null)) {
+                    $header[$key] = (string) $value;
+                }
+            }
+        }
+
+        $host = trim($header['host'] ?? '');
         if ($host === '') {
             return true;
         }
 
         foreach (['origin', 'referer'] as $headerName) {
-            $rawHeader = $header[$headerName] ?? '';
-            $value = is_scalar($rawHeader) ? trim((string) $rawHeader) : '';
+            $value = trim($header[$headerName] ?? '');
             if ($value === '') {
                 continue;
             }

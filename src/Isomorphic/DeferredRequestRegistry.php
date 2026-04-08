@@ -154,6 +154,7 @@ final class DeferredRequestRegistry
         if ($row === false) {
             return null;
         }
+        /** @var array{created_at:mixed,page_handle:mixed,page_context:mixed,bind_token?:mixed,locale?:mixed,slots:mixed,delivered:mixed} $row */
 
         if ((time() - (int) $row['created_at']) > self::TTL_SECONDS) {
             self::$table->del($key);
@@ -234,6 +235,7 @@ final class DeferredRequestRegistry
         if ($row === false) {
             return;
         }
+        /** @var array{page_handle:mixed,page_context:mixed,bind_token?:mixed,locale?:mixed,delivered:mixed,created_at:mixed} $row */
 
         $slotIds = array_values(array_unique(array_filter(
             array_map(static fn (mixed $slotId): string => trim((string) $slotId), $slotIds),
@@ -354,6 +356,7 @@ final class DeferredRequestRegistry
         $toDelete = [];
 
         foreach (self::$table as $key => $row) {
+            /** @var array{created_at:mixed} $row */
             if (($now - (int) $row['created_at']) > self::TTL_SECONDS) {
                 $toDelete[] = $key;
             }

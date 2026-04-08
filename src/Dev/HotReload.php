@@ -13,6 +13,7 @@ use Swoole\Http\Response;
 final class HotReload
 {
     private static bool $enabled = false;
+    /** @var list<array{path:string, extensions:list<string>}> */
     private static array $watchPaths = [];
     private static int $lastReload = 0;
 
@@ -29,11 +30,20 @@ final class HotReload
         if (self::$enabled) {
             $twigCacheDir = ModuleTemplateRegistry::getCacheDir();
             self::$watchPaths = [
-                ProjectRoot::get() . '/src/modules',
-                ProjectRoot::get() . '/src/theme',
+                [
+                    'path' => ProjectRoot::get() . '/src/modules',
+                    'extensions' => ['twig', 'html', 'css', 'js'],
+                ],
+                [
+                    'path' => ProjectRoot::get() . '/src/theme',
+                    'extensions' => ['twig', 'html', 'css', 'js'],
+                ],
             ];
             if (is_string($twigCacheDir) && $twigCacheDir !== '') {
-                self::$watchPaths[] = $twigCacheDir;
+                self::$watchPaths[] = [
+                    'path' => $twigCacheDir,
+                    'extensions' => ['php'],
+                ];
             }
         }
     }
@@ -109,7 +119,8 @@ final class HotReload
     {
         $files = [];
 
-        foreach (self::$watchPaths as $path) {
+        foreach (self::$watchPaths as $watch) {
+            $path = $watch['path'];
             if (!is_dir($path)) {
                 continue;
             }
@@ -121,7 +132,7 @@ final class HotReload
             foreach ($iterator as $file) {
                 if ($file->isFile()) {
                     $ext = $file->getExtension();
-                    if (in_array($ext, ['twig', 'html', 'css', 'js'])) {
+                    if (in_array($ext, $watch['extensions'], true)) {
                         if ($file->getMTime() > self::$lastReload) {
                             $files[] = $file->getPathname();
                         }

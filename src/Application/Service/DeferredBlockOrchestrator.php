@@ -329,11 +329,11 @@ final class DeferredBlockOrchestrator
         }
 
         if ($slot->mode === 'template') {
-            $templatePath = DeferredTemplateRegistry::getPublishedPath($slot->slotId, $slot->pageHandle);
-            if ($templatePath === null || $templatePath === '') {
-                DeferredTemplateRegistry::initialize(IsomorphicConfig::fromEnvironment());
-                $templatePath = DeferredTemplateRegistry::getPublishedPath($slot->slotId, $slot->pageHandle);
-            }
+            $templatePath = DeferredTemplateRegistry::ensurePublishedPath(
+                $slot->slotId,
+                $slot->pageHandle,
+                IsomorphicConfig::fromEnvironment(),
+            );
             if ($templatePath !== null && $templatePath !== '') {
                 return new DeferredBlockPayload(
                     slotId: $slot->slotId,

@@ -950,11 +950,20 @@ final class AsyncResourceSseServer
             return [];
         }
 
-        return $pool->withConnection(static function ($redis) use ($userId): array {
-            /** @var Client $redis */
-            $members = $redis->smembers(self::redisUserSessionsKey($userId));
-            return self::filterActiveSessionIds($redis, array_values($members), $userId);
-        });
+        try {
+            return $pool->withConnection(static function ($redis) use ($userId): array {
+                /** @var Client $redis */
+                $members = $redis->smembers(self::redisUserSessionsKey($userId));
+                return self::filterActiveSessionIds($redis, array_values($members), $userId);
+            });
+        } catch (\Throwable $e) {
+            error_log(sprintf(
+                '[Semitexa SSR] Failed to get authenticated user session IDs for user %s: %s',
+                $userId,
+                $e->getMessage(),
+            ));
+            return [];
+        }
     }
 
     /** @return list<string> */
@@ -965,11 +974,16 @@ final class AsyncResourceSseServer
             return [];
         }
 
-        return $pool->withConnection(static function ($redis): array {
-            /** @var Client $redis */
-            $members = $redis->smembers(self::REDIS_AUTH_ALL_SESSIONS_KEY);
-            return self::filterActiveSessionIds($redis, array_values($members));
-        });
+        try {
+            return $pool->withConnection(static function ($redis): array {
+                /** @var Client $redis */
+                $members = $redis->smembers(self::REDIS_AUTH_ALL_SESSIONS_KEY);
+                return self::filterActiveSessionIds($redis, array_values($members));
+            });
+        } catch (\Throwable $e) {
+            error_log('[Semitexa SSR] Failed to get all authenticated session IDs: ' . $e->getMessage());
+            return [];
+        }
     }
 
     /**

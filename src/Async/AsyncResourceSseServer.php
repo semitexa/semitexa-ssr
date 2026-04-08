@@ -189,6 +189,7 @@ final class AsyncResourceSseServer
                     'reconnect' => false,
                 ]);
                 $response->end();
+                self::removeSessionWorkerMapping($sessionId);
                 self::unregisterAuthenticatedSession($sessionId);
                 unset(self::$sessions[$sessionId], self::$queues[$sessionId]);
                 return;
@@ -205,8 +206,8 @@ final class AsyncResourceSseServer
         $lastAuthTouchAt = time();
         while (!$closed && isset(self::$sessions[$sessionId])) {
             if ((time() - $lastAuthTouchAt) >= self::AUTH_SESSION_TOUCH_INTERVAL_SECONDS) {
-                self::touchActiveSession($sessionId);
                 $authenticatedUserId = self::refreshAuthenticatedSessionMapping($request, $sessionId, $authenticatedUserId);
+                self::touchActiveSession($sessionId);
                 $lastAuthTouchAt = time();
             }
 
@@ -371,27 +372,47 @@ final class AsyncResourceSseServer
             return false;
         }
 
-        $payloads = $pool->withConnection(static function ($redis) use ($sessionId): array {
-            /** @var Client $redis */
-            $queueKey = self::redisSessionQueueKey($sessionId);
-            $messages = [];
-
-            while (true) {
-                $raw = $redis->lpop($queueKey);
-                if (!is_string($raw) || $raw === '') {
-                    break;
-                }
-
-                $messages[] = $raw;
+        while (true) {
+            try {
+                $raw = $pool->withConnection(static function ($redis) use ($sessionId): ?string {
+                    /** @var Client $redis */
+                    $value = $redis->lpop(self::redisSessionQueueKey($sessionId));
+                    return is_string($value) && $value !== '' ? $value : null;
+                });
+            } catch (\Throwable $e) {
+                error_log(sprintf(
+                    '[Semitexa SSR] Redis SSE dequeue failed for session %s: %s',
+                    $sessionId,
+                    $e->getMessage(),
+                ));
+                return false;
             }
 
-            return $messages;
-        });
+            if (!is_string($raw)) {
+                break;
+            }
 
-        foreach ($payloads as $raw) {
             $data = json_decode((string) $raw, true);
-            if (!is_array($data) || !self::writeSse($response, $data)) {
+            if (!is_array($data)) {
                 continue;
+            }
+
+            if (!self::writeSse($response, $data)) {
+                try {
+                    $pool->withConnection(static function ($redis) use ($sessionId, $raw): void {
+                        /** @var Client $redis */
+                        $queueKey = self::redisSessionQueueKey($sessionId);
+                        $redis->rpush($queueKey, [$raw]);
+                        $redis->expire($queueKey, self::REDIS_SESSION_QUEUE_TTL_SECONDS);
+                    });
+                } catch (\Throwable $e) {
+                    error_log(sprintf(
+                        '[Semitexa SSR] Redis SSE requeue failed for session %s: %s',
+                        $sessionId,
+                        $e->getMessage(),
+                    ));
+                }
+                return true;
             }
 
             if (self::shouldCloseAfterPayload($data)) {
@@ -726,6 +747,15 @@ final class AsyncResourceSseServer
         return trim((string) ($cookie[$cookieName] ?? ''));
     }
 
+    private static function removeSessionWorkerMapping(string $sessionId): void
+    {
+        if (self::$sessionWorkerTable === null) {
+            return;
+        }
+
+        self::$sessionWorkerTable->del(self::sessionTableKey($sessionId));
+    }
+
     private static function registerAuthenticatedSession(string $sessionId, string $userId): void
     {
         $pool = self::getRedisPool();
@@ -739,14 +769,22 @@ final class AsyncResourceSseServer
             return;
         }
 
-        $pool->withConnection(static function ($redis) use ($sessionId, $userId): void {
-            /** @var Client $redis */
-            $redis->sadd(self::REDIS_AUTH_ALL_SESSIONS_KEY, [$sessionId]);
-            $redis->sadd(self::redisUserSessionsKey($userId), [$sessionId]);
-            $redis->setex(self::redisSessionUserKey($sessionId), self::AUTH_SESSION_TTL_SECONDS, $userId);
-            $redis->expire(self::REDIS_AUTH_ALL_SESSIONS_KEY, self::AUTH_SESSION_TTL_SECONDS);
-            $redis->expire(self::redisUserSessionsKey($userId), self::AUTH_SESSION_TTL_SECONDS);
-        });
+        try {
+            $pool->withConnection(static function ($redis) use ($sessionId, $userId): void {
+                /** @var Client $redis */
+                $redis->sadd(self::REDIS_AUTH_ALL_SESSIONS_KEY, [$sessionId]);
+                $redis->sadd(self::redisUserSessionsKey($userId), [$sessionId]);
+                $redis->setex(self::redisSessionUserKey($sessionId), self::AUTH_SESSION_TTL_SECONDS, $userId);
+                $redis->expire(self::REDIS_AUTH_ALL_SESSIONS_KEY, self::AUTH_SESSION_TTL_SECONDS);
+                $redis->expire(self::redisUserSessionsKey($userId), self::AUTH_SESSION_TTL_SECONDS);
+            });
+        } catch (\Throwable $e) {
+            error_log(sprintf(
+                '[Semitexa SSR] Failed to register authenticated SSE session %s: %s',
+                $sessionId,
+                $e->getMessage(),
+            ));
+        }
     }
 
     private static function unregisterAuthenticatedSession(string $sessionId): void
@@ -761,16 +799,24 @@ final class AsyncResourceSseServer
             return;
         }
 
-        $pool->withConnection(static function ($redis) use ($sessionId): void {
-            /** @var Client $redis */
-            $userId = trim((string) ($redis->get(self::redisSessionUserKey($sessionId)) ?? ''));
-            if ($userId !== '') {
-                $redis->srem(self::redisUserSessionsKey($userId), $sessionId);
-            }
-            $redis->srem(self::REDIS_AUTH_ALL_SESSIONS_KEY, $sessionId);
-            $redis->del(self::redisSessionUserKey($sessionId));
-            $redis->del(self::redisActiveSessionKey($sessionId));
-        });
+        try {
+            $pool->withConnection(static function ($redis) use ($sessionId): void {
+                /** @var Client $redis */
+                $userId = trim((string) ($redis->get(self::redisSessionUserKey($sessionId)) ?? ''));
+                if ($userId !== '') {
+                    $redis->srem(self::redisUserSessionsKey($userId), $sessionId);
+                }
+                $redis->srem(self::REDIS_AUTH_ALL_SESSIONS_KEY, $sessionId);
+                $redis->del(self::redisSessionUserKey($sessionId));
+                $redis->del(self::redisActiveSessionKey($sessionId));
+            });
+        } catch (\Throwable $e) {
+            error_log(sprintf(
+                '[Semitexa SSR] Failed to unregister authenticated SSE session %s: %s',
+                $sessionId,
+                $e->getMessage(),
+            ));
+        }
     }
 
     private static function touchActiveSession(string $sessionId): void
@@ -785,10 +831,18 @@ final class AsyncResourceSseServer
             return;
         }
 
-        $pool->withConnection(static function ($redis) use ($sessionId): void {
-            /** @var Client $redis */
-            $redis->setex(self::redisActiveSessionKey($sessionId), self::ACTIVE_SESSION_TTL_SECONDS, '1');
-        });
+        try {
+            $pool->withConnection(static function ($redis) use ($sessionId): void {
+                /** @var Client $redis */
+                $redis->setex(self::redisActiveSessionKey($sessionId), self::ACTIVE_SESSION_TTL_SECONDS, '1');
+            });
+        } catch (\Throwable $e) {
+            error_log(sprintf(
+                '[Semitexa SSR] Failed to touch active SSE session %s: %s',
+                $sessionId,
+                $e->getMessage(),
+            ));
+        }
     }
 
     private static function refreshAuthenticatedSessionMapping(

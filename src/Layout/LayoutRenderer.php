@@ -109,23 +109,27 @@ class LayoutRenderer
                 /** @var array<\Semitexa\Ssr\Domain\Model\DeferredSlotDefinition> $deferredSlots */
                 $deferredSlots = $baseContext['__ssr_deferred_slots'] ?? [];
 
-                $renderedSlots = PlaceholderRenderer::filterRenderedSlotsFromHtml(
-                    $html,
-                    $deferredSlots
-                );
-                $renderedSlotIds = array_map(static fn ($slot) => $slot->slotId, $renderedSlots);
-                DeferredRequestRegistry::updateSlots($requestId, $renderedSlotIds);
+                try {
+                    $renderedSlots = PlaceholderRenderer::filterRenderedSlotsFromHtml(
+                        $html,
+                        $deferredSlots
+                    );
+                    $renderedSlotIds = array_map(static fn ($slot) => $slot->slotId, $renderedSlots);
+                    DeferredRequestRegistry::updateSlots($requestId, $renderedSlotIds);
 
-                $updatedPreloadHints = PlaceholderRenderer::renderPreloadHints($renderedSlots);
-                $updatedManifest = PlaceholderRenderer::renderManifest(
-                    $requestId,
-                    (string) ($baseContext['__ssr_deferred_session_id'] ?? ''),
-                    $renderedSlots,
-                    (string) $bindToken,
-                );
+                    $updatedPreloadHints = PlaceholderRenderer::renderPreloadHints($renderedSlots);
+                    $updatedManifest = PlaceholderRenderer::renderManifest(
+                        $requestId,
+                        (string) ($baseContext['__ssr_deferred_session_id'] ?? ''),
+                        $renderedSlots,
+                        (string) $bindToken,
+                    );
 
-                $html = str_replace((string) ($baseContext['__ssr_preload_hints'] ?? ''), $updatedPreloadHints, $html);
-                $html = str_replace((string) ($baseContext['__ssr_deferred_manifest'] ?? ''), $updatedManifest, $html);
+                    $html = str_replace((string) ($baseContext['__ssr_preload_hints'] ?? ''), $updatedPreloadHints, $html);
+                    $html = str_replace((string) ($baseContext['__ssr_deferred_manifest'] ?? ''), $updatedManifest, $html);
+                } catch (\Throwable $e) {
+                    error_log("Failed to finalize deferred SSR slots for layout '{$handle}': " . $e->getMessage());
+                }
             }
 
             return $html;

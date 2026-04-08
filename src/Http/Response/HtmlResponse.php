@@ -381,19 +381,23 @@ class HtmlResponse extends ResourceResponse
                 static fn (mixed $slot): bool => $slot instanceof \Semitexa\Ssr\Domain\Model\DeferredSlotDefinition
             ))
         );
-        $renderedSlotIds = array_map(static fn ($slot) => $slot->slotId, $renderedSlots);
-        DeferredRequestRegistry::updateSlots($requestId, $renderedSlotIds);
+        try {
+            $renderedSlotIds = array_map(static fn ($slot) => $slot->slotId, $renderedSlots);
+            DeferredRequestRegistry::updateSlots($requestId, $renderedSlotIds);
 
-        $updatedPreloadHints = PlaceholderRenderer::renderPreloadHints($renderedSlots);
-        $updatedManifest = PlaceholderRenderer::renderManifest(
-            $requestId,
-            is_string($context['__ssr_deferred_session_id'] ?? null) ? $context['__ssr_deferred_session_id'] : '',
-            $renderedSlots,
-            is_string($context['__ssr_deferred_bind_token'] ?? null) ? $context['__ssr_deferred_bind_token'] : '',
-        );
+            $updatedPreloadHints = PlaceholderRenderer::renderPreloadHints($renderedSlots);
+            $updatedManifest = PlaceholderRenderer::renderManifest(
+                $requestId,
+                is_string($context['__ssr_deferred_session_id'] ?? null) ? $context['__ssr_deferred_session_id'] : '',
+                $renderedSlots,
+                is_string($context['__ssr_deferred_bind_token'] ?? null) ? $context['__ssr_deferred_bind_token'] : '',
+            );
 
-        $html = str_replace(is_string($context['__ssr_preload_hints'] ?? null) ? $context['__ssr_preload_hints'] : '', $updatedPreloadHints, $html);
-        $html = str_replace(is_string($context['__ssr_deferred_manifest'] ?? null) ? $context['__ssr_deferred_manifest'] : '', $updatedManifest, $html);
+            $html = str_replace(is_string($context['__ssr_preload_hints'] ?? null) ? $context['__ssr_preload_hints'] : '', $updatedPreloadHints, $html);
+            $html = str_replace(is_string($context['__ssr_deferred_manifest'] ?? null) ? $context['__ssr_deferred_manifest'] : '', $updatedManifest, $html);
+        } catch (\Throwable $e) {
+            error_log('Failed to finalize deferred SSR HTML: ' . $e->getMessage());
+        }
 
         return $html;
     }

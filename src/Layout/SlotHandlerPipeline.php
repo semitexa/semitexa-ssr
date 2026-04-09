@@ -7,7 +7,7 @@ namespace Semitexa\Ssr\Layout;
 use Semitexa\Core\Container\ContainerFactory;
 use Semitexa\Ssr\Contract\TypedSlotHandlerInterface;
 use Semitexa\Ssr\Http\Response\HtmlSlotResponse;
-use Semitexa\Ssr\Log\SsrLogger;
+use Semitexa\Core\Log\StaticLoggerBridge;
 
 /**
  * Executes all registered slot handlers for a slot resource in priority order.
@@ -34,7 +34,7 @@ final class SlotHandlerPipeline
                 }
                 $slot = $result;
             } catch (\Throwable $e) {
-                SsrLogger::debug('SlotHandlerPipeline error', [
+                StaticLoggerBridge::debug('ssr', 'SlotHandlerPipeline error', [
                     'handler' => $handlerClass,
                     'slot' => $slotClass,
                     'exception' => $e::class,

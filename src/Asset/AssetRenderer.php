@@ -157,7 +157,7 @@ final class AssetRenderer
         ModuleAssetRegistry::initialize();
         $filePath = ModuleAssetRegistry::resolve($entry->module, $entry->path);
         if ($filePath === null) {
-            \Semitexa\Ssr\Log\SsrLogger::warning('Cannot resolve inline asset', [
+            \Semitexa\Core\Log\StaticLoggerBridge::warning('ssr', 'Cannot resolve inline asset', [
                 'key' => $entry->key,
                 'module' => $entry->module,
                 'path' => $entry->path,

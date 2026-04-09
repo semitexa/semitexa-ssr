@@ -110,7 +110,7 @@ final class PlaceholderRenderer
             );
         } catch (\JsonException $e) {
             // Log the error and fall back to a minimal, valid manifest to avoid breaking client initialization.
-            \Semitexa\Ssr\Log\SsrLogger::error('Failed to JSON-encode SSR deferred manifest', [
+            \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'Failed to JSON-encode SSR deferred manifest', [
                 'exception' => $e::class,
                 'message' => $e->getMessage(),
             ]);

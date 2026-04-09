@@ -7,7 +7,7 @@ namespace Semitexa\Ssr\Isomorphic;
 use Semitexa\Core\Support\ProjectRoot;
 use Semitexa\Ssr\Asset\ModuleAssetRegistry;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
-use Semitexa\Ssr\Log\SsrLogger;
+use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Ssr\Layout\LayoutSlotRegistry;
 use Semitexa\Ssr\Template\ModuleTemplateRegistry;
 
@@ -45,7 +45,7 @@ final class DeferredTemplateRegistry
         if (!is_dir($outputDir)) {
             $created = @mkdir($outputDir, 0755, true);
             if (!$created && !is_dir($outputDir)) {
-                SsrLogger::warning('Deferred template publishing skipped: unable to create output directory', [
+                StaticLoggerBridge::warning('ssr', 'Deferred template publishing skipped: unable to create output directory', [
                     'directory' => $outputDir,
                 ]);
                 return;
@@ -203,7 +203,7 @@ final class DeferredTemplateRegistry
         if (!is_dir($outputDir)) {
             $created = @mkdir($outputDir, 0755, true);
             if (!$created && !is_dir($outputDir)) {
-                SsrLogger::warning('Deferred template publishing skipped: unable to create output directory', [
+                StaticLoggerBridge::warning('ssr', 'Deferred template publishing skipped: unable to create output directory', [
                     'directory' => $outputDir,
                 ]);
                 return null;

@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Asset;
 
 use Semitexa\Core\ModuleRegistry;
-use Semitexa\Ssr\Log\SsrLogger;
+use Semitexa\Core\Log\StaticLoggerBridge;
 
 /**
  * Collects asset requirements for a single request and resolves them in dependency order.
@@ -68,7 +68,7 @@ final class AssetCollector
     {
         if (isset($this->required[$key])) {
             if ($overrides !== []) {
-                SsrLogger::warning('Asset required with conflicting overrides; first registration wins', ['key' => $key]);
+                StaticLoggerBridge::warning('ssr', 'Asset required with conflicting overrides; first registration wins', ['key' => $key]);
             }
             return $this; // Deduplication
         }
@@ -217,7 +217,7 @@ final class AssetCollector
             }
 
             if (!$manifestLoaded && $existingStaticDirs !== []) {
-                SsrLogger::warning('Module has Application/Static/ directory but no assets.json manifest', [
+                StaticLoggerBridge::warning('ssr', 'Module has Application/Static/ directory but no assets.json manifest', [
                     'module' => $moduleName,
                     'candidates' => $existingStaticDirs,
                 ]);
@@ -236,25 +236,25 @@ final class AssetCollector
     {
         $content = file_get_contents($manifestPath);
         if ($content === false) {
-            SsrLogger::error('Failed to read asset manifest', ['path' => $manifestPath]);
+            StaticLoggerBridge::error('ssr', 'Failed to read asset manifest', ['path' => $manifestPath]);
             return;
         }
 
         $data = json_decode($content, true);
         if (!is_array($data)) {
-            SsrLogger::error('Invalid JSON in asset manifest', ['path' => $manifestPath]);
+            StaticLoggerBridge::error('ssr', 'Invalid JSON in asset manifest', ['path' => $manifestPath]);
             return;
         }
 
         $schema = $data['$schema'] ?? '';
         if (!str_contains($schema, 'asset-manifest/v2')) {
-            SsrLogger::warning('Asset manifest is not v2 format, skipping', ['path' => $manifestPath]);
+            StaticLoggerBridge::warning('ssr', 'Asset manifest is not v2 format, skipping', ['path' => $manifestPath]);
             return;
         }
 
         $include = $data['include'] ?? null;
         if (!is_array($include)) {
-            SsrLogger::warning('Asset manifest missing required include block, skipping', ['path' => $manifestPath]);
+            StaticLoggerBridge::warning('ssr', 'Asset manifest missing required include block, skipping', ['path' => $manifestPath]);
             return;
         }
 
@@ -308,7 +308,7 @@ final class AssetCollector
                 $dependencies = is_array($override['dependencies'] ?? null) ? $override['dependencies'] : [];
 
                 if (!AssetEntry::isValidKey($key)) {
-                    SsrLogger::warning('Derived asset key is invalid, skipping', ['key' => $key, 'file' => $fullRelative]);
+                    StaticLoggerBridge::warning('ssr', 'Derived asset key is invalid, skipping', ['key' => $key, 'file' => $fullRelative]);
                     continue;
                 }
 
@@ -339,7 +339,7 @@ final class AssetCollector
             }
 
             if (!AssetEntry::isValidKey($key)) {
-                SsrLogger::warning('Invalid asset key in extras, skipping', ['key' => $key, 'manifest' => $manifestPath]);
+                StaticLoggerBridge::warning('ssr', 'Invalid asset key in extras, skipping', ['key' => $key, 'manifest' => $manifestPath]);
                 continue;
             }
 

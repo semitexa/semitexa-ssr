@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Layout;
 
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
-use Semitexa\Ssr\Log\SsrLogger;
+use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Ssr\Context\IsomorphicContextStore;
 use Semitexa\Ssr\Context\PageRenderContextStore;
 use Semitexa\Ssr\Isomorphic\DeferredRequestRegistry;
@@ -129,7 +129,7 @@ class LayoutRenderer
                     $html = str_replace((string) ($baseContext['__ssr_preload_hints'] ?? ''), $updatedPreloadHints, $html);
                     $html = str_replace((string) ($baseContext['__ssr_deferred_manifest'] ?? ''), $updatedManifest, $html);
                 } catch (\Throwable $e) {
-                    SsrLogger::error('Failed to finalize deferred SSR slots', [
+                    StaticLoggerBridge::error('ssr', 'Failed to finalize deferred SSR slots', [
                         'handle' => $handle,
                         'exception' => $e::class,
                         'message' => $e->getMessage(),
@@ -151,7 +151,7 @@ class LayoutRenderer
                 $logContext['trace'] = $e->getTraceAsString();
             }
 
-            SsrLogger::error('Error rendering layout', $logContext);
+            StaticLoggerBridge::error('ssr', 'Error rendering layout', $logContext);
 
             if ($debugEnabled) {
                 return '<!doctype html><html><head><meta charset="utf-8"><title>'

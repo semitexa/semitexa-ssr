@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Layout;
 
 use Semitexa\Ssr\Http\Response\HtmlSlotResponse;
-use Semitexa\Ssr\Log\SsrLogger;
+use Semitexa\Core\Log\StaticLoggerBridge;
 
 /**
  * Shared slot rendering service.
@@ -39,7 +39,7 @@ final class SlotRenderer
 
             return $slot->renderTemplate($template);
         } catch (\Throwable $e) {
-            SsrLogger::debug('SlotRenderer::renderEntry failed', [
+            StaticLoggerBridge::debug('ssr', 'SlotRenderer::renderEntry failed', [
                 'resourceClass' => $resourceClass,
                 'exception' => $e::class,
                 'message' => $e->getMessage(),

@@ -73,9 +73,27 @@ final class SitemapXmlHandler implements TypedHandlerInterface
             tenantContext: $this->tenantContext,
         );
 
+        $outputDir = ProjectRoot::get() . '/var/sitemap';
         $result = $this->generator->generate($context);
+        $this->persistGeneratedSitemaps($outputDir, $result);
 
         return $result['xml'];
+    }
+
+    /**
+     * @param array{xml: string, parts: array<string, string>, totalUrls: int} $result
+     */
+    private function persistGeneratedSitemaps(string $outputDir, array $result): void
+    {
+        if (!is_dir($outputDir) && !mkdir($outputDir, 0755, true) && !is_dir($outputDir)) {
+            return;
+        }
+
+        foreach ($result['parts'] as $filename => $xml) {
+            file_put_contents($outputDir . '/' . $filename, $xml);
+        }
+
+        file_put_contents($outputDir . '/sitemap.xml', $result['xml']);
     }
 
     private function renderEmptySitemap(): string

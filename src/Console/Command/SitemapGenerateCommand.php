@@ -6,10 +6,10 @@ namespace Semitexa\Ssr\Console\Command;
 
 use Semitexa\Core\Attribute\AsCommand;
 use Semitexa\Core\Attribute\InjectAsReadonly;
-use Semitexa\Core\Support\ProjectRoot;
 use Semitexa\Ssr\Seo\AiSitemapLocator;
 use Semitexa\Ssr\Seo\Sitemap\SitemapGenerationContext;
 use Semitexa\Ssr\Seo\Sitemap\SitemapGenerator;
+use Semitexa\Ssr\Seo\Sitemap\SitemapStoragePath;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
@@ -52,7 +52,7 @@ final class SitemapGenerateCommand extends Command
             $outputOption = $input->getOption('output');
             $outputDir = is_string($outputOption) && $outputOption !== ''
                 ? $outputOption
-                : ProjectRoot::get() . '/var/sitemap';
+                : SitemapStoragePath::generatedDirectory();
 
             $baseUrlOption = $input->getOption('base-url');
             $baseUrl = is_string($baseUrlOption) && $baseUrlOption !== ''

@@ -11,6 +11,7 @@ use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Support\ProjectRoot;
 use Semitexa\Core\Tenant\TenantContextInterface;
 use Semitexa\Ssr\Application\Payload\Request\SitemapPartPayload;
+use Semitexa\Ssr\Seo\Sitemap\SitemapStoragePath;
 
 #[AsPayloadHandler(payload: SitemapPartPayload::class, resource: ResourceResponse::class)]
 final class SitemapPartHandler implements TypedHandlerInterface
@@ -31,7 +32,7 @@ final class SitemapPartHandler implements TypedHandlerInterface
         $projectRoot = ProjectRoot::get();
 
         foreach ([
-            $projectRoot . '/var/sitemap/' . $this->resolveTenantCacheKey() . '/' . $filename,
+            SitemapStoragePath::generatedDirectory($this->tenantContext) . '/' . $filename,
             $projectRoot . '/' . $filename,
             $projectRoot . '/public/' . $filename,
         ] as $candidate) {
@@ -50,21 +51,5 @@ final class SitemapPartHandler implements TypedHandlerInterface
         return $resource
             ->setContent('')
             ->setStatusCode(404);
-    }
-
-    private function resolveTenantCacheKey(): string
-    {
-        $tenantId = 'default';
-        if (method_exists($this->tenantContext, 'getTenantId')) {
-            $resolvedTenantId = $this->tenantContext->getTenantId();
-            if (is_scalar($resolvedTenantId) || $resolvedTenantId instanceof \Stringable) {
-                $tenantId = (string) $resolvedTenantId;
-            }
-        }
-
-        $tenantId = strtolower(trim($tenantId));
-        $tenantId = preg_replace('/[^a-z0-9_-]+/', '-', $tenantId) ?? 'default';
-
-        return $tenantId !== '' ? $tenantId : 'default';
     }
 }

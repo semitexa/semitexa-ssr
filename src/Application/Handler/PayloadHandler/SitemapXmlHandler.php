@@ -40,10 +40,11 @@ final class SitemapXmlHandler implements TypedHandlerInterface
     private function resolveContent(): string
     {
         $projectRoot = ProjectRoot::get();
+        $generatedDir = $this->resolveGeneratedSitemapDirectory();
 
         // Check for pre-generated or manual override files
         foreach ([
-            $projectRoot . '/var/sitemap/sitemap.xml',
+            $generatedDir . '/sitemap.xml',
             $projectRoot . '/sitemap.xml',
             $projectRoot . '/public/sitemap.xml',
         ] as $candidate) {
@@ -73,7 +74,7 @@ final class SitemapXmlHandler implements TypedHandlerInterface
             tenantContext: $this->tenantContext,
         );
 
-        $outputDir = ProjectRoot::get() . '/var/sitemap';
+        $outputDir = $this->resolveGeneratedSitemapDirectory();
         $result = $this->generator->generate($context);
         $this->persistGeneratedSitemaps($outputDir, $result);
 
@@ -86,14 +87,35 @@ final class SitemapXmlHandler implements TypedHandlerInterface
     private function persistGeneratedSitemaps(string $outputDir, array $result): void
     {
         if (!is_dir($outputDir) && !mkdir($outputDir, 0755, true) && !is_dir($outputDir)) {
-            return;
+            throw new \RuntimeException("Unable to create sitemap directory: {$outputDir}");
         }
 
         foreach ($result['parts'] as $filename => $xml) {
-            file_put_contents($outputDir . '/' . $filename, $xml);
+            if (file_put_contents($outputDir . '/' . $filename, $xml) === false) {
+                throw new \RuntimeException("Unable to write sitemap part: {$filename}");
+            }
         }
 
-        file_put_contents($outputDir . '/sitemap.xml', $result['xml']);
+        if (file_put_contents($outputDir . '/sitemap.xml', $result['xml']) === false) {
+            throw new \RuntimeException('Unable to write sitemap.xml');
+        }
+    }
+
+    private function resolveGeneratedSitemapDirectory(): string
+    {
+        return ProjectRoot::get() . '/var/sitemap/' . $this->resolveTenantCacheKey();
+    }
+
+    private function resolveTenantCacheKey(): string
+    {
+        $tenantId = method_exists($this->tenantContext, 'getTenantId')
+            ? (string) $this->tenantContext->getTenantId()
+            : 'default';
+
+        $tenantId = strtolower(trim($tenantId));
+        $tenantId = preg_replace('/[^a-z0-9_-]+/', '-', $tenantId) ?? 'default';
+
+        return $tenantId !== '' ? $tenantId : 'default';
     }
 
     private function renderEmptySitemap(): string

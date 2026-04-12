@@ -12,6 +12,7 @@
   "require": {
     "php": "^8.4",
     "twig/twig": "^3.10",
+    "semitexa/scheduler": "*",
     "semitexa/locale": "*",
     "semitexa/tenancy": "*"
   },

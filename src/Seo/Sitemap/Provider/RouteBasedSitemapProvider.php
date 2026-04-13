@@ -19,7 +19,8 @@ use Semitexa\Ssr\Seo\Sitemap\SitemapUrlProviderInterface;
  * Default sitemap provider that yields URLs for all public, GET, HTML-like
  * routes discovered via AttributeDiscovery.
  *
- * Uses a high priority value (1000) so custom module providers run first.
+ * Uses a higher numeric priority value (1000) so this default provider runs
+ * after custom module providers.
  */
 #[AsService]
 #[AsSitemapProvider(priority: 1000)]
@@ -50,7 +51,7 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
         usort($routes, fn (array $a, array $b): int => $this->stringValue($a['path'] ?? '') <=> $this->stringValue($b['path'] ?? ''));
 
         $localeConfig = LocaleConfig::fromEnvironment();
-        $supportedLocales = $localeConfig->supportedLocales;
+        $supportedLocales = array_values($localeConfig->supportedLocales);
         $defaultLocale = $localeConfig->defaultLocale;
         $urlPrefixEnabled = $localeConfig->urlPrefixEnabled;
 
@@ -75,6 +76,7 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
     }
 
     /**
+     * @param list<string> $supportedLocales
      * @return list<SitemapAlternate>
      */
     private function buildAlternates(string $canonicalUrl, string $path, string $baseUrl, array $supportedLocales, string $defaultLocale, bool $urlPrefixEnabled): array
@@ -83,6 +85,7 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
 
         if ($urlPrefixEnabled && count($supportedLocales) > 0) {
             foreach ($supportedLocales as $locale) {
+                $locale = (string) $locale;
                 $localePath = $this->buildLocalePath($path, $locale, $defaultLocale);
                 $localeUrl = $baseUrl . '/' . ltrim($localePath, '/');
 
@@ -98,14 +101,6 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
             );
         }
 
-        $jsonUrl = $this->buildJsonUrl($canonicalUrl);
-        if ($jsonUrl !== null) {
-            $alternates[] = new SitemapAlternate(
-                href: $jsonUrl,
-                type: 'application/json',
-            );
-        }
-
         return $alternates;
     }
 
@@ -116,30 +111,6 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
         }
 
         return '/' . $locale . '/' . ltrim($path, '/');
-    }
-
-    private function buildJsonUrl(string $url): ?string
-    {
-        $parsed = parse_url($url);
-        if ($parsed === false) {
-            return null;
-        }
-
-        $scheme = $parsed['scheme'] ?? 'https';
-        $host = $parsed['host'] ?? '';
-        $port = $parsed['port'] ?? null;
-        $basePath = $parsed['path'] ?? '/';
-        $existingQuery = $parsed['query'] ?? '';
-
-        parse_str($existingQuery, $queryParams);
-        unset($queryParams['_slot'], $queryParams['_expand']);
-        $queryParams['_format'] = 'json';
-
-        $query = http_build_query($queryParams);
-        $portSuffix = $port !== null ? ':' . $port : '';
-        $queryString = $query !== '' ? '?' . $query : '';
-
-        return $scheme . '://' . $host . $portSuffix . $basePath . $queryString;
     }
 
     /**

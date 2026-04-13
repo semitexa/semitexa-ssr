@@ -14,6 +14,7 @@ final readonly class SitemapUrl
         public ?\DateTimeInterface $lastmod = null,
         public ?string $changefreq = null,
         public ?float $priority = null,
+        /** @var list<SitemapAlternate> */
         public array $alternates = [],
     ) {}
 }

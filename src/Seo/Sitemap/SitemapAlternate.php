@@ -9,7 +9,7 @@ final readonly class SitemapAlternate
     public function __construct(
         public string $href,
         public ?string $hreflang = null,
-        public ?string $rel = 'alternate',
+        public string $rel = 'alternate',
         public ?string $type = null,
     ) {}
 }

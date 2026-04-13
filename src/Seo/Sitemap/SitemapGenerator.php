@@ -21,6 +21,7 @@ final class SitemapGenerator
 {
     private const int MAX_URLS_PER_SITEMAP = 50_000;
     private const string SITEMAP_XMLNS = 'http://www.sitemaps.org/schemas/sitemap/0.9';
+    private const string XHTML_XMLNS = 'http://www.w3.org/1999/xhtml';
 
     #[InjectAsReadonly]
     protected ?SitemapProviderRegistry $registry = null;
@@ -203,6 +204,7 @@ final class SitemapGenerator
 
         $writer->startElement('urlset');
         $writer->writeAttribute('xmlns', self::SITEMAP_XMLNS);
+        $writer->writeAttribute('xmlns:xhtml', self::XHTML_XMLNS);
 
         foreach ($urls as $url) {
             $writer->startElement('url');
@@ -218,6 +220,22 @@ final class SitemapGenerator
 
             if ($url->priority !== null) {
                 $writer->writeElement('priority', number_format($url->priority, 1));
+            }
+
+            foreach ($url->alternates as $alternate) {
+                $writer->startElement('xhtml:link');
+                $writer->writeAttribute('rel', $alternate->rel ?? 'alternate');
+                $writer->writeAttribute('href', $alternate->href);
+
+                if ($alternate->hreflang !== null) {
+                    $writer->writeAttribute('hreflang', $alternate->hreflang);
+                }
+
+                if ($alternate->type !== null) {
+                    $writer->writeAttribute('type', $alternate->type);
+                }
+
+                $writer->endElement();
             }
 
             $writer->endElement(); // url

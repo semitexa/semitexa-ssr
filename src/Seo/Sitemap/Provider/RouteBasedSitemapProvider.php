@@ -4,10 +4,13 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Seo\Sitemap\Provider;
 
+use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Discovery\AttributeDiscovery;
+use Semitexa\Locale\LocaleConfig;
 use Semitexa\Ssr\Seo\AiSitemapLocator;
 use Semitexa\Ssr\Seo\Sitemap\AsSitemapProvider;
+use Semitexa\Ssr\Seo\Sitemap\SitemapAlternate;
 use Semitexa\Ssr\Seo\Sitemap\SitemapGenerationContext;
 use Semitexa\Ssr\Seo\Sitemap\SitemapUrl;
 use Semitexa\Ssr\Seo\Sitemap\SitemapUrlProviderInterface;
@@ -18,6 +21,7 @@ use Semitexa\Ssr\Seo\Sitemap\SitemapUrlProviderInterface;
  *
  * Uses a high priority value (1000) so custom module providers run first.
  */
+#[AsService]
 #[AsSitemapProvider(priority: 1000)]
 final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
 {
@@ -45,20 +49,97 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
         /** @var list<array<string, mixed>> $routes */
         usort($routes, fn (array $a, array $b): int => $this->stringValue($a['path'] ?? '') <=> $this->stringValue($b['path'] ?? ''));
 
+        $localeConfig = LocaleConfig::fromEnvironment();
+        $supportedLocales = $localeConfig->supportedLocales;
+        $defaultLocale = $localeConfig->defaultLocale;
+        $urlPrefixEnabled = $localeConfig->urlPrefixEnabled;
+
         foreach ($routes as $route) {
             if (!$this->isEligible($route)) {
                 continue;
             }
 
             $path = $this->stringValue($route['path'] ?? '');
-            $url = rtrim($context->baseUrl, '/') . '/' . ltrim($path, '/');
+            $baseUrl = rtrim($context->baseUrl, '/');
+            $url = $baseUrl . '/' . ltrim($path, '/');
+
+            $alternates = $this->buildAlternates($url, $path, $baseUrl, $supportedLocales, $defaultLocale, $urlPrefixEnabled);
 
             yield new SitemapUrl(
                 loc: $url,
                 changefreq: 'weekly',
                 priority: 0.5,
+                alternates: $alternates,
             );
         }
+    }
+
+    /**
+     * @return list<SitemapAlternate>
+     */
+    private function buildAlternates(string $canonicalUrl, string $path, string $baseUrl, array $supportedLocales, string $defaultLocale, bool $urlPrefixEnabled): array
+    {
+        $alternates = [];
+
+        if ($urlPrefixEnabled && count($supportedLocales) > 0) {
+            foreach ($supportedLocales as $locale) {
+                $localePath = $this->buildLocalePath($path, $locale, $defaultLocale);
+                $localeUrl = $baseUrl . '/' . ltrim($localePath, '/');
+
+                $alternates[] = new SitemapAlternate(
+                    href: $localeUrl,
+                    hreflang: $locale,
+                );
+            }
+
+            $alternates[] = new SitemapAlternate(
+                href: $baseUrl . '/' . ltrim($path, '/'),
+                hreflang: 'x-default',
+            );
+        }
+
+        $jsonUrl = $this->buildJsonUrl($canonicalUrl);
+        if ($jsonUrl !== null) {
+            $alternates[] = new SitemapAlternate(
+                href: $jsonUrl,
+                type: 'application/json',
+            );
+        }
+
+        return $alternates;
+    }
+
+    private function buildLocalePath(string $path, string $locale, string $defaultLocale): string
+    {
+        if ($locale === $defaultLocale) {
+            return $path;
+        }
+
+        return '/' . $locale . '/' . ltrim($path, '/');
+    }
+
+    private function buildJsonUrl(string $url): ?string
+    {
+        $parsed = parse_url($url);
+        if ($parsed === false) {
+            return null;
+        }
+
+        $scheme = $parsed['scheme'] ?? 'https';
+        $host = $parsed['host'] ?? '';
+        $port = $parsed['port'] ?? null;
+        $basePath = $parsed['path'] ?? '/';
+        $existingQuery = $parsed['query'] ?? '';
+
+        parse_str($existingQuery, $queryParams);
+        unset($queryParams['_slot'], $queryParams['_expand']);
+        $queryParams['_format'] = 'json';
+
+        $query = http_build_query($queryParams);
+        $portSuffix = $port !== null ? ':' . $port : '';
+        $queryString = $query !== '' ? '?' . $query : '';
+
+        return $scheme . '://' . $host . $portSuffix . $basePath . $queryString;
     }
 
     /**
@@ -79,7 +160,6 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
             return false;
         }
 
-        // Skip templated paths (e.g. /products/{slug}) — these need concrete URLs
         if (str_contains($path, '{') && str_contains($path, '}')) {
             return false;
         }

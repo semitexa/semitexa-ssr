@@ -118,7 +118,7 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
      */
     private function isEligible(array $route): bool
     {
-        if (($route['public'] ?? true) !== true) {
+        if (($route['public'] ?? false) !== true) {
             return false;
         }
 

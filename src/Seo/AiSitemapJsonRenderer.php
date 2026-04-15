@@ -116,7 +116,7 @@ final class AiSitemapJsonRenderer
      */
     private static function isEligibleRoute(array $route): bool
     {
-        if (($route['public'] ?? true) !== true) {
+        if (($route['public'] ?? false) !== true) {
             return false;
         }
 

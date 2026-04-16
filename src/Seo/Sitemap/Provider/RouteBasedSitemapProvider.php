@@ -119,7 +119,7 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
      */
     private function isEligible(array $route): bool
     {
-        if (($route['transport'] ?? TransportType::Http->value) !== TransportType::Http->value) {
+        if ($this->normalizeTransport($route['transport'] ?? null) !== TransportType::Http->value) {
             return false;
         }
 
@@ -145,6 +145,17 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
         }
 
         return $this->isHtmlLikeRoute($route);
+    }
+
+    private function normalizeTransport(mixed $transport): string
+    {
+        if ($transport instanceof TransportType) {
+            return $transport->value;
+        }
+
+        $value = $this->stringValue($transport);
+
+        return $value !== '' ? $value : TransportType::Http->value;
     }
 
     /**

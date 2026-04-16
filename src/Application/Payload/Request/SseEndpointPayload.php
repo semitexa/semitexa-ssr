@@ -13,7 +13,8 @@ use Semitexa\Core\Http\Response\ResourceResponse;
     responseWith: ResourceResponse::class,
     path: '/sse',
     methods: ['GET'],
-    transport: TransportType::SSE,
+    transport: TransportType::Sse,
+    produces: ['text/event-stream'],
 )]
 #[PublicEndpoint]
 class SseEndpointPayload

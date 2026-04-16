@@ -119,7 +119,7 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
      */
     private function isEligible(array $route): bool
     {
-        if (($route['transport'] ?? TransportType::HTTP->value) !== TransportType::HTTP->value) {
+        if (($route['transport'] ?? TransportType::Http->value) !== TransportType::Http->value) {
             return false;
         }
 

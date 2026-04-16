@@ -6,6 +6,7 @@ namespace Semitexa\Ssr\Seo\Sitemap\Provider;
 
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
+use Semitexa\Core\Attribute\TransportType;
 use Semitexa\Core\Discovery\AttributeDiscovery;
 use Semitexa\Locale\LocaleConfig;
 use Semitexa\Ssr\Seo\AiSitemapLocator;
@@ -118,6 +119,10 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
      */
     private function isEligible(array $route): bool
     {
+        if ($this->normalizeTransport($route['transport'] ?? null) !== TransportType::Http->value) {
+            return false;
+        }
+
         if (($route['public'] ?? false) !== true) {
             return false;
         }
@@ -140,6 +145,17 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
         }
 
         return $this->isHtmlLikeRoute($route);
+    }
+
+    private function normalizeTransport(mixed $transport): string
+    {
+        if ($transport instanceof TransportType) {
+            return $transport->value;
+        }
+
+        $value = $this->stringValue($transport);
+
+        return $value !== '' ? $value : TransportType::Http->value;
     }
 
     /**

@@ -65,7 +65,11 @@ abstract class HtmlSlotResponse
         }
 
         $clone = clone $this;
-        $clone->clientModules = array_values(array_unique(array_merge($clone->clientModules, $clientModules)));
+        $normalizedClientModules = array_values(array_filter(
+            array_merge($clone->clientModules, $clientModules),
+            static fn (mixed $module): bool => is_string($module) && $module !== '',
+        ));
+        $clone->clientModules = array_values(array_unique($normalizedClientModules));
 
         return $clone;
     }

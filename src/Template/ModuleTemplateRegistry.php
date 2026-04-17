@@ -196,7 +196,7 @@ final class ModuleTemplateRegistry
 
         try {
             $env = Environment::create();
-            self::$twig->addGlobal('sse_port', $env->swooleSsePort ?? 9503);
+            self::$twig->addGlobal('sse_port', $env->swooleSsePort);
         } catch (\Throwable $e) {
             self::$twig->addGlobal('sse_port', 9503);
         }

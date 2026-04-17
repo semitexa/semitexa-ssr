@@ -346,6 +346,7 @@ final class AssetCollector
             $parts       = explode(':', $key, 3);
             $entryModule = $parts[0];
 
+            /** @var array<string, mixed> $extra */
             self::$declarations[$key] = AssetEntry::fromManifest($key, $entryModule, $extra);
         }
     }

@@ -224,7 +224,7 @@ final class SitemapGenerator
 
             foreach ($url->alternates as $alternate) {
                 $writer->startElement('xhtml:link');
-                $writer->writeAttribute('rel', $alternate->rel ?? 'alternate');
+                $writer->writeAttribute('rel', $alternate->rel);
                 $writer->writeAttribute('href', $alternate->href);
 
                 if ($alternate->hreflang !== null) {

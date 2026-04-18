@@ -92,27 +92,14 @@ final class AiSitemapLocator
             return null;
         }
 
-        $hostHeader = trim((string) ($request->getHeader('X-Forwarded-Host') ?? $request->getHeader('Host') ?? ''));
-        if ($hostHeader === '') {
-            return null;
-        }
-
-        $scheme = trim((string) ($request->getHeader('X-Forwarded-Proto') ?? ''));
-        if ($scheme === '') {
-            $https = strtolower($request->getServer('https'));
-            $scheme = ($https === 'on' || $https === '1') ? 'https' : '';
-        }
-        if ($scheme === '') {
-            $scheme = trim((string) (Environment::getEnvValue('APP_SCHEME') ?? 'http'));
-        }
-
-        $hostParts = explode(',', $hostHeader);
-        $host = trim($hostParts[0]);
+        $host = $request->getHost();
         if ($host === '') {
             return null;
         }
 
-        return sprintf('%s://%s', $scheme, $host);
+        $origin = $request->getOrigin();
+
+        return $origin !== '' ? $origin : null;
     }
 
     private static function resolvePort(): ?int

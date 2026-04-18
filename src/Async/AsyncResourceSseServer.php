@@ -39,6 +39,9 @@ final class AsyncResourceSseServer
     /** @var array<string, bool> */
     private static array $demoProducers = [];
 
+    /** @var array<string, array<int, true>> Session-scoped coroutine IDs for deferred/live SSE work */
+    private static array $sessionCoroutines = [];
+
     private static ?\Swoole\Http\Server $httpServer = null;
 
     /** @var \Swoole\Table|null session_id -> worker_id (for cross-worker deliver) */
@@ -158,12 +161,7 @@ final class AsyncResourceSseServer
         }
 
         if (self::drainRedisQueueForSession($sessionId, $response)) {
-            if (self::$sessionWorkerTable !== null) {
-                self::$sessionWorkerTable->del(self::sessionTableKey($sessionId));
-            }
-            self::unregisterAuthenticatedSession($sessionId);
-            unset(self::$sessions[$sessionId], self::$queues[$sessionId]);
-            $response->end();
+            self::closeSession($sessionId, $response);
             return;
         }
 
@@ -188,10 +186,7 @@ final class AsyncResourceSseServer
                     'close' => true,
                     'reconnect' => false,
                 ]);
-                $response->end();
-                self::removeSessionWorkerMapping($sessionId);
-                self::unregisterAuthenticatedSession($sessionId);
-                unset(self::$sessions[$sessionId], self::$queues[$sessionId]);
+                self::closeSession($sessionId, $response);
                 return;
             }
             self::triggerDeferredBlocks(
@@ -260,14 +255,7 @@ final class AsyncResourceSseServer
             \Swoole\Coroutine::sleep(0.2);
         }
 
-        if (self::$sessionWorkerTable !== null) {
-            self::$sessionWorkerTable->del(self::sessionTableKey($sessionId));
-        }
-        self::unregisterAuthenticatedSession($sessionId);
-        unset(self::$sessions[$sessionId]);
-        unset(self::$queues[$sessionId]);
-        unset(self::$demoProducers[$sessionId]);
-        $response->end();
+        self::closeSession($sessionId, $response);
     }
 
     private static function triggerDeferredBlocks(
@@ -305,7 +293,7 @@ final class AsyncResourceSseServer
 
         // Use coroutine to resolve deferred blocks concurrently
         if (class_exists(\Swoole\Coroutine::class, false) && \Swoole\Coroutine::getCid() > 0) {
-            \Swoole\Coroutine::create(static function () use ($sessionId, $registry, $lastEventId, $deferredRequestId, $debugLog, $allowPersistentDeferredSse, $locale): void {
+            self::createSessionCoroutine(static function () use ($sessionId, $registry, $lastEventId, $deferredRequestId, $debugLog, $allowPersistentDeferredSse, $locale): void {
                 try {
                     $container = ContainerFactory::get();
                     $orchestrator = $container->get(\Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator::class);
@@ -333,7 +321,7 @@ final class AsyncResourceSseServer
                         'reconnect' => false,
                     ]);
                 }
-            });
+            }, $sessionId);
         } else {
             try {
                 $container = ContainerFactory::get();
@@ -510,7 +498,7 @@ final class AsyncResourceSseServer
         };
 
         if (class_exists(\Swoole\Coroutine::class, false) && \Swoole\Coroutine::getCid() > 0) {
-            \Swoole\Coroutine::create($producer);
+            self::createSessionCoroutine($producer, $sessionId);
             return;
         }
 
@@ -673,6 +661,36 @@ final class AsyncResourceSseServer
         return false;
     }
 
+    public static function createSessionCoroutine(callable $callback, string $sessionId): int|false
+    {
+        if (!class_exists(\Swoole\Coroutine::class, false) || \Swoole\Coroutine::getCid() < 0) {
+            $callback();
+            return false;
+        }
+
+        return \Swoole\Coroutine::create(static function () use ($callback, $sessionId): void {
+            $cid = \Swoole\Coroutine::getCid();
+            if ($cid >= 0) {
+                self::$sessionCoroutines[$sessionId][$cid] = true;
+            }
+
+            try {
+                $callback();
+            } catch (\Throwable $e) {
+                if (!self::isCoroutineCancellation($e)) {
+                    throw $e;
+                }
+            } finally {
+                if ($cid >= 0 && isset(self::$sessionCoroutines[$sessionId][$cid])) {
+                    unset(self::$sessionCoroutines[$sessionId][$cid]);
+                    if (self::$sessionCoroutines[$sessionId] === []) {
+                        unset(self::$sessionCoroutines[$sessionId]);
+                    }
+                }
+            }
+        });
+    }
+
     public static function setServer(\Swoole\Http\Server $server): void
     {
         self::$httpServer = $server;
@@ -738,6 +756,43 @@ final class AsyncResourceSseServer
     private static function sessionTableKey(string $sessionId): string
     {
         return strlen($sessionId) > 63 ? md5($sessionId) : $sessionId;
+    }
+
+    private static function closeSession(string $sessionId, Response $response): void
+    {
+        self::cancelSessionCoroutines($sessionId);
+        self::removeSessionWorkerMapping($sessionId);
+        self::unregisterAuthenticatedSession($sessionId);
+        unset(self::$sessions[$sessionId], self::$queues[$sessionId], self::$demoProducers[$sessionId], self::$sessionCoroutines[$sessionId]);
+        @$response->end();
+    }
+
+    private static function cancelSessionCoroutines(string $sessionId): void
+    {
+        $sessionId = trim($sessionId);
+        if ($sessionId === '' || !isset(self::$sessionCoroutines[$sessionId])) {
+            return;
+        }
+
+        $currentCid = class_exists(\Swoole\Coroutine::class, false) ? \Swoole\Coroutine::getCid() : -1;
+        foreach (array_keys(self::$sessionCoroutines[$sessionId]) as $cid) {
+            if (!is_int($cid) || $cid < 0 || $cid === $currentCid) {
+                continue;
+            }
+            try {
+                \Swoole\Coroutine::cancel($cid, true);
+            } catch (\Throwable) {
+                // Best-effort cancellation only.
+            }
+        }
+    }
+
+    private static function isCoroutineCancellation(\Throwable $e): bool
+    {
+        $class = strtolower($e::class);
+        $message = strtolower($e->getMessage());
+
+        return str_contains($class, 'cancel') || str_contains($message, 'cancel');
     }
 
     private static function getSsrBindToken(Request $request): string

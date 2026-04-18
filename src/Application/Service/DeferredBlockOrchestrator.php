@@ -150,7 +150,10 @@ final class DeferredBlockOrchestrator
                 continue;
             }
 
-            Coroutine::create(function () use ($slot, $pageContext, $pageHandle, &$results, $channel, $locale): void {
+            \Semitexa\Ssr\Async\AsyncResourceSseServer::createSessionCoroutine(function () use ($sessionId, $slot, $pageContext, $pageHandle, &$results, $channel, $locale): void {
+                if (!\Semitexa\Ssr\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+                    return;
+                }
                 $data = [];
                 try {
                     $this->applyLocale($locale);
@@ -162,19 +165,22 @@ final class DeferredBlockOrchestrator
                         'message' => $e->getMessage(),
                     ]);
                 } finally {
-                    if ($channel !== null) {
+                    if ($channel !== null && \Semitexa\Ssr\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
                         $channel->push([$slot, $data]);
                     } else {
                         $results[] = [$slot, $data];
                     }
                 }
-            });
+            }, $sessionId);
         }
 
         $eventId = $lastEventId !== null ? ((int) $lastEventId) : 0;
         if ($channel !== null) {
             $received = 0;
             while ($received < $slotCount) {
+                if (!\Semitexa\Ssr\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+                    break;
+                }
                 $item = $channel->pop();
                 if ($item === false) {
                     break;
@@ -186,6 +192,9 @@ final class DeferredBlockOrchestrator
                 $sseData = $payload->toArray();
                 $sseData['id'] = $eventId;
 
+                if (!\Semitexa\Ssr\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+                    break;
+                }
                 SseAsyncResultDelivery::deliverRaw($sessionId, $sseData);
 
                 if ($deferredRequestId !== null) {
@@ -194,6 +203,9 @@ final class DeferredBlockOrchestrator
             }
         } else {
             foreach ($results as [$slot, $data]) {
+                if (!\Semitexa\Ssr\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+                    break;
+                }
                 $eventId++;
                 $payload = $this->buildPayload($slot, $data, $persistentDeferredSse);
                 $sseData = $payload->toArray();
@@ -208,12 +220,14 @@ final class DeferredBlockOrchestrator
         }
 
         $liveEnabled = $startLiveLoop && $persistentDeferredSse;
-        SseAsyncResultDelivery::deliverRaw($sessionId, [
-            'type' => 'done',
-            'live' => $liveEnabled,
-            'close' => !$liveEnabled,
-            'reconnect' => $liveEnabled,
-        ]);
+        if (\Semitexa\Ssr\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+            SseAsyncResultDelivery::deliverRaw($sessionId, [
+                'type' => 'done',
+                'live' => $liveEnabled,
+                'close' => !$liveEnabled,
+                'reconnect' => $liveEnabled,
+            ]);
+        }
         if ($liveEnabled) {
             $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale);
         }

@@ -70,7 +70,7 @@ final class SsrLocaleSwitchHandler implements TypedHandlerInterface
         $pageContext = $entry['page_context'];
 
         if (class_exists(Coroutine::class, false) && Coroutine::getCid() > 0) {
-            Coroutine::create(function () use ($sessionId, $pageHandle, $pageContext, $locale): void {
+            AsyncResourceSseServer::createSessionCoroutine(function () use ($sessionId, $pageHandle, $pageContext, $locale): void {
                 try {
                     $this->orchestrator->streamDeferredBlocks(
                         sessionId: $sessionId,
@@ -89,7 +89,7 @@ final class SsrLocaleSwitchHandler implements TypedHandlerInterface
                         'message' => $e->getMessage(),
                     ]);
                 }
-            });
+            }, $sessionId);
         } else {
             $this->orchestrator->streamDeferredBlocks(
                 sessionId: $sessionId,

@@ -308,6 +308,11 @@ final class AsyncResourceSseServer
                         startLiveLoop: $allowPersistentDeferredSse,
                     );
                 } catch (\Throwable $e) {
+                    if (self::isCoroutineCancellation($e)) {
+                        $debugLog('streaming_cancelled', ['session_id' => $sessionId]);
+                        return;
+                    }
+
                     $debugLog('streaming_failed', ['error' => $e->getMessage(), 'trace' => substr($e->getTraceAsString(), 0, 500)]);
                     \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'Deferred block streaming failed', [
                         'session_id' => $sessionId,

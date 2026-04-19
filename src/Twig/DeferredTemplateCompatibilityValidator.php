@@ -159,6 +159,11 @@ final class DeferredTemplateCompatibilityValidator
             if ($node->hasNode('else')) {
                 $this->addIssue($source, $line, 'tag', 'for-else', 'Deferred frontend Twig does not support `{% for %}...{% else %}` blocks.');
             }
+
+            $sequence = $node->hasNode('seq') ? $node->getNode('seq') : null;
+            if (!$sequence instanceof AbstractExpression || !$this->isSupportedForIterableExpression($sequence)) {
+                $this->addIssue($source, $line, 'expression', 'for-iterable', 'Deferred frontend Twig `for ... in` iterables must be simple context paths.');
+            }
         } elseif ($node instanceof SetNode) {
             if ($node->getAttribute('capture') || $node->getAttribute('safe')) {
                 $this->addIssue($source, $line, 'tag', 'set-capture', 'Deferred frontend Twig supports only `{% set name = expression %}` assignments.');
@@ -178,8 +183,9 @@ final class DeferredTemplateCompatibilityValidator
             if (!is_string($filterName)) {
                 $filterName = $node::class;
             }
+            $printExpressionSource = $this->peekPrintExpressionSource($line);
 
-            if ($filterName === 'escape' && $this->isImplicitAutoescapeFilter($node)) {
+            if ($filterName === 'escape' && $this->isImplicitAutoescapeFilter($node, $printExpressionSource)) {
                 // Twig autoescape wraps ordinary `{{ value }}` output with an internal
                 // escape filter node even though the frontend renderer already escapes
                 // plain output by default.
@@ -266,7 +272,7 @@ final class DeferredTemplateCompatibilityValidator
     private function validatePrintNode(PrintNode $node, Source $source, int $line): void
     {
         $expression = $node->hasNode('expr') ? $node->getNode('expr') : null;
-        $printExpressionSource = $this->consumePrintExpressionSource($line);
+        $printExpressionSource = $this->peekPrintExpressionSource($line);
 
         if (!$expression instanceof AbstractExpression || !$this->isSupportedPrintExpression($expression, $printExpressionSource)) {
             $this->addIssue($source, $line, 'expression', 'print-expression', 'Deferred frontend Twig print expressions must be simple context paths with an optional `|raw` filter.');
@@ -285,7 +291,7 @@ final class DeferredTemplateCompatibilityValidator
                 return false;
             }
 
-            if ($filterName === 'escape' && $this->isImplicitAutoescapeFilter($expression)) {
+            if ($filterName === 'escape' && $this->isImplicitAutoescapeFilter($expression, $printExpressionSource)) {
                 return $expression->hasNode('node')
                     && $expression->getNode('node') instanceof AbstractExpression
                     && $this->isSupportedPrintExpression($expression->getNode('node'), $printExpressionSource);
@@ -302,9 +308,21 @@ final class DeferredTemplateCompatibilityValidator
         return false;
     }
 
-    private function isImplicitAutoescapeFilter(FilterExpression $expression): bool
+    private function isSupportedForIterableExpression(AbstractExpression $expression): bool
     {
-        return $expression->hasNode('arguments') && count($expression->getNode('arguments')) === 3;
+        return $expression instanceof ContextVariable || $expression instanceof GetAttrExpression;
+    }
+
+    private function isImplicitAutoescapeFilter(FilterExpression $expression, ?string $printExpressionSource): bool
+    {
+        return $expression->hasNode('arguments')
+            && count($expression->getNode('arguments')) === 3
+            && !$this->isExplicitEscapeInSource($printExpressionSource);
+    }
+
+    private function isExplicitEscapeInSource(?string $printExpressionSource): bool
+    {
+        return is_string($printExpressionSource) && preg_match('/\|\s*escape\s*(\(|$)/', $printExpressionSource) === 1;
     }
 
     /**
@@ -339,14 +357,12 @@ final class DeferredTemplateCompatibilityValidator
         return $printExpressions;
     }
 
-    private function consumePrintExpressionSource(int $line): ?string
+    private function peekPrintExpressionSource(int $line): ?string
     {
-        foreach ($this->printExpressions as $index => $printExpression) {
+        foreach ($this->printExpressions as $printExpression) {
             if ($line < $printExpression['line_start'] || $line > $printExpression['line_end']) {
                 continue;
             }
-
-            array_splice($this->printExpressions, $index, 1);
 
             return $printExpression['expression'];
         }

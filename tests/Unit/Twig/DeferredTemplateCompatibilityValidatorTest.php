@@ -133,6 +133,43 @@ TWIG,
         self::assertContains('raw', $names);
     }
 
+    public function testValidateSourceFlagsUnsupportedForIterableExpressions(): void
+    {
+        $validator = new DeferredTemplateCompatibilityValidator();
+
+        $issues = $validator->validateSource(new Source(
+            <<<'TWIG'
+{% for item in items and other %}
+  {{ item }}
+{% endfor %}
+TWIG,
+            'inline-unsupported-for-iterable',
+            '/tmp/inline-unsupported-for-iterable.twig'
+        ));
+
+        $names = array_map(static fn ($issue): string => $issue->name, $issues);
+
+        self::assertContains('for-iterable', $names);
+    }
+
+    public function testValidateSourceFlagsExplicitEscapeWithArguments(): void
+    {
+        $validator = new DeferredTemplateCompatibilityValidator();
+
+        $issues = $validator->validateSource(new Source(
+            <<<'TWIG'
+<p>{{ title|escape('html', null, true) }}</p>
+TWIG,
+            'inline-explicit-escape-with-args-output',
+            '/tmp/inline-explicit-escape-with-args-output.twig'
+        ));
+
+        $names = array_map(static fn ($issue): string => $issue->name, $issues);
+
+        self::assertContains('escape', $names);
+        self::assertContains('print-expression', $names);
+    }
+
     public function testValidateSourceFlagsUnsupportedSetCaptureAndForElse(): void
     {
         $validator = new DeferredTemplateCompatibilityValidator();

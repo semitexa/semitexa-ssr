@@ -68,7 +68,7 @@ final class FrontendTwigCompatibilityProfile
 
     public function supportsFilterName(string $name): bool
     {
-        return in_array($name, ['raw', 'escape'], true);
+        return $name === 'raw';
     }
 
     public function supportsTest(string $name): bool

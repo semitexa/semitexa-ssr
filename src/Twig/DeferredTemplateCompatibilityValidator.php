@@ -12,7 +12,6 @@ use Twig\Node\BlockNode;
 use Twig\Node\BlockReferenceNode;
 use Twig\Node\BodyNode;
 use Twig\Node\DoNode;
-use Twig\Node\EmbedNode;
 use Twig\Node\EmptyNode;
 use Twig\Node\Expression\AbstractExpression;
 use Twig\Node\Expression\ArrayExpression;
@@ -27,13 +26,9 @@ use Twig\Node\Expression\InlinePrint;
 use Twig\Node\Expression\ListExpression;
 use Twig\Node\Expression\MacroReferenceExpression;
 use Twig\Node\Expression\MethodCallExpression;
-use Twig\Node\Expression\NullCoalesceExpression;
 use Twig\Node\Expression\TempNameExpression;
 use Twig\Node\Expression\TestExpression;
 use Twig\Node\Expression\Unary\AbstractUnary;
-use Twig\Node\Expression\Unary\SpreadUnary;
-use Twig\Node\Expression\Unary\StringCastUnary;
-use Twig\Node\Expression\Variable\AssignContextVariable;
 use Twig\Node\Expression\Variable\ContextVariable;
 use Twig\Node\ForElseNode;
 use Twig\Node\ForLoopNode;
@@ -142,15 +137,15 @@ final class DeferredTemplateCompatibilityValidator
             || $node instanceof BodyNode
             || $node instanceof Nodes
             || $node instanceof TextNode
-            || $node instanceof PrintNode
             || $node instanceof IfNode
             || $node instanceof EmptyNode
             || $node instanceof ContextVariable
-            || $node instanceof AssignContextVariable
             || $node instanceof TempNameExpression
             || $node instanceof ForLoopNode
         ) {
             // Structural nodes allowed without extra constraints.
+        } elseif ($node instanceof PrintNode) {
+            $this->validatePrintNode($node, $source, $line);
         } elseif ($node instanceof ForNode) {
             if ($node->hasNode('else')) {
                 $this->addIssue($source, $line, 'tag', 'for-else', 'Deferred frontend Twig does not support `{% for %}...{% else %}` blocks.');
@@ -170,17 +165,33 @@ final class DeferredTemplateCompatibilityValidator
         } elseif ($node instanceof GetAttrExpression) {
             $this->validateGetAttrExpression($node, $source, $line);
         } elseif ($node instanceof FilterExpression) {
-            $filterName = (string) $node->getAttribute('name');
-            if (!$this->profile->supportsFilterName($filterName)) {
+            $filterName = $node->getAttribute('name');
+            if (!is_string($filterName)) {
+                $filterName = $node::class;
+            }
+
+            if ($filterName === 'escape' && !$this->usesExplicitFilter($source, $line, 'escape')) {
+                // Twig autoescape wraps ordinary `{{ value }}` output with an internal
+                // escape filter node even though the frontend renderer already escapes
+                // plain output by default.
+            } elseif (!$this->profile->supportsFilterName($filterName)) {
                 $this->addIssue($source, $line, 'filter', $filterName, sprintf('Filter `%s` is not available in deferred frontend Twig rendering.', $filterName));
             }
         } elseif ($node instanceof FunctionExpression) {
-            $functionName = (string) $node->getAttribute('name');
+            $functionName = $node->getAttribute('name');
+            if (!is_string($functionName)) {
+                $functionName = $node::class;
+            }
+
             if (!$this->profile->supportsFunction($functionName)) {
                 $this->addIssue($source, $line, 'function', $functionName, sprintf('Function `%s()` is not available in deferred frontend Twig rendering.', $functionName));
             }
         } elseif ($node instanceof TestExpression) {
-            $testName = (string) $node->getAttribute('name');
+            $testName = $node->getAttribute('name');
+            if (!is_string($testName)) {
+                $testName = $node::class;
+            }
+
             if (!$this->profile->supportsTest($testName)) {
                 $this->addIssue($source, $line, 'test', $testName, sprintf('Test `%s` is not available in deferred frontend Twig rendering.', $testName));
             }
@@ -195,7 +206,6 @@ final class DeferredTemplateCompatibilityValidator
         } elseif (
             $node instanceof IncludeNode
             || $node instanceof ImportNode
-            || $node instanceof EmbedNode
             || $node instanceof BlockNode
             || $node instanceof BlockReferenceNode
             || $node instanceof MacroNode
@@ -206,14 +216,14 @@ final class DeferredTemplateCompatibilityValidator
             || $node instanceof MethodCallExpression
             || $node instanceof ArrowFunctionExpression
             || $node instanceof ConditionalExpression
-            || $node instanceof NullCoalesceExpression
             || $node instanceof InlinePrint
             || $node instanceof ListExpression
-            || $node instanceof SpreadUnary
-            || $node instanceof StringCastUnary
             || $node instanceof ForElseNode
         ) {
-            $name = $node->getNodeTag() ?? $node::class;
+            $name = $node->getNodeTag();
+            if (!is_string($name) || $name === '') {
+                $name = $node::class;
+            }
             $this->addIssue($source, $line, 'node', $name, sprintf('Node `%s` is not supported in deferred frontend Twig rendering.', $name));
         }
 
@@ -240,6 +250,49 @@ final class DeferredTemplateCompatibilityValidator
         if ($node->getAttribute('type') !== Template::ANY_CALL) {
             $this->addIssue($source, $line, 'expression', 'attribute-type', 'Deferred frontend Twig supports only standard dotted attribute access.');
         }
+    }
+
+    private function validatePrintNode(PrintNode $node, Source $source, int $line): void
+    {
+        $expression = $node->hasNode('expr') ? $node->getNode('expr') : null;
+        if (!$expression instanceof AbstractExpression || !$this->isSupportedPrintExpression($expression, $source, $line)) {
+            $this->addIssue($source, $line, 'expression', 'print-expression', 'Deferred frontend Twig print expressions must be simple context paths with an optional `|raw` filter.');
+        }
+    }
+
+    private function isSupportedPrintExpression(AbstractExpression $expression, Source $source, int $line): bool
+    {
+        if ($expression instanceof ContextVariable || $expression instanceof GetAttrExpression) {
+            return true;
+        }
+
+        if ($expression instanceof FilterExpression) {
+            $filterName = $expression->getAttribute('name');
+            if (!is_string($filterName)) {
+                return false;
+            }
+
+            if ($filterName === 'escape' && !$this->usesExplicitFilter($source, $line, 'escape')) {
+                return $expression->hasNode('node')
+                    && $expression->getNode('node') instanceof AbstractExpression
+                    && $this->isSupportedPrintExpression($expression->getNode('node'), $source, $line);
+            }
+
+            return $filterName === 'raw'
+                && $expression->hasNode('node')
+                && $expression->getNode('node') instanceof AbstractExpression
+                && $this->isSupportedPrintExpression($expression->getNode('node'), $source, $line);
+        }
+
+        return false;
+    }
+
+    private function usesExplicitFilter(Source $source, int $line, string $filterName): bool
+    {
+        $lines = preg_split("/\r\n|\n|\r/", $source->getCode()) ?: [];
+        $lineText = $lines[$line - 1] ?? '';
+
+        return str_contains($lineText, '|' . $filterName);
     }
 
     private function addIssue(Source $source, int $line, string $construct, string $name, string $message): void

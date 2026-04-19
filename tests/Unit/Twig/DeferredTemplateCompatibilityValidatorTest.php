@@ -75,6 +75,24 @@ TWIG,
         self::assertSame([], $issues);
     }
 
+    public function testValidateSourceFlagsExplicitEscapeFilter(): void
+    {
+        $validator = new DeferredTemplateCompatibilityValidator();
+
+        $issues = $validator->validateSource(new Source(
+            <<<'TWIG'
+<p>{{ title|escape }}</p>
+TWIG,
+            'inline-explicit-escape-output',
+            '/tmp/inline-explicit-escape-output.twig'
+        ));
+
+        $names = array_map(static fn ($issue): string => $issue->name, $issues);
+
+        self::assertContains('escape', $names);
+        self::assertContains('print-expression', $names);
+    }
+
     public function testValidateSourceFlagsUnsupportedSetCaptureAndForElse(): void
     {
         $validator = new DeferredTemplateCompatibilityValidator();

@@ -268,6 +268,7 @@ final class AsyncResourceSseServer
         $registry = \Semitexa\Ssr\Isomorphic\DeferredRequestRegistry::consume($deferredRequestId);
 
         $debugLog = static function (string $msg, array $data = []): void {
+            /** @var array<string, mixed> $data */
             \Semitexa\Core\Log\StaticLoggerBridge::debug('ssr', $msg, $data);
         };
 
@@ -633,6 +634,13 @@ final class AsyncResourceSseServer
         }
     }
 
+    /**
+     * Reads mutable session state from in-process tables and Redis. The return value
+     * can flip between calls within the same request (sessions can end mid-coroutine),
+     * so PHPStan must not narrow subsequent calls based on a prior true result.
+     *
+     * @phpstan-impure
+     */
     public static function isSessionActive(string $sessionId): bool
     {
         $sessionId = trim($sessionId);
@@ -673,8 +681,9 @@ final class AsyncResourceSseServer
             return false;
         }
 
-        return \Swoole\Coroutine::create(static function () use ($callback, $sessionId): void {
-            $cid = \Swoole\Coroutine::getCid();
+        /** @var int|false $result */
+        $result = \Swoole\Coroutine::create(static function () use ($callback, $sessionId): void {
+            $cid = self::currentCid();
             if ($cid >= 0) {
                 self::$sessionCoroutines[$sessionId][$cid] = true;
             }
@@ -686,6 +695,7 @@ final class AsyncResourceSseServer
                     throw $e;
                 }
             } finally {
+                $cid = self::currentCid();
                 if ($cid >= 0 && isset(self::$sessionCoroutines[$sessionId][$cid])) {
                     unset(self::$sessionCoroutines[$sessionId][$cid]);
                     if (self::$sessionCoroutines[$sessionId] === []) {
@@ -694,6 +704,8 @@ final class AsyncResourceSseServer
                 }
             }
         });
+
+        return $result;
     }
 
     public static function setServer(\Swoole\Http\Server $server): void
@@ -755,12 +767,27 @@ final class AsyncResourceSseServer
         if (method_exists(self::$httpServer, 'getWorkerId')) {
             return (int) self::$httpServer->getWorkerId();
         }
-        return (int) (self::$httpServer->worker_id ?? -1);
+        $workerId = self::$httpServer->worker_id ?? -1;
+        return is_numeric($workerId) ? (int) $workerId : -1;
     }
 
     private static function sessionTableKey(string $sessionId): string
     {
         return strlen($sessionId) > 63 ? md5($sessionId) : $sessionId;
+    }
+
+    /**
+     * Typed wrapper around \Swoole\Coroutine::getCid(). The Swoole stub PHPStan
+     * sees returns mixed, but the runtime contract is int (>=0 inside a coroutine,
+     * negative otherwise). Wrapping it once keeps the rest of this class type-safe.
+     */
+    private static function currentCid(): int
+    {
+        if (!class_exists(\Swoole\Coroutine::class, false)) {
+            return -1;
+        }
+        $cid = \Swoole\Coroutine::getCid();
+        return is_int($cid) ? $cid : -1;
     }
 
     private static function closeSession(string $sessionId, Response $response): void
@@ -779,13 +806,15 @@ final class AsyncResourceSseServer
             return;
         }
 
-        $currentCid = class_exists(\Swoole\Coroutine::class, false) ? \Swoole\Coroutine::getCid() : -1;
-        foreach (array_keys(self::$sessionCoroutines[$sessionId]) as $cid) {
-            if (!is_int($cid) || $cid < 0 || $cid === $currentCid) {
+        $currentCid = self::currentCid();
+        /** @var array<int, true> $cids */
+        $cids = self::$sessionCoroutines[$sessionId];
+        foreach (array_keys($cids) as $cid) {
+            if ($cid < 0 || $cid === $currentCid) {
                 continue;
             }
             try {
-                \Swoole\Coroutine::cancel($cid, true);
+                \Swoole\Coroutine::cancel($cid);
             } catch (\Throwable) {
                 // Best-effort cancellation only.
             }

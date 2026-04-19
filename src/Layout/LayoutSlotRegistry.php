@@ -7,6 +7,24 @@ namespace Semitexa\Ssr\Layout;
 use Semitexa\Ssr\Domain\Model\DeferredSlotDefinition;
 use Semitexa\Ssr\Template\ModuleTemplateRegistry;
 
+/**
+ * @phpstan-type SlotContext   array<string, mixed>
+ * @phpstan-type SlotEntry     array{
+ *     template: string,
+ *     context: SlotContext,
+ *     priority: int,
+ *     deferred: bool,
+ *     cacheTtl: int,
+ *     dataProvider: ?string,
+ *     skeletonTemplate: ?string,
+ *     mode: string,
+ *     refreshInterval: int,
+ *     resourceClass: ?string,
+ *     clientModules: list<string>,
+ * }
+ * @phpstan-type SlotMap       array<string, list<SlotEntry>>
+ * @phpstan-type SlotIndex     array<string, SlotMap>
+ */
 class LayoutSlotRegistry
 {
     public const GLOBAL_HANDLE = '*';
@@ -14,10 +32,14 @@ class LayoutSlotRegistry
     /**
      * @worker-scoped Populated at boot by AttributeDiscovery, read-only during requests.
      * handle => slot => list of { template, context, priority, ... }
-     * @var array<string, array<string, array<int, array{template:string, context:array, priority:int, deferred:bool, cacheTtl:int, dataProvider:?string, skeletonTemplate:?string, mode:string, refreshInterval:int, resourceClass:?string, clientModules:array}>>>
+     * @var SlotIndex
      */
     private static array $slots = [];
 
+    /**
+     * @param SlotContext  $context
+     * @param list<string> $clientModules
+     */
     public static function register(
         string $handle,
         string $slot,
@@ -60,6 +82,9 @@ class LayoutSlotRegistry
      * - layoutHandle (if not null),
      * - pageHandle,
      * then merges and renders in priority order.
+     *
+     * @param SlotContext $baseContext
+     * @param SlotContext $inlineContext
      */
     public static function render(
         string $pageHandle,
@@ -102,6 +127,9 @@ class LayoutSlotRegistry
         return $html;
     }
 
+    /**
+     * @return SlotMap
+     */
     public static function getSlotsForHandle(string $handle): array
     {
         $handleKey = strtolower($handle);
@@ -127,7 +155,7 @@ class LayoutSlotRegistry
                 }
 
                 foreach ($entries as $entry) {
-                    if (($entry['deferred'] ?? false) === true) {
+                    if ($entry['deferred'] === true) {
                         $description[$slotName]['deferred'] = true;
                     }
                 }
@@ -162,21 +190,21 @@ class LayoutSlotRegistry
 
         foreach ($mergedSlots as $slotName => $entries) {
             foreach ($entries as $entry) {
-                if (!($entry['deferred'] ?? false)) {
+                if (!$entry['deferred']) {
                     continue;
                 }
                 $result[] = new DeferredSlotDefinition(
                     slotId: $slotName,
                     templateName: $entry['template'],
                     pageHandle: $handle,
-                    mode: $entry['mode'] ?? 'html',
-                    priority: $entry['priority'] ?? 0,
-                    cacheTtl: $entry['cacheTtl'] ?? 0,
-                    dataProviderClass: $entry['dataProvider'] ?? null,
-                    skeletonTemplate: $entry['skeletonTemplate'] ?? null,
-                    refreshInterval: $entry['refreshInterval'] ?? 0,
-                    resourceClass: $entry['resourceClass'] ?? null,
-                    clientModules: $entry['clientModules'] ?? [],
+                    mode: $entry['mode'],
+                    priority: $entry['priority'],
+                    cacheTtl: $entry['cacheTtl'],
+                    dataProviderClass: $entry['dataProvider'],
+                    skeletonTemplate: $entry['skeletonTemplate'],
+                    refreshInterval: $entry['refreshInterval'],
+                    resourceClass: $entry['resourceClass'],
+                    clientModules: $entry['clientModules'],
                 );
             }
         }
@@ -198,21 +226,21 @@ class LayoutSlotRegistry
         foreach (self::$slots as $handleKey => $slotMap) {
             foreach ($slotMap as $slotName => $entries) {
                 foreach ($entries as $entry) {
-                    if (!($entry['deferred'] ?? false)) {
+                    if (!$entry['deferred']) {
                         continue;
                     }
                     $result[] = new DeferredSlotDefinition(
                         slotId: $slotName,
                         templateName: $entry['template'],
                         pageHandle: $handleKey,
-                        mode: $entry['mode'] ?? 'html',
-                        priority: $entry['priority'] ?? 0,
-                        cacheTtl: $entry['cacheTtl'] ?? 0,
-                        dataProviderClass: $entry['dataProvider'] ?? null,
-                        skeletonTemplate: $entry['skeletonTemplate'] ?? null,
-                        refreshInterval: $entry['refreshInterval'] ?? 0,
-                        resourceClass: $entry['resourceClass'] ?? null,
-                        clientModules: $entry['clientModules'] ?? [],
+                        mode: $entry['mode'],
+                        priority: $entry['priority'],
+                        cacheTtl: $entry['cacheTtl'],
+                        dataProviderClass: $entry['dataProvider'],
+                        skeletonTemplate: $entry['skeletonTemplate'],
+                        refreshInterval: $entry['refreshInterval'],
+                        resourceClass: $entry['resourceClass'],
+                        clientModules: $entry['clientModules'],
                     );
                 }
             }
@@ -234,12 +262,12 @@ class LayoutSlotRegistry
 
         foreach ([self::GLOBAL_HANDLE, $handleKey] as $candidateHandle) {
             foreach ((self::$slots[$candidateHandle][$slotKey] ?? []) as $entry) {
-                if (!($entry['deferred'] ?? false)) {
+                if (!$entry['deferred']) {
                     continue;
                 }
 
-                foreach (($entry['clientModules'] ?? []) as $moduleRef) {
-                    if (is_string($moduleRef) && $moduleRef !== '') {
+                foreach ($entry['clientModules'] as $moduleRef) {
+                    if ($moduleRef !== '') {
                         $modules[] = $moduleRef;
                     }
                 }

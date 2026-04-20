@@ -814,7 +814,11 @@ final class AsyncResourceSseServer
                 continue;
             }
             try {
-                \Swoole\Coroutine::cancel($cid);
+                // Second arg forces a synchronous cancel that throws inside the target
+                // coroutine — without it, Coroutine::sleep() returns false but a tight
+                // loop keeps running. The Swoole stub PHPStan sees omits this parameter.
+                /** @phpstan-ignore-next-line arguments.count */
+                \Swoole\Coroutine::cancel($cid, true);
             } catch (\Throwable) {
                 // Best-effort cancellation only.
             }

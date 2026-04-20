@@ -93,14 +93,10 @@ final class ModuleTemplateRegistry
 
         $modules = self::$moduleRegistry->getModules();
         foreach ($modules as $module) {
-            if (!is_array($module)) {
-                continue;
-            }
-
-            $templatePaths = $module['templatePaths'] ?? [];
+            $templatePaths = $module['templatePaths'];
             foreach ($templatePaths as $path) {
                 if (is_dir($path)) {
-                    $moduleName = is_string($module['name'] ?? null) ? $module['name'] : '';
+                    $moduleName = $module['name'];
                     if ($moduleName === '') {
                         continue;
                     }
@@ -284,6 +280,8 @@ final class ModuleTemplateRegistry
             self::$twig->addFunction(new TwigFunction(
                 'layout_slot',
                 function (array $context, string $slot, array $extraContext = []) {
+                    /** @var array<string, mixed> $context */
+                    /** @var array<string, mixed> $extraContext */
                     $pageHandle = $context['page_handle'] ?? $context['layout_handle'] ?? null;
                     if ($pageHandle === null || $pageHandle === '') {
                         return '';
@@ -301,6 +299,8 @@ final class ModuleTemplateRegistry
             self::$twig->addFunction(new TwigFunction(
                 'layout_slot_deferred',
                 function (array $context, string $slot, array $extraContext = []) {
+                    /** @var array<string, mixed> $context */
+                    /** @var array<string, mixed> $extraContext */
                     $deferredSlots = $context['__ssr_deferred_slots'] ?? [];
                     foreach ($deferredSlots as $slotDef) {
                         if ($slotDef->slotId === strtolower($slot)) {

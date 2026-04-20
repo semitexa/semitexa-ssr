@@ -442,6 +442,7 @@ final class DeferredBlockOrchestrator
         }
     }
 
+    /** @param array<string, mixed> $data */
     private function debugLog(string $message, array $data = []): void
     {
         $this->logger->debug($message, $data);

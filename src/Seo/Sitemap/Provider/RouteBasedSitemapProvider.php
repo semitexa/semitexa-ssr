@@ -44,11 +44,7 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
             return;
         }
 
-        $routes = array_values(array_filter(
-            $this->attributeDiscovery->getRoutes(),
-            static fn (mixed $route): bool => is_array($route),
-        ));
-        /** @var list<array<string, mixed>> $routes */
+        $routes = $this->attributeDiscovery->getRoutes();
         usort($routes, fn (array $a, array $b): int => $this->stringValue($a['path'] ?? '') <=> $this->stringValue($b['path'] ?? ''));
 
         $localeConfig = LocaleConfig::fromEnvironment();

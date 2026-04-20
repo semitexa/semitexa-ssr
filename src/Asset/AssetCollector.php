@@ -182,8 +182,8 @@ final class AssetCollector
         $modules = self::$moduleRegistry->getModules();
 
         foreach ($modules as $module) {
-            $moduleName = is_string($module['name'] ?? null) ? $module['name'] : '';
-            $modulePath = is_string($module['path'] ?? null) ? $module['path'] : '';
+            $moduleName = $module['name'];
+            $modulePath = $module['path'];
 
             if ($moduleName === '' || $modulePath === '') {
                 continue;

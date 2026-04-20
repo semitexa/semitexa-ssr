@@ -16,13 +16,7 @@ final class SitemapStoragePath
 
     public static function tenantCacheKey(?TenantContextInterface $tenantContext = null): string
     {
-        $tenantId = 'default';
-        if ($tenantContext !== null && method_exists($tenantContext, 'getTenantId')) {
-            $resolvedTenantId = $tenantContext->getTenantId();
-            if (is_scalar($resolvedTenantId) || $resolvedTenantId instanceof \Stringable) {
-                $tenantId = (string) $resolvedTenantId;
-            }
-        }
+        $tenantId = $tenantContext !== null ? $tenantContext->getTenantId() : 'default';
 
         $tenantId = strtolower(trim($tenantId));
         $tenantId = preg_replace('/[^a-z0-9_-]+/', '-', $tenantId) ?? 'default';

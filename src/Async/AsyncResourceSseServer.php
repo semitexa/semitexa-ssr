@@ -102,13 +102,16 @@ final class AsyncResourceSseServer
         if (isset($get['demo_stream'])) {
             $demoStream = trim((string) $get['demo_stream']);
         }
+        $deferredRequestId = trim((string) ($get['deferred_request_id'] ?? ''));
 
-        // Auth gate — ordering matters:
-        //  1. demo_stream always requires a session (the demo attribution relies on it).
-        //  2. otherwise, unless SSE_PUBLIC_ANONYMOUS is explicitly enabled, require auth.
-        //
-        // This closes finding S-1: previously the base /sse stream was open to
-        // any client with no auth, no caps, no timeout.
+        // Auth gate — only persistent streams require a session:
+        //  1. demo_stream runs an infinite per-minute producer → auth always.
+        //  2. deferred_request_id requests are guest-safe: the orchestrator runs
+        //     delivery then sends done/close (canUsePersistentDeferredSse() keeps
+        //     the persistent live loop auth-gated), so we let guests through the
+        //     gate and rely on the delivery-complete close.
+        //  3. bare /sse with no deferred_request_id is a long-lived stream →
+        //     auth required, unless SSE_PUBLIC_ANONYMOUS is opt-in.
         $authenticated = self::hasAuthenticatedSession($request);
         $anonymousAllowed = filter_var((string) (\getenv('SSE_PUBLIC_ANONYMOUS') ?: ''), FILTER_VALIDATE_BOOLEAN);
 
@@ -117,8 +120,8 @@ final class AsyncResourceSseServer
             return;
         }
 
-        if ($demoStream === '' && !$authenticated && !$anonymousAllowed) {
-            self::rejectUnauthorized($response, 'Authorization is required for the SSE stream. Set SSE_PUBLIC_ANONYMOUS=true to opt in to anonymous streams.');
+        if ($demoStream === '' && $deferredRequestId === '' && !$authenticated && !$anonymousAllowed) {
+            self::rejectUnauthorized($response, 'Authorization is required for persistent SSE streams. Set SSE_PUBLIC_ANONYMOUS=true to opt in to anonymous persistent streams.');
             return;
         }
 
@@ -214,7 +217,6 @@ final class AsyncResourceSseServer
         }
 
         // Trigger deferred block streaming if deferred_request_id is present
-        $deferredRequestId = trim((string) ($get['deferred_request_id'] ?? ''));
         $lastEventId = $header['last-event-id'] ?? null;
         if ($deferredRequestId !== '') {
             $bindToken = self::getSsrBindToken($request);

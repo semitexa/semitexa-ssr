@@ -102,23 +102,27 @@ final class AsyncResourceSseServer
         if (isset($get['demo_stream'])) {
             $demoStream = trim((string) $get['demo_stream']);
         }
+        $deferredRequestId = trim((string) ($get['deferred_request_id'] ?? ''));
 
-        // Auth gate — ordering matters:
-        //  1. demo_stream always requires a session (the demo attribution relies on it).
-        //  2. otherwise, unless SSE_PUBLIC_ANONYMOUS is explicitly enabled, require auth.
-        //
-        // This closes finding S-1: previously the base /sse stream was open to
-        // any client with no auth, no caps, no timeout.
+        // Auth gate — only persistent streams require a session:
+        //  1. demo_stream runs an infinite per-minute producer → auth always.
+        //  2. deferred_request_id requests are guest-safe: the orchestrator runs
+        //     delivery then sends done/close (canUsePersistentDeferredSse() keeps
+        //     the persistent live loop auth-gated), so we let guests through the
+        //     gate and rely on the delivery-complete close.
+        //  3. bare /sse with no deferred_request_id is a long-lived stream →
+        //     auth required, unless SSE_PUBLIC_ANONYMOUS is opt-in.
         $authenticated = self::hasAuthenticatedSession($request);
         $anonymousAllowed = filter_var((string) (\getenv('SSE_PUBLIC_ANONYMOUS') ?: ''), FILTER_VALIDATE_BOOLEAN);
 
-        if ($demoStream !== '' && !$authenticated) {
-            self::rejectUnauthorized($response, 'Authorization is required for this SSE demo stream.');
-            return;
-        }
-
-        if ($demoStream === '' && !$authenticated && !$anonymousAllowed) {
-            self::rejectUnauthorized($response, 'Authorization is required for the SSE stream. Set SSE_PUBLIC_ANONYMOUS=true to opt in to anonymous streams.');
+        $authError = self::resolveSseAuthorizationError(
+            authenticated: $authenticated,
+            anonymousAllowed: $anonymousAllowed,
+            demoStream: $demoStream,
+            deferredRequestId: $deferredRequestId,
+        );
+        if ($authError !== null) {
+            self::rejectUnauthorized($response, $authError);
             return;
         }
 
@@ -214,7 +218,6 @@ final class AsyncResourceSseServer
         }
 
         // Trigger deferred block streaming if deferred_request_id is present
-        $deferredRequestId = trim((string) ($get['deferred_request_id'] ?? ''));
         $lastEventId = $header['last-event-id'] ?? null;
         if ($deferredRequestId !== '') {
             $bindToken = self::getSsrBindToken($request);
@@ -896,6 +899,23 @@ final class AsyncResourceSseServer
             'error' => 'Unauthorized',
             'message' => $message,
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    }
+
+    private static function resolveSseAuthorizationError(
+        bool $authenticated,
+        bool $anonymousAllowed,
+        string $demoStream,
+        string $deferredRequestId,
+    ): ?string {
+        if ($demoStream !== '' && !$authenticated) {
+            return 'Authorization is required for this SSE demo stream.';
+        }
+
+        if ($demoStream === '' && $deferredRequestId === '' && !$authenticated && !$anonymousAllowed) {
+            return 'Authorization is required for persistent SSE streams. Set SSE_PUBLIC_ANONYMOUS=true to opt in to anonymous persistent streams.';
+        }
+
+        return null;
     }
 
     private static function rejectTooManyRequests(Response $response, string $message): void

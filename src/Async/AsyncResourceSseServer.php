@@ -97,12 +97,6 @@ final class AsyncResourceSseServer
         }
         $deferredRequestId = trim((string) ($get['deferred_request_id'] ?? ''));
 
-        if (!self::isSameOriginRequest($request)) {
-            $response->status(403);
-            $response->end();
-            return;
-        }
-
         // Auth gate — only persistent streams require a session:
         //  1. demo_stream runs an infinite per-minute producer → auth always.
         //  2. deferred_request_id requests are guest-safe: the orchestrator runs
@@ -121,7 +115,7 @@ final class AsyncResourceSseServer
             deferredRequestId: $deferredRequestId,
         );
         $rejection = self::resolveSseRequestRejection(
-            sameOrigin: true,
+            sameOrigin: self::isSameOriginRequest($request),
             authError: $authError,
         );
         if ($rejection !== null) {
@@ -933,17 +927,17 @@ final class AsyncResourceSseServer
      */
     private static function resolveSseRequestRejection(bool $sameOrigin, ?string $authError): ?array
     {
-        if (!$sameOrigin) {
-            return [
-                'status' => 403,
-                'message' => '',
-            ];
-        }
-
         if ($authError !== null) {
             return [
                 'status' => 401,
                 'message' => $authError,
+            ];
+        }
+
+        if (!$sameOrigin) {
+            return [
+                'status' => 403,
+                'message' => '',
             ];
         }
 

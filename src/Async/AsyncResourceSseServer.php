@@ -36,7 +36,7 @@ final class AsyncResourceSseServer
     /** @var array<string, int> Per-worker IP → open-connection counter. */
     private static array $ipConnections = [];
 
-    /** @var array<string, string> Session → client IP (for decrement on close). */
+    /** @var array<string, string> Connection key → client IP (for decrement on close). */
     private static array $sessionIps = [];
 
     private static array $sessions = [];
@@ -140,7 +140,7 @@ final class AsyncResourceSseServer
 
         if ($clientIp !== '') {
             self::$ipConnections[$clientIp] = (self::$ipConnections[$clientIp] ?? 0) + 1;
-            self::$sessionIps[$sessionId] = $clientIp;
+            self::$sessionIps[self::sessionConnectionKey($sessionId, $response)] = $clientIp;
         }
 
         $response->status(200);
@@ -842,14 +842,15 @@ final class AsyncResourceSseServer
         self::cancelSessionCoroutines($sessionId);
         self::removeSessionWorkerMapping($sessionId);
         self::unregisterAuthenticatedSession($sessionId);
-        self::releaseIpConnection($sessionId);
+        self::releaseIpConnection($sessionId, $response);
         unset(self::$sessions[$sessionId], self::$queues[$sessionId], self::$demoProducers[$sessionId], self::$sessionCoroutines[$sessionId]);
         @$response->end();
     }
 
-    private static function releaseIpConnection(string $sessionId): void
+    private static function releaseIpConnection(string $sessionId, Response $response): void
     {
-        $ip = self::$sessionIps[$sessionId] ?? '';
+        $connectionKey = self::sessionConnectionKey($sessionId, $response);
+        $ip = self::$sessionIps[$connectionKey] ?? '';
         if ($ip === '') {
             return;
         }
@@ -860,7 +861,7 @@ final class AsyncResourceSseServer
                 unset(self::$ipConnections[$ip]);
             }
         }
-        unset(self::$sessionIps[$sessionId]);
+        unset(self::$sessionIps[$connectionKey]);
     }
 
     private static function resolveClientIp(Request $request): string
@@ -873,12 +874,18 @@ final class AsyncResourceSseServer
 
     private static function envInt(string $key, int $default): int
     {
-        $raw = trim((string) (\getenv($key) ?: ''));
+        $rawValue = \getenv($key);
+        $raw = trim($rawValue === false ? '' : (string) $rawValue);
         if ($raw === '') {
             return $default;
         }
         $parsed = filter_var($raw, FILTER_VALIDATE_INT);
         return is_int($parsed) && $parsed >= 0 ? $parsed : $default;
+    }
+
+    private static function sessionConnectionKey(string $sessionId, Response $response): string
+    {
+        return $sessionId . '#' . spl_object_id($response);
     }
 
     private static function rejectUnauthorized(Response $response, string $message): void
@@ -1114,7 +1121,8 @@ final class AsyncResourceSseServer
     {
         $cookieName = Environment::getEnvValue('SESSION_COOKIE_NAME') ?? 'semitexa_session';
         $cookie = is_array($request->cookie) ? $request->cookie : [];
-        $sessionId = trim((string) ($cookie[$cookieName] ?? ''));
+        $sessionValue = $cookie[$cookieName] ?? null;
+        $sessionId = is_string($sessionValue) ? trim($sessionValue) : '';
         if ($sessionId === '' || !preg_match('/^[a-f0-9]{32}$/', $sessionId)) {
             return '';
         }

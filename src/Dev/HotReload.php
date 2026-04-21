@@ -109,8 +109,9 @@ final class HotReload
                         lastTimestamp = data.timestamp;
                         if (data.files && data.files.length > 0) {
                             console.log('[Semitexa] Files changed:', data.files);
-                            window.location.reload();
                         }
+
+                        window.location.reload();
                     }
                 } catch (e) {}
             }

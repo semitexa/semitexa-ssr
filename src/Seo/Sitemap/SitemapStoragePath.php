@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Seo\Sitemap;
 
 use Semitexa\Core\Support\ProjectRoot;
+use Semitexa\Core\Tenant\TenantContextAccess;
 use Semitexa\Core\Tenant\TenantContextInterface;
 
 final class SitemapStoragePath
@@ -16,7 +17,7 @@ final class SitemapStoragePath
 
     public static function tenantCacheKey(?TenantContextInterface $tenantContext = null): string
     {
-        $tenantId = $tenantContext !== null ? $tenantContext->getTenantId() : 'default';
+        $tenantId = TenantContextAccess::tenantIdOrDefault($tenantContext);
 
         $tenantId = strtolower(trim($tenantId));
         $tenantId = preg_replace('/[^a-z0-9_-]+/', '-', $tenantId) ?? 'default';

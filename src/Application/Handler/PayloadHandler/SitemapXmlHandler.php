@@ -28,7 +28,7 @@ final class SitemapXmlHandler implements TypedHandlerInterface
     protected TenantContextInterface $tenantContext;
 
     #[InjectAsReadonly]
-    protected ?SitemapGenerator $generator = null;
+    protected SitemapGenerator $generator;
 
     public function handle(SitemapXmlPayload $payload, ResourceResponse $resource): ResourceResponse
     {
@@ -64,7 +64,7 @@ final class SitemapXmlHandler implements TypedHandlerInterface
 
     private function generateDynamic(): string
     {
-        if ($this->generator === null) {
+        if (!isset($this->generator)) {
             return $this->renderEmptySitemap();
         }
 

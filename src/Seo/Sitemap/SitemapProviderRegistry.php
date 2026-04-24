@@ -18,10 +18,10 @@ use ReflectionClass;
 final class SitemapProviderRegistry
 {
     #[InjectAsReadonly]
-    protected ?ClassDiscovery $classDiscovery = null;
+    protected ClassDiscovery $classDiscovery;
 
     #[InjectAsReadonly]
-    protected ?ModuleRegistry $moduleRegistry = null;
+    protected ModuleRegistry $moduleRegistry;
 
     /** @var list<array{class: class-string<SitemapUrlProviderInterface>, priority: int}>|null */
     private ?array $providers = null;
@@ -37,7 +37,7 @@ final class SitemapProviderRegistry
 
         $this->providers = [];
 
-        if ($this->classDiscovery === null || $this->moduleRegistry === null) {
+        if (!isset($this->classDiscovery) || !isset($this->moduleRegistry)) {
             return $this->providers;
         }
 
@@ -85,7 +85,7 @@ final class SitemapProviderRegistry
     private function isEligible(string $className): bool
     {
         if (str_starts_with($className, 'Semitexa\\')) {
-            if ($this->moduleRegistry === null) {
+            if (!isset($this->moduleRegistry)) {
                 return false;
             }
 

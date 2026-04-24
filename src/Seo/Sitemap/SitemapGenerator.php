@@ -24,10 +24,10 @@ final class SitemapGenerator
     private const string XHTML_XMLNS = 'http://www.w3.org/1999/xhtml';
 
     #[InjectAsReadonly]
-    protected ?SitemapProviderRegistry $registry = null;
+    protected SitemapProviderRegistry $registry;
 
     #[InjectAsReadonly]
-    protected ?ContainerInterface $container = null;
+    protected ContainerInterface $container;
 
     /**
      * Generate sitemap XML content.
@@ -135,7 +135,7 @@ final class SitemapGenerator
      */
     private function collectUrls(SitemapGenerationContext $context): array
     {
-        if ($this->registry === null) {
+        if (!isset($this->registry)) {
             return [];
         }
 
@@ -170,7 +170,7 @@ final class SitemapGenerator
     private function resolveProvider(string $className): ?SitemapUrlProviderInterface
     {
         try {
-            if ($this->container !== null && $this->container->has($className)) {
+            if (isset($this->container) && $this->container->has($className)) {
                 $instance = $this->container->get($className);
             } else {
                 $instance = new $className();

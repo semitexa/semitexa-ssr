@@ -28,7 +28,7 @@ use Semitexa\Ssr\Seo\Sitemap\SitemapUrlProviderInterface;
 final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
 {
     #[InjectAsReadonly]
-    protected ?AttributeDiscovery $attributeDiscovery = null;
+    protected AttributeDiscovery $attributeDiscovery;
 
     /** @var list<string> */
     private const array EXCLUDED_PATHS = [
@@ -40,7 +40,7 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
 
     public function provideUrls(SitemapGenerationContext $context): iterable
     {
-        if ($this->attributeDiscovery === null) {
+        if (!isset($this->attributeDiscovery)) {
             return;
         }
 

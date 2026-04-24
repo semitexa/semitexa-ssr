@@ -25,10 +25,10 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 final class LintDeferredTwigCommand extends Command
 {
     #[InjectAsReadonly]
-    protected ?ModuleRegistry $moduleRegistry = null;
+    protected ModuleRegistry $moduleRegistry;
 
     #[InjectAsReadonly]
-    protected ?ClassDiscovery $classDiscovery = null;
+    protected ClassDiscovery $classDiscovery;
 
     protected function configure(): void
     {
@@ -43,8 +43,8 @@ final class LintDeferredTwigCommand extends Command
         $io = new SymfonyStyle($input, $output);
 
         try {
-            ModuleTemplateRegistry::setModuleRegistry($this->moduleRegistry ?? new ModuleRegistry());
-            TwigExtensionRegistry::setClassDiscovery($this->classDiscovery ?? new ClassDiscovery());
+            ModuleTemplateRegistry::setModuleRegistry(isset($this->moduleRegistry) ? $this->moduleRegistry : new ModuleRegistry());
+            TwigExtensionRegistry::setClassDiscovery(isset($this->classDiscovery) ? $this->classDiscovery : new ClassDiscovery());
 
             $validator = new DeferredTemplateCompatibilityValidator();
             $issues = $validator->validateAllDeferredTemplates();

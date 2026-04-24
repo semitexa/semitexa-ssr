@@ -20,7 +20,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 final class SitemapGenerateCommand extends Command
 {
     #[InjectAsReadonly]
-    protected ?SitemapGenerator $generator = null;
+    protected SitemapGenerator $generator;
 
     protected function configure(): void
     {
@@ -45,7 +45,7 @@ final class SitemapGenerateCommand extends Command
         $io->title('Sitemap Generation');
 
         try {
-            if ($this->generator === null) {
+            if (!isset($this->generator)) {
                 throw new \RuntimeException('Sitemap generator is not available.');
             }
 

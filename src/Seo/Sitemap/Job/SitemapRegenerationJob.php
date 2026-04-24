@@ -27,11 +27,11 @@ use Semitexa\Ssr\Seo\Sitemap\SitemapStoragePath;
 final class SitemapRegenerationJob implements ScheduledJobInterface
 {
     #[InjectAsReadonly]
-    protected ?SitemapGenerator $generator = null;
+    protected SitemapGenerator $generator;
 
     public function handle(ScheduledJobContext $context): void
     {
-        if ($this->generator === null) {
+        if (!isset($this->generator)) {
             return;
         }
 

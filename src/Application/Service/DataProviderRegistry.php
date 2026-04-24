@@ -13,7 +13,7 @@ use Semitexa\Ssr\Domain\Contract\DataProviderInterface;
 final class DataProviderRegistry
 {
     #[InjectAsReadonly]
-    protected ?ContainerInterface $container = null;
+    protected ContainerInterface $container;
 
     /**
      * @var array<string, array{class: string, handles: string[]}> slot_id => provider info
@@ -53,7 +53,7 @@ final class DataProviderRegistry
         }
 
         try {
-            if ($this->container !== null && $this->container->has($entry['class'])) {
+            if (isset($this->container) && $this->container->has($entry['class'])) {
                 $instance = $this->container->get($entry['class']);
             } else {
                 $instance = new $entry['class']();

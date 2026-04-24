@@ -35,8 +35,23 @@ class ModuleAssetRegistry
     /** @var array<string, string> module name/alias → absolute theme Static/ dir (optional) */
     private static array $themeMap = [];
 
+    /**
+     * Per-request active theme chain resolver. When set, `resolve()` walks the
+     * chain (leaf first) checking `src/theme/<theme>/<module>/Static/<path>`
+     * for each theme before falling back to `$themeMap` (boot-time env THEME
+     * single-theme override) and then to the registered module base dirs.
+     *
+     * @var \Closure(): list<string>|null
+     */
+    private static ?\Closure $chainResolver = null;
+
     private static bool $initialized = false;
     private static ?ModuleRegistry $moduleRegistry = null;
+
+    public static function setChainResolver(?\Closure $resolver): void
+    {
+        self::$chainResolver = $resolver;
+    }
 
     public static function setModuleRegistry(ModuleRegistry $moduleRegistry): void
     {
@@ -151,7 +166,25 @@ class ModuleAssetRegistry
             return null;
         }
 
-        // Theme override takes priority
+        // Per-request theme chain takes priority over boot-time env THEME.
+        // Walks leaf → root; first existing file wins. Falls through to
+        // legacy $themeMap + base dirs when no chain override matches.
+        if (self::$chainResolver !== null) {
+            $chain = (self::$chainResolver)();
+            if ($chain !== []) {
+                $projectRoot = ProjectRoot::get();
+                foreach ($chain as $themeId) {
+                    $base = $projectRoot . '/src/theme/' . $themeId . '/' . $module . '/Static';
+                    $themeFile = $base . '/' . $path;
+                    $realTheme = realpath($themeFile);
+                    if ($realTheme !== false && str_starts_with($realTheme, $base . '/') && is_file($realTheme)) {
+                        return $realTheme;
+                    }
+                }
+            }
+        }
+
+        // Legacy theme override (boot-time env THEME)
         if (isset(self::$themeMap[$module])) {
             $themeFile = self::$themeMap[$module] . '/' . $path;
             $realTheme = realpath($themeFile);

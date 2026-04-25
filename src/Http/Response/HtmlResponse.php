@@ -261,6 +261,12 @@ class HtmlResponse extends ResourceResponse
         if ($template !== null && preg_match('/@project-layouts-([^\/]+)\//', $template, $matches)) {
             $collector->requireModule($matches[1]);
         }
+
+        // If a theme chain is active, additionally require every theme in the
+        // chain that ships assets. Duplicates dedupe inside AssetCollector.
+        foreach (\Semitexa\Ssr\Template\ModuleTemplateRegistry::getActiveChain() as $themeId) {
+            $collector->requireModule($themeId);
+        }
     }
 
     private function initFromAttribute(): void

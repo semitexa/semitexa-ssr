@@ -12,12 +12,15 @@ use Semitexa\Core\Support\ProjectRoot;
  * Maps module aliases to their Application/Static/ directories for asset serving.
  *
  * Resolution order for every asset path:
- *   1. src/theme/{THEME}/{module}/Static/{path}  (theme override, if THEME is set)
- *   2. {module}/Application/Static/{path}         (module default)
+ *   1. src/theme/{active-chain-theme}/{module}/Static/{path}
+ *      (per-request chain override, leaf first, if a resolver is bound)
+ *   2. src/theme/{THEME}/{module}/Static/{path}
+ *      (legacy boot-time environment override)
+ *   3. {module}/Application/Static/{path}
+ *      (module default)
  *
- * Theme paths are resolved once at boot via the THEME environment variable.
- * No per-request theme switching is supported; a server reload is required to
- * activate a different theme.
+ * Legacy THEME paths are resolved once at boot. Per-request theme chains are
+ * resolved on every lookup through setChainResolver().
  */
 class ModuleAssetRegistry
 {
@@ -35,8 +38,23 @@ class ModuleAssetRegistry
     /** @var array<string, string> module name/alias → absolute theme Static/ dir (optional) */
     private static array $themeMap = [];
 
+    /**
+     * Per-request active theme chain resolver. When set, `resolve()` walks the
+     * chain (leaf first) checking `src/theme/<theme>/<module>/Static/<path>`
+     * for each theme before falling back to `$themeMap` (boot-time env THEME
+     * single-theme override) and then to the registered module base dirs.
+     *
+     * @var \Closure(): list<string>|null
+     */
+    private static ?\Closure $chainResolver = null;
+
     private static bool $initialized = false;
     private static ?ModuleRegistry $moduleRegistry = null;
+
+    public static function setChainResolver(?\Closure $resolver): void
+    {
+        self::$chainResolver = $resolver;
+    }
 
     public static function setModuleRegistry(ModuleRegistry $moduleRegistry): void
     {
@@ -104,6 +122,7 @@ class ModuleAssetRegistry
         self::$themeMap = [];
         self::$initialized = false;
         self::$moduleRegistry = null;
+        self::$chainResolver = null;
     }
 
     /**
@@ -151,7 +170,26 @@ class ModuleAssetRegistry
             return null;
         }
 
-        // Theme override takes priority
+        // Per-request theme chain takes priority over boot-time env THEME.
+        // Walks leaf → root; first existing file wins. Falls through to
+        // legacy $themeMap + base dirs when no chain override matches.
+        if (self::$chainResolver !== null) {
+            $chain = self::normalizeChain((self::$chainResolver)());
+            if ($chain !== []) {
+                $projectRoot = ProjectRoot::get();
+                foreach ($chain as $themeId) {
+                    $base = $projectRoot . '/src/theme/' . $themeId . '/' . $module . '/Static';
+                    $realBase = realpath($base);
+                    $themeFile = $base . '/' . $path;
+                    $realTheme = realpath($themeFile);
+                    if ($realBase !== false && $realTheme !== false && str_starts_with($realTheme, $realBase . '/') && is_file($realTheme)) {
+                        return $realTheme;
+                    }
+                }
+            }
+        }
+
+        // Legacy theme override (boot-time env THEME)
         if (isset(self::$themeMap[$module])) {
             $themeFile = self::$themeMap[$module] . '/' . $path;
             $realTheme = realpath($themeFile);
@@ -191,6 +229,15 @@ class ModuleAssetRegistry
             // Environment may not be available in all contexts — fall back to no theme
             return '';
         }
+    }
+
+    /**
+     * @param mixed $chain
+     * @return list<string>
+     */
+    private static function normalizeChain(mixed $chain): array
+    {
+        return is_array($chain) ? array_values(array_filter($chain, 'is_string')) : [];
     }
 
 }

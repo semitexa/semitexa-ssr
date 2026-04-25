@@ -78,6 +78,50 @@ final class AssetManagerTest extends TestCase
         self::assertMatchesRegularExpression('/\\/assets\\/site\\/css\\/app\\.css\\?v=[a-f0-9]{12}/', $secondHtml);
     }
 
+    public function testModuleAssetRegistryResolvesFirstThemeInActiveChain(): void
+    {
+        mkdir($this->projectRoot . '/src/theme/base/site/Static/css', 0777, true);
+        mkdir($this->projectRoot . '/src/theme/child/site/Static/css', 0777, true);
+        file_put_contents($this->projectRoot . '/src/theme/base/site/Static/css/app.css', "body{color:green;}\n");
+        file_put_contents($this->projectRoot . '/src/theme/child/site/Static/css/app.css', "body{color:purple;}\n");
+
+        ModuleAssetRegistry::setChainResolver(static fn (): array => ['child', 'base']);
+
+        $path = ModuleAssetRegistry::resolve('site', 'css/app.css');
+
+        self::assertSame(
+            realpath($this->projectRoot . '/src/theme/child/site/Static/css/app.css'),
+            $path,
+        );
+    }
+
+    public function testModuleAssetRegistryFallsBackWhenActiveChainIsEmpty(): void
+    {
+        ModuleAssetRegistry::setChainResolver(static fn (): array => []);
+
+        $path = ModuleAssetRegistry::resolve('site', 'css/app.css');
+
+        self::assertSame(
+            realpath($this->projectRoot . '/src/modules/site/Application/Static/css/app.css'),
+            $path,
+        );
+    }
+
+    public function testModuleAssetRegistryRejectsTraversalAndSymlinkEscapes(): void
+    {
+        mkdir($this->projectRoot . '/src/theme/child/site/Static/css', 0777, true);
+        file_put_contents($this->projectRoot . '/secret.css', "body{color:black;}\n");
+        $link = $this->projectRoot . '/src/theme/child/site/Static/css/escape.css';
+        if (!@symlink($this->projectRoot . '/secret.css', $link)) {
+            self::markTestSkipped('Filesystem does not allow symlink creation.');
+        }
+
+        ModuleAssetRegistry::setChainResolver(static fn (): array => ['child']);
+
+        self::assertNull(ModuleAssetRegistry::resolve('site', '../secret.css'));
+        self::assertNull(ModuleAssetRegistry::resolve('site', 'css/escape.css'));
+    }
+
     private function deleteDirectory(string $directory): void
     {
         if (!is_dir($directory)) {

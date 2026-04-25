@@ -9,17 +9,71 @@ use Semitexa\Core\ModuleRegistry;
 use Semitexa\Core\Support\ProjectRoot;
 use Twig\Environment as TwigEnvironment;
 use Twig\Loader\FilesystemLoader;
+use Twig\Loader\LoaderInterface;
 use Twig\TwigFunction;
 
+/**
+ * Registers Twig template paths per semitexa-module and wires theme-aware
+ * overrides.
+ *
+ * Namespace contract (stable across the framework — do not rename without
+ * coordinated migration; 200+ call sites in SSR/Theme/tooling/consumer modules):
+ *
+ *   `@project-layouts-<module-alias>/<relative-path>`
+ *
+ * where `<module-alias>` is the value declared in a package's
+ * `composer.json → extra.semitexa-module.name`, or one of its registered
+ * aliases. Examples:
+ *   - `@project-layouts-theme-base/pages/error-page.html.twig`
+ *     (theme-base is published by `semitexa/theme` — framework-canonical)
+ *   - `@project-layouts-core-frontend/...`
+ *     (core-frontend is semitexa/ssr's own alias)
+ *
+ * Project-local overrides: when an active theme is bound via the chain
+ * resolver, `ThemeAwareTwigLoader` intercepts every lookup under this
+ * namespace and first checks
+ *   `<project-root>/src/theme/<active-theme>/<module-alias>/templates/<relative-path>`
+ * before falling through to the module's own published file. This lets any
+ * project override any module's templates per active theme without forking.
+ */
 final class ModuleTemplateRegistry
 {
     private static ?TwigEnvironment $twig = null;
-    private static ?FilesystemLoader $loader = null;
+    private static ?LoaderInterface $loader = null;
 
     private static array $modulePaths = [];
-    private static array $themePaths = [];
     private static bool $initialized = false;
     private static ?ModuleRegistry $moduleRegistry = null;
+
+    /**
+     * Per-request active theme chain resolver (leaf-first). Null = legacy
+     * boot-time env `THEME` behavior. When a package (typically
+     * semitexa/theme) binds a closure, `ThemeAwareTwigLoader` wraps the
+     * `FilesystemLoader` and walks the chain on every template lookup.
+     *
+     * @var \Closure(): list<string>|null
+     */
+    private static ?\Closure $chainResolver = null;
+
+    public static function setChainResolver(?\Closure $resolver): void
+    {
+        self::$chainResolver = $resolver;
+    }
+
+    /**
+     * Public accessor for the current active theme chain, used by other SSR
+     * components (HtmlResponse auto-require) without introducing a separate
+     * registry. Returns [] when no resolver is bound or it yields no chain.
+     *
+     * @return list<string>
+     */
+    public static function getActiveChain(): array
+    {
+        if (self::$chainResolver === null) {
+            return [];
+        }
+        return self::normalizeChain((self::$chainResolver)());
+    }
 
     public static function setModuleRegistry(ModuleRegistry $moduleRegistry): void
     {
@@ -33,7 +87,6 @@ final class ModuleTemplateRegistry
         }
 
         self::discoverModulePaths();
-        self::discoverThemePaths();
         self::buildTwigLoader();
 
         self::$initialized = true;
@@ -45,9 +98,13 @@ final class ModuleTemplateRegistry
         return self::$twig;
     }
 
-    public static function getLoader(): FilesystemLoader
+    public static function getLoader(): LoaderInterface
     {
         self::initialize();
+        if (!(self::$loader instanceof LoaderInterface)) {
+            throw new \LogicException('ModuleTemplateRegistry loader was not initialized.');
+        }
+
         return self::$loader;
     }
 
@@ -111,46 +168,14 @@ final class ModuleTemplateRegistry
         }
     }
 
-    private static function discoverThemePaths(): void
-    {
-        $projectRoot = ProjectRoot::get();
-        $themeRoot = $projectRoot . '/src/theme';
-        $env = Environment::create();
-        $activeTheme = $env->get('THEME', '');
-
-        if (!is_dir($themeRoot)) {
-            return;
-        }
-
-        if ($activeTheme !== '') {
-            $themeDir = $themeRoot . '/' . $activeTheme;
-            if (!is_dir($themeDir)) {
-                return;
-            }
-
-            foreach (self::$modulePaths as $module => $config) {
-                $moduleThemePath = $themeDir . '/' . $module;
-                if (is_dir($moduleThemePath)) {
-                    self::$themePaths[$module] = realpath($moduleThemePath) ?: $moduleThemePath;
-                }
-            }
-        } else {
-            foreach (glob($themeRoot . '/*', GLOB_ONLYDIR) ?: [] as $dir) {
-                $module = basename($dir);
-                if (isset(self::$modulePaths[$module])) {
-                    self::$themePaths[$module] = realpath($dir) ?: $dir;
-                }
-            }
-        }
-    }
-
     private static function buildTwigLoader(): void
     {
         $loader = new FilesystemLoader();
         $namespaceOwners = [];
 
-        // Register both theme and module paths per namespace — theme first, module as fallback.
-        // Twig searches registered paths in registration order, so theme overrides are transparent.
+        // Register each module's template path under every alias it owns. Per-request
+        // theme overrides go through ThemeAwareTwigLoader (below) — the theme.json
+        // manifest system is the single authoritative override surface.
         foreach (self::$modulePaths as $module => $config) {
             if (!is_array($config)) {
                 continue;
@@ -169,19 +194,25 @@ final class ModuleTemplateRegistry
                 }
 
                 $namespaceOwners[$namespace] = $module;
-
-                if (isset(self::$themePaths[$module])) {
-                    $loader->addPath(self::$themePaths[$module], $namespace);
-                }
                 $loader->addPath($config['path'], $namespace);
             }
         }
 
-        self::$loader = $loader;
+        // Per-request theme chain walking: always wrap the FilesystemLoader so
+        // late-bound resolver changes are observed by the active Twig
+        // environment. When no resolver is configured, return an empty chain
+        // so lookups fall straight through to the module-owned template path.
+        $effectiveLoader = new ThemeAwareTwigLoader(
+            $loader,
+            static fn (): array => self::$chainResolver === null
+                ? []
+                : self::normalizeChain((self::$chainResolver)()),
+        );
+        self::$loader = $effectiveLoader;
 
         $cacheDir = self::getWritableCacheDir();
 
-        self::$twig = new TwigEnvironment($loader, [
+        self::$twig = new TwigEnvironment($effectiveLoader, [
             'cache' => $cacheDir ?? false,
             'auto_reload' => true,
             'strict_variables' => false,
@@ -663,7 +694,7 @@ final class ModuleTemplateRegistry
         self::initialize();
 
         try {
-            $source = self::$loader->getSourceContext($templateName);
+            $source = self::getLoader()->getSourceContext($templateName);
             $path = $source->getPath();
             return ($path !== '' && is_file($path)) ? $path : null;
         } catch (\Throwable) {
@@ -677,8 +708,8 @@ final class ModuleTemplateRegistry
         self::$twig = null;
         self::$loader = null;
         self::$modulePaths = [];
-        self::$themePaths = [];
         self::$initialized = false;
+        self::$chainResolver = null;
     }
 
     public static function getModulePaths(): array
@@ -687,26 +718,18 @@ final class ModuleTemplateRegistry
         return self::$modulePaths;
     }
 
-    public static function getThemePaths(): array
+    /**
+     * @param mixed $chain
+     * @return list<string>
+     */
+    private static function normalizeChain(mixed $chain): array
     {
-        self::initialize();
-        return self::$themePaths;
+        return is_array($chain) ? array_values(array_filter($chain, 'is_string')) : [];
     }
 
     public static function resolveLayout(string $handle): ?array
     {
         self::initialize();
-
-        foreach (self::$themePaths as $module => $path) {
-            $relative = self::findTemplateRelative($path, $handle);
-            if ($relative !== null) {
-                return [
-                    'template' => '@' . self::aliasForModule($module) . '/' . $relative,
-                    'module' => $module,
-                    'type' => 'theme',
-                ];
-            }
-        }
 
         foreach (self::$modulePaths as $module => $config) {
             $relative = self::findTemplateRelative($config['path'], $handle);

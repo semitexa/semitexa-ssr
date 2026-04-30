@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Layout;
 
 use Semitexa\Core\Container\ContainerFactory;
-use Semitexa\Ssr\Contract\TypedSlotHandlerInterface;
+use Semitexa\Ssr\Domain\Contract\TypedSlotHandlerInterface;
 use Semitexa\Ssr\Http\Response\HtmlSlotResponse;
 use Semitexa\Core\Log\StaticLoggerBridge;
 

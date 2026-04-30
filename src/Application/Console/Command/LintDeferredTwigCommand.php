@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Semitexa\Ssr\Console\Command;
+namespace Semitexa\Ssr\Application\Console\Command;
 
 use Semitexa\Core\Attribute\AsCommand;
 use Semitexa\Core\Attribute\InjectAsReadonly;
@@ -19,7 +19,7 @@ use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
 #[AsCommand(
-    name: 'semitexa:lint:deferred-twig',
+    name: 'lint:deferred-twig',
     description: 'Validate deferred Twig templates against the Semitexa frontend rendering subset.',
 )]
 final class LintDeferredTwigCommand extends Command
@@ -32,7 +32,7 @@ final class LintDeferredTwigCommand extends Command
 
     protected function configure(): void
     {
-        $this->setName('semitexa:lint:deferred-twig')
+        $this->setName('lint:deferred-twig')
             ->setDescription('Validate deferred Twig templates against the Semitexa frontend rendering subset.')
             ->addOption('json', null, InputOption::VALUE_NONE, 'Output violations as JSON');
     }

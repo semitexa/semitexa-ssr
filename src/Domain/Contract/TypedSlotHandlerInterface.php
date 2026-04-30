@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Semitexa\Ssr\Contract;
+namespace Semitexa\Ssr\Domain\Contract;
 
 use Semitexa\Ssr\Http\Response\HtmlSlotResponse;
 

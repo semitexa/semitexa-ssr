@@ -68,7 +68,16 @@ final class DeferredRequestRegistry
             self::$deliveredLock = new \Swoole\Lock($lockType);
         }
 
-        if (self::$gcTimerId === 0 && class_exists(Timer::class, false)) {
+        // Only schedule the GC timer when there is an event loop to run it.
+        // In CLI (queue worker, console, PHPUnit) registering a Timer leaves
+        // the Swoole reactor with pending events at PHP shutdown, which fires
+        // the `swoole_event_rshutdown(): Event::wait() in shutdown function
+        // is deprecated` notice. GC still runs lazily on table writes via the
+        // TTL check inside consume(), so we lose nothing here.
+        if (PHP_SAPI !== 'cli'
+            && self::$gcTimerId === 0
+            && class_exists(Timer::class, false)
+        ) {
             self::$gcTimerId = Timer::tick(self::GC_INTERVAL_SECONDS * 1000, static function (): void {
                 self::gc();
             });

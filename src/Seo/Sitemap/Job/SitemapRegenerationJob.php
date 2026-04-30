@@ -6,8 +6,8 @@ namespace Semitexa\Ssr\Seo\Sitemap\Job;
 
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Scheduler\Attribute\AsScheduledJob;
-use Semitexa\Scheduler\Contract\ScheduledJobInterface;
-use Semitexa\Scheduler\Domain\Value\ScheduledJobContext;
+use Semitexa\Scheduler\Domain\Contract\ScheduledJobInterface;
+use Semitexa\Scheduler\Domain\Model\ScheduledJobContext;
 use Semitexa\Ssr\Seo\AiSitemapLocator;
 use Semitexa\Ssr\Seo\Sitemap\SitemapGenerationContext;
 use Semitexa\Ssr\Seo\Sitemap\SitemapGenerator;

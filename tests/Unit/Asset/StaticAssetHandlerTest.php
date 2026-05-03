@@ -6,7 +6,7 @@ namespace Semitexa\Ssr\Tests\Unit\Asset;
 
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
-use Semitexa\Ssr\Asset\StaticAssetHandler;
+use Semitexa\Ssr\Application\Service\Asset\StaticAssetHandler;
 
 final class StaticAssetHandlerTest extends TestCase
 {

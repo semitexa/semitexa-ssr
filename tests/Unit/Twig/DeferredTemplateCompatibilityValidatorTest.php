@@ -7,9 +7,9 @@ namespace Semitexa\Ssr\Tests\Unit\Twig;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Core\Discovery\ClassDiscovery;
 use Semitexa\Core\ModuleRegistry;
-use Semitexa\Ssr\Extension\TwigExtensionRegistry;
-use Semitexa\Ssr\Template\ModuleTemplateRegistry;
-use Semitexa\Ssr\Twig\DeferredTemplateCompatibilityValidator;
+use Semitexa\Ssr\Application\Service\Extension\TwigExtensionRegistry;
+use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
+use Semitexa\Ssr\Application\Service\Twig\DeferredTemplateCompatibilityValidator;
 use Twig\Source;
 
 final class DeferredTemplateCompatibilityValidatorTest extends TestCase

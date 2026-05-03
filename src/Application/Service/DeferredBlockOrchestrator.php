@@ -7,17 +7,17 @@ namespace Semitexa\Ssr\Application\Service;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Log\LoggerInterface;
-use Semitexa\Ssr\Async\SseAsyncResultDelivery;
+use Semitexa\Ssr\Application\Service\Async\SseAsyncResultDelivery;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Semitexa\Ssr\Domain\Model\DeferredBlockPayload;
 use Semitexa\Ssr\Domain\Model\DeferredSlotDefinition;
-use Semitexa\Ssr\Isomorphic\DeferredRequestRegistry;
-use Semitexa\Ssr\Isomorphic\DeferredTemplateRegistry;
-use Semitexa\Ssr\Layout\LayoutSlotRegistry;
-use Semitexa\Ssr\Layout\SlotAssetCollector;
-use Semitexa\Ssr\Layout\SlotHandlerPipeline;
-use Semitexa\Ssr\Layout\SlotResourceFactory;
-use Semitexa\Ssr\Template\ModuleTemplateRegistry;
+use Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry;
+use Semitexa\Ssr\Application\Service\Isomorphic\DeferredTemplateRegistry;
+use Semitexa\Ssr\Application\Service\Layout\LayoutSlotRegistry;
+use Semitexa\Ssr\Application\Service\Layout\SlotAssetCollector;
+use Semitexa\Ssr\Application\Service\Layout\SlotHandlerPipeline;
+use Semitexa\Ssr\Application\Service\Layout\SlotResourceFactory;
+use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
 use Swoole\Coroutine;
 
 #[AsService]
@@ -150,8 +150,8 @@ final class DeferredBlockOrchestrator
                 continue;
             }
 
-            \Semitexa\Ssr\Async\AsyncResourceSseServer::createSessionCoroutine(function () use ($sessionId, $slot, $pageContext, $pageHandle, &$results, $channel, $locale): void {
-                if (!\Semitexa\Ssr\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+            \Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::createSessionCoroutine(function () use ($sessionId, $slot, $pageContext, $pageHandle, &$results, $channel, $locale): void {
+                if (!\Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
                     return;
                 }
                 $data = [];
@@ -165,7 +165,7 @@ final class DeferredBlockOrchestrator
                         'message' => $e->getMessage(),
                     ]);
                 } finally {
-                    if ($channel !== null && \Semitexa\Ssr\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+                    if ($channel !== null && \Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
                         $channel->push([$slot, $data]);
                     } else {
                         $results[] = [$slot, $data];
@@ -178,7 +178,7 @@ final class DeferredBlockOrchestrator
         if ($channel !== null) {
             $received = 0;
             while ($received < $slotCount) {
-                if (!\Semitexa\Ssr\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+                if (!\Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
                     break;
                 }
                 $item = $channel->pop();
@@ -192,7 +192,7 @@ final class DeferredBlockOrchestrator
                 $sseData = $payload->toArray();
                 $sseData['id'] = $eventId;
 
-                if (!\Semitexa\Ssr\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+                if (!\Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
                     break;
                 }
                 SseAsyncResultDelivery::deliverRaw($sessionId, $sseData);
@@ -203,7 +203,7 @@ final class DeferredBlockOrchestrator
             }
         } else {
             foreach ($results as [$slot, $data]) {
-                if (!\Semitexa\Ssr\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+                if (!\Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
                     break;
                 }
                 $eventId++;
@@ -220,7 +220,7 @@ final class DeferredBlockOrchestrator
         }
 
         $liveEnabled = $startLiveLoop && $persistentDeferredSse;
-        if (\Semitexa\Ssr\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+        if (\Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
             SseAsyncResultDelivery::deliverRaw($sessionId, [
                 'type' => 'done',
                 'live' => $liveEnabled,
@@ -315,7 +315,7 @@ final class DeferredBlockOrchestrator
             $lastDelivered[$slot->slotId] = $now;
         }
 
-        while (\Semitexa\Ssr\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+        while (\Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
             // Sleep 1 second ticks — fine-grained enough for any reasonable interval
             if (class_exists(Coroutine::class, false) && Coroutine::getCid() > 0) {
                 Coroutine::sleep(1.0);
@@ -323,7 +323,7 @@ final class DeferredBlockOrchestrator
                 usleep(1_000_000);
             }
 
-            if (!\Semitexa\Ssr\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+            if (!\Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
                 break;
             }
 
@@ -437,8 +437,8 @@ final class DeferredBlockOrchestrator
             return;
         }
 
-        if (class_exists(\Semitexa\Ssr\I18n\Translator::class)) {
-            \Semitexa\Ssr\I18n\Translator::setLocale($locale);
+        if (class_exists(\Semitexa\Ssr\Application\Service\I18n\Translator::class)) {
+            \Semitexa\Ssr\Application\Service\I18n\Translator::setLocale($locale);
         }
     }
 

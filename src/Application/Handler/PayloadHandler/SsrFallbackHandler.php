@@ -13,7 +13,7 @@ use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Request;
 use Semitexa\Ssr\Application\Payload\Request\SsrFallbackPayload;
 use Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator;
-use Semitexa\Ssr\Isomorphic\DeferredRequestRegistry;
+use Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry;
 
 #[AsPayloadHandler(payload: SsrFallbackPayload::class, resource: ResourceResponse::class)]
 final class SsrFallbackHandler implements TypedHandlerInterface

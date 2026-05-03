@@ -13,10 +13,10 @@ use Semitexa\Core\Request;
 use Semitexa\Core\Support\ProjectRoot;
 use Semitexa\Core\Tenant\TenantContextInterface;
 use Semitexa\Ssr\Application\Payload\Request\SitemapXmlPayload;
-use Semitexa\Ssr\Seo\AiSitemapLocator;
-use Semitexa\Ssr\Seo\Sitemap\SitemapGenerationContext;
-use Semitexa\Ssr\Seo\Sitemap\SitemapGenerator;
-use Semitexa\Ssr\Seo\Sitemap\SitemapStoragePath;
+use Semitexa\Ssr\Application\Service\Seo\AiSitemapLocator;
+use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapGenerationContext;
+use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapGenerator;
+use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapStoragePath;
 
 #[AsPayloadHandler(payload: SitemapXmlPayload::class, resource: ResourceResponse::class)]
 final class SitemapXmlHandler implements TypedHandlerInterface

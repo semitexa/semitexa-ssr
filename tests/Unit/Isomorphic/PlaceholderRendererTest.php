@@ -6,7 +6,7 @@ namespace Semitexa\Ssr\Tests\Unit\Isomorphic;
 
 use PHPUnit\Framework\TestCase;
 use Semitexa\Ssr\Domain\Model\DeferredSlotDefinition;
-use Semitexa\Ssr\Isomorphic\PlaceholderRenderer;
+use Semitexa\Ssr\Application\Service\Isomorphic\PlaceholderRenderer;
 
 final class PlaceholderRendererTest extends TestCase
 {

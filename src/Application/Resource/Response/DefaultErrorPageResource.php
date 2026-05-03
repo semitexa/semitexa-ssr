@@ -7,8 +7,8 @@ namespace Semitexa\Ssr\Application\Resource\Response;
 use Semitexa\Core\Attribute\AsResource;
 use Semitexa\Core\Contract\ResourceInterface;
 use Semitexa\Core\Log\StaticLoggerBridge;
-use Semitexa\Ssr\Http\Response\FallbackErrorPage;
-use Semitexa\Ssr\Http\Response\HtmlResponse;
+use Semitexa\Ssr\Application\Service\Http\Response\FallbackErrorPage;
+use Semitexa\Ssr\Application\Service\Http\Response\HtmlResponse;
 
 /**
  * Default SSR error page (404 + 500).

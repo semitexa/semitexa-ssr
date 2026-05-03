@@ -12,7 +12,7 @@ use Semitexa\Core\Request;
 use Semitexa\Core\Tenant\TenantContextInterface;
 use Semitexa\Core\Support\ProjectRoot;
 use Semitexa\Ssr\Application\Payload\Request\SitemapJsonPayload;
-use Semitexa\Ssr\Seo\AiSitemapJsonRenderer;
+use Semitexa\Ssr\Application\Service\Seo\AiSitemapJsonRenderer;
 
 #[AsPayloadHandler(payload: SitemapJsonPayload::class, resource: ResourceResponse::class)]
 final class SitemapJsonHandler implements TypedHandlerInterface

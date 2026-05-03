@@ -6,8 +6,8 @@ namespace Semitexa\Ssr\Tests\Unit\Seo;
 
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
-use Semitexa\Ssr\Http\Response\HtmlResponse;
-use Semitexa\Ssr\Seo\SeoMeta;
+use Semitexa\Ssr\Application\Service\Http\Response\HtmlResponse;
+use Semitexa\Ssr\Application\Service\Seo\SeoMeta;
 
 final class SeoMetaTest extends TestCase
 {

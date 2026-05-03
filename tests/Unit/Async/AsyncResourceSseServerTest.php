@@ -6,7 +6,7 @@ namespace Semitexa\Ssr\Tests\Unit\Async;
 
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
-use Semitexa\Ssr\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
 use Swoole\Coroutine\Channel;
 
 final class AsyncResourceSseServerTest extends TestCase

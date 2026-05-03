@@ -1,0 +1,1380 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Semitexa\Ssr\Application\Service\Async;
+
+use Semitexa\Core\Environment;
+use Semitexa\Core\Redis\RedisConnectionPool;
+use Semitexa\Core\Session\RedisSessionHandler;
+use Semitexa\Core\Session\SessionHandlerInterface;
+use Semitexa\Core\Session\SwooleTableSessionHandler;
+use Semitexa\Core\Container\ContainerFactory;
+use Semitexa\Ssr\Configuration\IsomorphicConfig;
+use Predis\Client;
+use Swoole\Http\Request;
+use Swoole\Http\Response;
+
+final class AsyncResourceSseServer
+{
+    private const AUTH_SESSION_USER_KEY = '_auth_user_id';
+    private const AUTH_SESSION_TTL_SECONDS = 7200;
+    private const AUTH_SESSION_TOUCH_INTERVAL_SECONDS = 30;
+    private const ACTIVE_SESSION_TTL_SECONDS = 45;
+    private const REDIS_AUTH_USER_SESSIONS_PREFIX = 'semitexa_sse_auth_user:';
+    private const REDIS_AUTH_SESSION_USER_PREFIX = 'semitexa_sse_auth_session:';
+    private const REDIS_AUTH_ALL_SESSIONS_KEY = 'semitexa_sse_auth_sessions';
+    private const REDIS_ACTIVE_SESSION_PREFIX = 'semitexa_sse_active_session:';
+    private const REDIS_SESSION_QUEUE_PREFIX = 'semitexa_sse_queue:';
+    private const REDIS_SESSION_QUEUE_TTL_SECONDS = 7200;
+
+    // Connection hardening defaults (all env-overridable).
+    private const DEFAULT_MAX_CONN_PER_IP = 5;
+    private const DEFAULT_MAX_CONN_GLOBAL = 500;
+    private const DEFAULT_MAX_CONNECTION_AGE_SECONDS = 600;
+
+    /** @var array<string, int> Per-worker IP → open-connection counter. */
+    private static array $ipConnections = [];
+
+    /** @var array<string, string> Connection key → client IP (for decrement on close). */
+    private static array $sessionIps = [];
+
+    private static array $sessions = [];
+
+    /** @var array<string, list<array>> Pending messages per session when no connection yet */
+    private static array $buffer = [];
+
+    /** @var array<string, list<array>> In-memory queue per session for the loop to send */
+    private static array $queues = [];
+
+    /** @var array<string, bool> */
+    private static array $demoProducers = [];
+
+    /** @var array<string, array<int, true>> Session-scoped coroutine IDs for deferred/live SSE work */
+    private static array $sessionCoroutines = [];
+
+    private static ?\Swoole\Http\Server $httpServer = null;
+
+    /** @var \Swoole\Table|null session_id -> worker_id (for cross-worker deliver) */
+    private static ?\Swoole\Table $sessionWorkerTable = null;
+
+    /** @var \Swoole\Table|null deliver queue: unique_key -> session_id, worker_id, payload */
+    private static ?\Swoole\Table $deliverTable = null;
+
+    /** @var \Swoole\Table|null pending messages when client not connected yet: key -> session_id, payload */
+    private static ?\Swoole\Table $pendingDeliverTable = null;
+    private static ?RedisConnectionPool $redisPool = null;
+
+    public static function handle(Request $request, Response $response): bool
+    {
+        $server = is_array($request->server) ? $request->server : [];
+        $path = $server['path_info'] ?? '';
+        if ($path === '') {
+            $uri = $server['request_uri'] ?? '/';
+            $path = parse_url($uri, PHP_URL_PATH) ?: '/';
+        }
+
+        if ($path === '/__semitexa_sse' || $path === '/sse') {
+            self::handleSse($request, $response);
+            return true;
+        }
+
+        if ($path === '/__semitexa_kiss') {
+            self::handleSse($request, $response);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static function handleSse(Request $request, Response $response): void
+    {
+        $get = is_array($request->get) ? $request->get : [];
+        $sessionId = trim((string) (($get['session_id'] ?? null) ?: uniqid('sse_', true)));
+        $demoStream = '';
+        if (isset($get['demo_stream'])) {
+            $demoStream = trim((string) $get['demo_stream']);
+        }
+        $deferredRequestId = trim((string) ($get['deferred_request_id'] ?? ''));
+
+        // Auth gate — only persistent streams require a session:
+        //  1. demo_stream runs an infinite per-minute producer → auth always.
+        //  2. deferred_request_id requests are guest-safe: the orchestrator runs
+        //     delivery then sends done/close (canUsePersistentDeferredSse() keeps
+        //     the persistent live loop auth-gated), so we let guests through the
+        //     gate and rely on the delivery-complete close.
+        //  3. bare /sse with no deferred_request_id is a long-lived stream →
+        //     auth required, unless SSE_PUBLIC_ANONYMOUS is opt-in.
+        $authenticated = self::hasAuthenticatedSession($request);
+        $anonymousAllowed = filter_var((string) (\getenv('SSE_PUBLIC_ANONYMOUS') ?: ''), FILTER_VALIDATE_BOOLEAN);
+
+        $authError = self::resolveSseAuthorizationError(
+            authenticated: $authenticated,
+            anonymousAllowed: $anonymousAllowed,
+            demoStream: $demoStream,
+            deferredRequestId: $deferredRequestId,
+        );
+        $rejection = self::resolveSseRequestRejection(
+            sameOrigin: self::isSameOriginRequest($request),
+            authError: $authError,
+        );
+        if ($rejection !== null) {
+            if ($rejection['status'] === 401) {
+                self::rejectUnauthorized($response, $rejection['message']);
+                return;
+            }
+
+            $response->status($rejection['status']);
+            $response->end();
+            return;
+        }
+
+        // Per-IP + global connection caps. Apply to every connection (authenticated
+        // or anonymous) to bound worker/FD consumption.
+        $clientIp = self::resolveClientIp($request);
+        $maxPerIp = self::envInt('SSE_MAX_CONN_PER_IP', self::DEFAULT_MAX_CONN_PER_IP);
+        $maxGlobal = self::envInt('SSE_MAX_CONN_GLOBAL', self::DEFAULT_MAX_CONN_GLOBAL);
+
+        $globalOpen = array_sum(self::$ipConnections);
+        if ($globalOpen >= $maxGlobal) {
+            self::rejectTooManyRequests($response, 'SSE connection cap reached for this worker.');
+            return;
+        }
+        if ($clientIp !== '' && ((self::$ipConnections[$clientIp] ?? 0) >= $maxPerIp)) {
+            self::rejectTooManyRequests($response, 'SSE connection cap reached for your IP.');
+            return;
+        }
+
+        if ($clientIp !== '') {
+            self::$ipConnections[$clientIp] = (self::$ipConnections[$clientIp] ?? 0) + 1;
+            self::$sessionIps[self::sessionConnectionKey($sessionId, $response)] = $clientIp;
+        }
+
+        $response->status(200);
+        $response->header('Content-Type', 'text/event-stream');
+        $response->header('Cache-Control', 'no-cache');
+        $response->header('Connection', 'keep-alive');
+        $response->header('X-Accel-Buffering', 'no');
+
+        self::$sessions[$sessionId] = [
+            'response' => $response,
+            'connected_at' => time(),
+        ];
+
+        $authenticatedUserId = self::resolveAuthenticatedUserId($request);
+        if ($authenticatedUserId !== '') {
+            self::registerAuthenticatedSession($sessionId, $authenticatedUserId);
+        }
+        self::touchActiveSession($sessionId);
+
+        if (self::$sessionWorkerTable !== null && self::$httpServer !== null) {
+            $workerId = self::getCurrentWorkerId();
+            $key = self::sessionTableKey($sessionId);
+            self::$sessionWorkerTable->set($key, ['worker_id' => $workerId]);
+        }
+
+        if (!isset(self::$queues[$sessionId])) {
+            self::$queues[$sessionId] = [];
+        }
+
+        // Flush local buffer for this session only
+        $bufferCount = 0;
+        if (isset(self::$buffer[$sessionId])) {
+            foreach (self::$buffer[$sessionId] as $data) {
+                self::writeSse($response, $data);
+                $bufferCount++;
+            }
+            unset(self::$buffer[$sessionId]);
+        }
+
+        // Flush pending table for this session only
+        $pendingCount = 0;
+        if (self::$pendingDeliverTable !== null) {
+            $toDel = [];
+            foreach (self::$pendingDeliverTable as $pendingKey => $row) {
+                if (trim((string) $row['session_id']) === $sessionId) {
+                    $data = json_decode((string) $row['payload'], true);
+                    if (is_array($data)) {
+                        self::writeSse($response, $data);
+                        $pendingCount++;
+                    }
+                    $toDel[] = $pendingKey;
+                }
+            }
+            foreach ($toDel as $k) {
+                self::$pendingDeliverTable->del($k);
+            }
+        }
+
+        if (self::drainRedisQueueForSession($sessionId, $response)) {
+            self::closeSession($sessionId, $response);
+            return;
+        }
+
+        // Send initial event so the client receives something immediately (fixes "Connecting..." stuck
+        // and ensures response is flushed; some proxies don't send headers until first byte).
+        self::writeSse($response, ['event' => 'connected', 'connected' => true]);
+
+        $enableDemoStream = filter_var((string) (\getenv('APP_DEBUG') ?: ''), FILTER_VALIDATE_BOOLEAN);
+        if ($demoStream !== '' && $enableDemoStream) {
+            self::startDemoStreamProducer($sessionId, $demoStream);
+        }
+
+        // Trigger deferred block streaming if deferred_request_id is present
+        $header = is_array($request->header) ? $request->header : [];
+        $lastEventId = $header['last-event-id'] ?? null;
+        if ($deferredRequestId !== '') {
+            $bindToken = self::getSsrBindToken($request);
+            if (!\Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry::matchesBindToken($deferredRequestId, $bindToken)) {
+                self::writeSse($response, [
+                    'type' => 'done',
+                    'live' => false,
+                    'close' => true,
+                    'reconnect' => false,
+                ]);
+                self::closeSession($sessionId, $response);
+                return;
+            }
+            self::triggerDeferredBlocks(
+                $sessionId,
+                $deferredRequestId,
+                $lastEventId,
+                self::canUsePersistentDeferredSse($request),
+            );
+        }
+
+        $closed = false;
+        $lastAuthTouchAt = time();
+        $connectionStartedAt = time();
+        $maxAgeSeconds = self::envInt('SSE_MAX_CONNECTION_AGE_SECONDS', self::DEFAULT_MAX_CONNECTION_AGE_SECONDS);
+        while (!$closed && isset(self::$sessions[$sessionId])) {
+            // Hard connection-age cap — bounds hanging-connection attacks.
+            if ($maxAgeSeconds > 0 && (time() - $connectionStartedAt) >= $maxAgeSeconds) {
+                self::writeSse($response, ['event' => 'close', 'reason' => 'max_age', 'close' => true]);
+                break;
+            }
+
+            if ((time() - $lastAuthTouchAt) >= self::AUTH_SESSION_TOUCH_INTERVAL_SECONDS) {
+                $authenticatedUserId = self::refreshAuthenticatedSessionMapping($request, $sessionId, $authenticatedUserId);
+                self::touchActiveSession($sessionId);
+                $lastAuthTouchAt = time();
+            }
+
+            while (isset(self::$queues[$sessionId]) && self::$queues[$sessionId] !== []) {
+                $data = array_shift(self::$queues[$sessionId]);
+                if (!self::writeSse($response, $data)) {
+                    $closed = true;
+                    break;
+                }
+                if (self::shouldCloseAfterPayload($data)) {
+                    $closed = true;
+                    break;
+                }
+            }
+
+            if (!$closed && self::$deliverTable !== null && self::$httpServer !== null) {
+                $currentWorkerId = self::getCurrentWorkerId();
+                $toDel = [];
+                $deliverCount = 0;
+                foreach (self::$deliverTable as $deliverKey => $row) {
+                    if ((int) $row['worker_id'] === $currentWorkerId && trim((string) $row['session_id']) === $sessionId) {
+                        $data = json_decode((string) $row['payload'], true);
+                        if (is_array($data) && self::writeSse($response, $data)) {
+                            $toDel[] = $deliverKey;
+                            $deliverCount++;
+                            if (self::shouldCloseAfterPayload($data)) {
+                                $closed = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                foreach ($toDel as $k) {
+                    self::$deliverTable->del($k);
+                }
+            }
+
+            if (!$closed && self::drainRedisQueueForSession($sessionId, $response)) {
+                $closed = true;
+            }
+
+            if ($closed) {
+                break;
+            }
+
+            if (function_exists('connection_aborted') && connection_aborted()) {
+                break;
+            }
+
+            \Swoole\Coroutine::sleep(0.2);
+        }
+
+        self::closeSession($sessionId, $response);
+    }
+
+    private static function triggerDeferredBlocks(
+        string $sessionId,
+        string $deferredRequestId,
+        ?string $lastEventId,
+        bool $allowPersistentDeferredSse,
+    ): void
+    {
+        $registry = \Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry::consume($deferredRequestId);
+
+        $debugLog = static function (string $msg, array $data = []): void {
+            /** @var array<string, mixed> $data */
+            \Semitexa\Core\Log\StaticLoggerBridge::debug('ssr', $msg, $data);
+        };
+
+        if ($registry === null) {
+            $debugLog('registry_null', ['deferred_request_id' => $deferredRequestId]);
+            self::deliver($sessionId, [
+                'type' => 'done',
+                'live' => false,
+                'close' => true,
+                'reconnect' => false,
+            ]);
+            return;
+        }
+
+        $locale = $registry['locale'];
+
+        $debugLog('registry_found', [
+            'deferred_request_id' => $deferredRequestId,
+            'page_handle' => $registry['page_handle'],
+            'slots' => $registry['slots'],
+            'locale' => $locale,
+        ]);
+
+        // Use coroutine to resolve deferred blocks concurrently
+        if (class_exists(\Swoole\Coroutine::class, false) && \Swoole\Coroutine::getCid() > 0) {
+            self::createSessionCoroutine(static function () use ($sessionId, $registry, $lastEventId, $deferredRequestId, $debugLog, $allowPersistentDeferredSse, $locale): void {
+                try {
+                    $container = ContainerFactory::get();
+                    $orchestrator = $container->get(\Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator::class);
+                    $debugLog('orchestrator_resolved', ['session_id' => $sessionId]);
+                    $orchestrator->streamDeferredBlocks(
+                        sessionId: $sessionId,
+                        pageHandle: $registry['page_handle'],
+                        pageContext: $registry['page_context'],
+                        lastEventId: $lastEventId,
+                        deferredRequestId: $deferredRequestId,
+                        locale: $locale !== '' ? $locale : null,
+                        startLiveLoop: $allowPersistentDeferredSse,
+                    );
+                } catch (\Throwable $e) {
+                    if (self::isCoroutineCancellation($e)) {
+                        $debugLog('streaming_cancelled', ['session_id' => $sessionId]);
+                        return;
+                    }
+
+                    $debugLog('streaming_failed', ['error' => $e->getMessage(), 'trace' => substr($e->getTraceAsString(), 0, 500)]);
+                    \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'Deferred block streaming failed', [
+                        'session_id' => $sessionId,
+                        'exception' => $e::class,
+                        'message' => $e->getMessage(),
+                    ]);
+                    self::deliver($sessionId, [
+                        'type' => 'done',
+                        'live' => false,
+                        'close' => true,
+                        'reconnect' => false,
+                    ]);
+                }
+            }, $sessionId);
+        } else {
+            try {
+                $container = ContainerFactory::get();
+                $orchestrator = $container->get(\Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator::class);
+                $debugLog('orchestrator_resolved_sync', ['session_id' => $sessionId]);
+                $orchestrator->streamDeferredBlocks(
+                    sessionId: $sessionId,
+                    pageHandle: $registry['page_handle'],
+                    pageContext: $registry['page_context'],
+                    lastEventId: $lastEventId,
+                    deferredRequestId: $deferredRequestId,
+                    locale: $locale !== '' ? $locale : null,
+                    startLiveLoop: $allowPersistentDeferredSse,
+                );
+            } catch (\Throwable $e) {
+                $debugLog('streaming_failed_sync', ['error' => $e->getMessage()]);
+                \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'Deferred block streaming failed (sync)', [
+                    'session_id' => $sessionId,
+                    'exception' => $e::class,
+                    'message' => $e->getMessage(),
+                ]);
+                self::deliver($sessionId, [
+                    'type' => 'done',
+                    'live' => false,
+                    'close' => true,
+                    'reconnect' => false,
+                ]);
+            }
+        }
+    }
+
+    private static function drainRedisQueueForSession(string $sessionId, Response $response): bool
+    {
+        $pool = self::getRedisPool();
+        if ($pool === null) {
+            return false;
+        }
+
+        while (true) {
+            try {
+                $raw = $pool->withConnection(static function ($redis) use ($sessionId): ?string {
+                    /** @var Client $redis */
+                    $value = $redis->lpop(self::redisSessionQueueKey($sessionId));
+                    return is_string($value) && $value !== '' ? $value : null;
+                });
+            } catch (\Throwable $e) {
+                \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'Redis SSE dequeue failed', [
+                    'session_id' => $sessionId,
+                    'exception' => $e::class,
+                    'message' => $e->getMessage(),
+                ]);
+                return false;
+            }
+
+            if (!is_string($raw)) {
+                break;
+            }
+
+            $data = json_decode((string) $raw, true);
+            if (!is_array($data)) {
+                continue;
+            }
+
+            if (!self::writeSse($response, $data)) {
+                try {
+                    $pool->withConnection(static function ($redis) use ($sessionId, $raw): void {
+                        /** @var Client $redis */
+                        $queueKey = self::redisSessionQueueKey($sessionId);
+                        $redis->rpush($queueKey, [$raw]);
+                        $redis->expire($queueKey, self::REDIS_SESSION_QUEUE_TTL_SECONDS);
+                    });
+                } catch (\Throwable $e) {
+                    \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'Redis SSE requeue failed', [
+                        'session_id' => $sessionId,
+                        'exception' => $e::class,
+                        'message' => $e->getMessage(),
+                    ]);
+                }
+                return true;
+            }
+
+            if (self::shouldCloseAfterPayload($data)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function writeSse(Response $response, array $data): bool
+    {
+        $line = '';
+        if (isset($data['id'])) {
+            $safeId = str_replace(["\r", "\n"], '', (string) $data['id']);
+            $line .= 'id: ' . $safeId . "\n";
+        }
+        if (isset($data['event']) && $data['event'] !== '') {
+            $safeEvent = str_replace(["\r", "\n"], '', (string) $data['event']);
+            $line .= 'event: ' . $safeEvent . "\n";
+        }
+        $line .= "data: " . json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n";
+        return @$response->write($line);
+    }
+
+    private static function startDemoStreamProducer(string $sessionId, string $demoStream): void
+    {
+        if ($demoStream !== 'showcase') {
+            return;
+        }
+
+        if (isset(self::$demoProducers[$sessionId])) {
+            return;
+        }
+
+        self::$demoProducers[$sessionId] = true;
+
+        $producer = static function () use ($sessionId): void {
+            \Swoole\Coroutine::sleep(0.35);
+
+            if (!isset(self::$sessions[$sessionId])) {
+                unset(self::$demoProducers[$sessionId]);
+                return;
+            }
+
+            $utcNow = static fn (): \DateTimeImmutable => new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+
+            self::deliver($sessionId, [
+                'id' => 'demo_attached_' . substr(md5($sessionId), 0, 8),
+                'event' => 'notification',
+                'level' => 'info',
+                'title' => 'Stream attached',
+                'message' => 'The backend SSE stream is open. A new server-side minute tick will arrive every 60 seconds.',
+                'source' => 'swoole-worker',
+                'sent_at' => $utcNow()->format(DATE_ATOM),
+            ]);
+
+            $tick = 0;
+
+            while (isset(self::$sessions[$sessionId])) {
+                $now = microtime(true);
+                $sleepSeconds = 60 - fmod($now, 60.0);
+
+                if ($sleepSeconds < 0.05) {
+                    $sleepSeconds += 60.0;
+                }
+
+                \Swoole\Coroutine::sleep($sleepSeconds);
+
+                if (!isset(self::$sessions[$sessionId])) {
+                    unset(self::$demoProducers[$sessionId]);
+                    return;
+                }
+
+                $tick++;
+                $sentAt = $utcNow();
+
+                self::deliver($sessionId, [
+                    'id' => 'demo_minute_' . $tick . '_' . substr(md5($sessionId), 0, 8),
+                    'event' => 'scheduler.tick',
+                    'level' => 'success',
+                    'title' => 'Minute boundary reached',
+                    'message' => sprintf(
+                        'Backend minute tick #%d emitted at %s. The countdown should now restart for the next full minute.',
+                        $tick,
+                        $sentAt->format('H:i:s')
+                    ),
+                    'source' => 'scheduler',
+                    'tick' => $tick,
+                    'sent_at' => $sentAt->format(DATE_ATOM),
+                ]);
+            }
+
+            unset(self::$demoProducers[$sessionId]);
+        };
+
+        if (class_exists(\Swoole\Coroutine::class, false) && \Swoole\Coroutine::getCid() > 0) {
+            self::createSessionCoroutine($producer, $sessionId);
+            return;
+        }
+
+        unset(self::$demoProducers[$sessionId]);
+    }
+
+    private static function shouldCloseAfterPayload(array $data): bool
+    {
+        if (($data['type'] ?? null) !== 'done') {
+            return false;
+        }
+
+        if (($data['close'] ?? false) === true) {
+            return true;
+        }
+
+        return ($data['live'] ?? false) !== true;
+    }
+
+    /**
+     * Deliver payload to session.
+     * Paths: same-worker queue -> Redis queue (cross-worker/server) -> Swoole Tables fallback -> pendingTable -> buffer.
+     */
+    public static function deliver(string $sessionId, array $data): void
+    {
+        $sessionId = trim($sessionId);
+        if ($sessionId === '') {
+            return;
+        }
+
+        $currentWorkerId = self::getCurrentWorkerId();
+
+        // Same worker has the SSE connection: add to local queue
+        if (isset(self::$sessions[$sessionId])) {
+            if (!isset(self::$queues[$sessionId])) {
+                self::$queues[$sessionId] = [];
+            }
+            self::$queues[$sessionId][] = $data;
+            return;
+        }
+
+        // Cross-worker / cross-server: use Redis queue when available.
+        $pool = self::getRedisPool();
+        if ($pool !== null) {
+            $payload = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            if (is_string($payload)) {
+                try {
+                    $pool->withConnection(static function ($redis) use ($sessionId, $payload): void {
+                        /** @var Client $redis */
+                        $queueKey = self::redisSessionQueueKey($sessionId);
+                        $redis->rpush($queueKey, [$payload]);
+                        $redis->expire($queueKey, self::REDIS_SESSION_QUEUE_TTL_SECONDS);
+                    });
+                    return;
+                } catch (\Throwable $e) {
+                    \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'Redis SSE enqueue failed', [
+                        'session_id' => $sessionId,
+                        'exception' => $e::class,
+                        'message' => $e->getMessage(),
+                    ]);
+                }
+            }
+        }
+
+        // Fallback: Swoole Tables (single server only)
+        if (self::$sessionWorkerTable !== null && self::$deliverTable !== null && self::$httpServer !== null) {
+            $row = self::$sessionWorkerTable->get(self::sessionTableKey($sessionId));
+            if ($row !== false) {
+                $targetWorkerId = (int) $row['worker_id'];
+                if ($targetWorkerId !== $currentWorkerId) {
+                    $deliverKey = uniqid('d_', true);
+                    self::$deliverTable->set($deliverKey, [
+                        'session_id' => $sessionId,
+                        'worker_id' => $targetWorkerId,
+                        'payload' => json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                    ]);
+                    return;
+                }
+            }
+        }
+        if (self::$pendingDeliverTable !== null) {
+            $key = uniqid('p_', true);
+            self::$pendingDeliverTable->set($key, [
+                'session_id' => $sessionId,
+                'payload' => json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            ]);
+            return;
+        }
+        if (!isset(self::$buffer[$sessionId])) {
+            self::$buffer[$sessionId] = [];
+        }
+        self::$buffer[$sessionId][] = $data;
+    }
+
+    public static function broadcast(string $sessionId, string $handlerKey, object $resource): void
+    {
+        $html = self::renderResource($resource);
+        $data = [
+            'handler' => $handlerKey,
+            'resource' => (array) $resource,
+            'html' => $html,
+        ];
+        self::deliver($sessionId, $data);
+    }
+
+    public static function renderResource(object $resource): string
+    {
+        if (!method_exists($resource, 'getRenderHandle')) {
+            return '';
+        }
+
+        $handle = $resource->getRenderHandle();
+        if (!$handle) {
+            return '';
+        }
+
+        $context = method_exists($resource, 'getRenderContext') ? $resource->getRenderContext() : [];
+        $context = array_merge($context, (array) $resource);
+
+        try {
+            return \Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry::getTwig()->render(
+                $handle . '.html.twig',
+                $context
+            );
+        } catch (\Throwable $e) {
+            return '';
+        }
+    }
+
+    /**
+     * Reads mutable session state from in-process tables and Redis. The return value
+     * can flip between calls within the same request (sessions can end mid-coroutine),
+     * so PHPStan must not narrow subsequent calls based on a prior true result.
+     *
+     * @phpstan-impure
+     */
+    public static function isSessionActive(string $sessionId): bool
+    {
+        $sessionId = trim($sessionId);
+        if ($sessionId === '') {
+            return false;
+        }
+
+        if (isset(self::$sessions[$sessionId])) {
+            return true;
+        }
+
+        if (self::$sessionWorkerTable !== null && self::$sessionWorkerTable->get(self::sessionTableKey($sessionId)) !== false) {
+            return true;
+        }
+
+        $pool = self::getRedisPool();
+        if ($pool !== null) {
+            try {
+                $isActive = $pool->withConnection(static function ($redis) use ($sessionId): bool {
+                    /** @var Client $redis */
+                    return (string) ($redis->get(self::redisActiveSessionKey($sessionId)) ?? '') === '1';
+                });
+                if ($isActive) {
+                    return true;
+                }
+            } catch (\Throwable) {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    public static function createSessionCoroutine(callable $callback, string $sessionId): int|false
+    {
+        if (!class_exists(\Swoole\Coroutine::class, false) || \Swoole\Coroutine::getCid() < 0) {
+            $callback();
+            return false;
+        }
+
+        /** @var int|false $result */
+        $result = \Swoole\Coroutine::create(static function () use ($callback, $sessionId): void {
+            $cid = self::currentCid();
+            if ($cid >= 0) {
+                self::$sessionCoroutines[$sessionId][$cid] = true;
+            }
+
+            try {
+                $callback();
+            } catch (\Throwable $e) {
+                if (!self::isCoroutineCancellation($e)) {
+                    throw $e;
+                }
+            } finally {
+                $cid = self::currentCid();
+                if ($cid >= 0 && isset(self::$sessionCoroutines[$sessionId][$cid])) {
+                    unset(self::$sessionCoroutines[$sessionId][$cid]);
+                    if (self::$sessionCoroutines[$sessionId] === []) {
+                        unset(self::$sessionCoroutines[$sessionId]);
+                    }
+                }
+            }
+        });
+
+        return $result;
+    }
+
+    public static function setServer(\Swoole\Http\Server $server): void
+    {
+        self::$httpServer = $server;
+    }
+
+    public static function setTables(
+        \Swoole\Table $sessionWorkerTable,
+        \Swoole\Table $deliverTable,
+        ?\Swoole\Table $pendingDeliverTable = null,
+    ): void
+    {
+        self::$sessionWorkerTable = $sessionWorkerTable;
+        self::$deliverTable = $deliverTable;
+        self::$pendingDeliverTable = $pendingDeliverTable;
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    public static function deliverToUser(string $userId, array $data): int
+    {
+        $userId = trim($userId);
+        if ($userId === '') {
+            return 0;
+        }
+
+        $sessionIds = self::getAuthenticatedUserSessionIds($userId);
+        $delivered = 0;
+        foreach ($sessionIds as $sessionId) {
+            self::deliver($sessionId, $data);
+            $delivered++;
+        }
+
+        return $delivered;
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    public static function deliverToAuthenticatedUsers(array $data): int
+    {
+        $sessionIds = self::getAllAuthenticatedSessionIds();
+        $delivered = 0;
+        foreach ($sessionIds as $sessionId) {
+            self::deliver($sessionId, $data);
+            $delivered++;
+        }
+
+        return $delivered;
+    }
+
+    private static function getCurrentWorkerId(): int
+    {
+        if (self::$httpServer === null) {
+            return -1;
+        }
+        if (method_exists(self::$httpServer, 'getWorkerId')) {
+            return (int) self::$httpServer->getWorkerId();
+        }
+        $workerId = self::$httpServer->worker_id ?? -1;
+        return is_numeric($workerId) ? (int) $workerId : -1;
+    }
+
+    private static function sessionTableKey(string $sessionId): string
+    {
+        return strlen($sessionId) > 63 ? md5($sessionId) : $sessionId;
+    }
+
+    /**
+     * Typed wrapper around \Swoole\Coroutine::getCid(). The Swoole stub PHPStan
+     * sees returns mixed, but the runtime contract is int (>=0 inside a coroutine,
+     * negative otherwise). Wrapping it once keeps the rest of this class type-safe.
+     */
+    private static function currentCid(): int
+    {
+        if (!class_exists(\Swoole\Coroutine::class, false)) {
+            return -1;
+        }
+        $cid = \Swoole\Coroutine::getCid();
+        return is_int($cid) ? $cid : -1;
+    }
+
+    private static function closeSession(string $sessionId, Response $response): void
+    {
+        self::cancelSessionCoroutines($sessionId);
+        self::removeSessionWorkerMapping($sessionId);
+        self::unregisterAuthenticatedSession($sessionId);
+        self::releaseIpConnection($sessionId, $response);
+        unset(self::$sessions[$sessionId], self::$queues[$sessionId], self::$demoProducers[$sessionId], self::$sessionCoroutines[$sessionId]);
+        @$response->end();
+    }
+
+    private static function releaseIpConnection(string $sessionId, Response $response): void
+    {
+        $connectionKey = self::sessionConnectionKey($sessionId, $response);
+        $ip = self::$sessionIps[$connectionKey] ?? '';
+        if ($ip === '') {
+            return;
+        }
+
+        if (isset(self::$ipConnections[$ip])) {
+            self::$ipConnections[$ip]--;
+            if (self::$ipConnections[$ip] <= 0) {
+                unset(self::$ipConnections[$ip]);
+            }
+        }
+        unset(self::$sessionIps[$connectionKey]);
+    }
+
+    private static function resolveClientIp(Request $request): string
+    {
+        $server = is_array($request->server) ? $request->server : [];
+        $ip = trim((string) ($server['remote_addr'] ?? ''));
+
+        return $ip !== '' ? strtolower($ip) : '';
+    }
+
+    private static function envInt(string $key, int $default): int
+    {
+        $rawValue = \getenv($key);
+        $raw = trim($rawValue === false ? '' : (string) $rawValue);
+        if ($raw === '') {
+            return $default;
+        }
+        $parsed = filter_var($raw, FILTER_VALIDATE_INT);
+        return is_int($parsed) && $parsed >= 0 ? $parsed : $default;
+    }
+
+    private static function sessionConnectionKey(string $sessionId, Response $response): string
+    {
+        return $sessionId . '#' . spl_object_id($response);
+    }
+
+    private static function rejectUnauthorized(Response $response, string $message): void
+    {
+        $response->status(401);
+        $response->header('Content-Type', 'application/json');
+        $response->end(json_encode([
+            'error' => 'Unauthorized',
+            'message' => $message,
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    }
+
+    private static function resolveSseAuthorizationError(
+        bool $authenticated,
+        bool $anonymousAllowed,
+        string $demoStream,
+        string $deferredRequestId,
+    ): ?string {
+        if ($demoStream !== '' && !$authenticated) {
+            return 'Authorization is required for this SSE demo stream.';
+        }
+
+        if ($demoStream === '' && $deferredRequestId === '' && !$authenticated && !$anonymousAllowed) {
+            return 'Authorization is required for persistent SSE streams. Set SSE_PUBLIC_ANONYMOUS=true to opt in to anonymous persistent streams.';
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array{status: int, message: string}|null
+     */
+    private static function resolveSseRequestRejection(bool $sameOrigin, ?string $authError): ?array
+    {
+        if ($authError !== null) {
+            return [
+                'status' => 401,
+                'message' => $authError,
+            ];
+        }
+
+        if (!$sameOrigin) {
+            return [
+                'status' => 403,
+                'message' => '',
+            ];
+        }
+
+        return null;
+    }
+
+    private static function rejectTooManyRequests(Response $response, string $message): void
+    {
+        $response->status(429);
+        $response->header('Content-Type', 'application/json');
+        $response->header('Retry-After', '30');
+        $response->end(json_encode([
+            'error' => 'Too Many Requests',
+            'message' => $message,
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    }
+
+    private static function cancelSessionCoroutines(string $sessionId): void
+    {
+        $sessionId = trim($sessionId);
+        if ($sessionId === '' || !isset(self::$sessionCoroutines[$sessionId])) {
+            return;
+        }
+
+        $currentCid = self::currentCid();
+        /** @var array<int, true> $cids */
+        $cids = self::$sessionCoroutines[$sessionId];
+        foreach (array_keys($cids) as $cid) {
+            if ($cid < 0 || $cid === $currentCid) {
+                continue;
+            }
+            try {
+                self::cancelCoroutine($cid);
+            } catch (\Throwable) {
+                // Best-effort cancellation only.
+            }
+        }
+    }
+
+    private static function cancelCoroutine(int $cid): void
+    {
+        if (self::supportsSynchronousCoroutineCancel()) {
+            // Second arg forces a synchronous cancel that throws inside the target
+            // coroutine — without it, Coroutine::sleep() returns false but a tight
+            // loop keeps running. The Swoole stub PHPStan sees omits this parameter.
+            /** @phpstan-ignore-next-line arguments.count */
+            \Swoole\Coroutine::cancel($cid, true);
+            return;
+        }
+
+        \Swoole\Coroutine::cancel($cid);
+    }
+
+    private static function supportsSynchronousCoroutineCancel(): bool
+    {
+        static $supportsSyncCancel;
+        if (is_bool($supportsSyncCancel)) {
+            return $supportsSyncCancel;
+        }
+
+        try {
+            $method = new \ReflectionMethod(\Swoole\Coroutine::class, 'cancel');
+            $supportsSyncCancel = $method->getNumberOfParameters() >= 2;
+        } catch (\ReflectionException) {
+            $supportsSyncCancel = false;
+        }
+
+        return $supportsSyncCancel;
+    }
+
+    private static function isCoroutineCancellation(\Throwable $e): bool
+    {
+        $class = strtolower($e::class);
+        $message = strtolower($e->getMessage());
+
+        return str_contains($class, 'cancel') || str_contains($message, 'cancel');
+    }
+
+    private static function getSsrBindToken(Request $request): string
+    {
+        $cookieName = 'semitexa_ssr_bind';
+        $cookie = is_array($request->cookie) ? $request->cookie : [];
+
+        return trim((string) ($cookie[$cookieName] ?? ''));
+    }
+
+    private static function removeSessionWorkerMapping(string $sessionId): void
+    {
+        if (self::$sessionWorkerTable === null) {
+            return;
+        }
+
+        self::$sessionWorkerTable->del(self::sessionTableKey($sessionId));
+    }
+
+    private static function registerAuthenticatedSession(string $sessionId, string $userId): void
+    {
+        $pool = self::getRedisPool();
+        if ($pool === null) {
+            return;
+        }
+
+        $sessionId = trim($sessionId);
+        $userId = trim($userId);
+        if ($sessionId === '' || $userId === '') {
+            return;
+        }
+
+        try {
+            $pool->withConnection(static function ($redis) use ($sessionId, $userId): void {
+                /** @var Client $redis */
+                $redis->sadd(self::REDIS_AUTH_ALL_SESSIONS_KEY, [$sessionId]);
+                $redis->sadd(self::redisUserSessionsKey($userId), [$sessionId]);
+                $redis->setex(self::redisSessionUserKey($sessionId), self::AUTH_SESSION_TTL_SECONDS, $userId);
+                $redis->expire(self::REDIS_AUTH_ALL_SESSIONS_KEY, self::AUTH_SESSION_TTL_SECONDS);
+                $redis->expire(self::redisUserSessionsKey($userId), self::AUTH_SESSION_TTL_SECONDS);
+            });
+        } catch (\Throwable $e) {
+            \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'Failed to register authenticated SSE session', [
+                'session_id' => $sessionId,
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private static function unregisterAuthenticatedSession(string $sessionId): void
+    {
+        $pool = self::getRedisPool();
+        if ($pool === null) {
+            return;
+        }
+
+        $sessionId = trim($sessionId);
+        if ($sessionId === '') {
+            return;
+        }
+
+        try {
+            $pool->withConnection(static function ($redis) use ($sessionId): void {
+                /** @var Client $redis */
+                $userId = trim((string) ($redis->get(self::redisSessionUserKey($sessionId)) ?? ''));
+                if ($userId !== '') {
+                    $redis->srem(self::redisUserSessionsKey($userId), $sessionId);
+                }
+                $redis->srem(self::REDIS_AUTH_ALL_SESSIONS_KEY, $sessionId);
+                $redis->del(self::redisSessionUserKey($sessionId));
+                $redis->del(self::redisActiveSessionKey($sessionId));
+            });
+        } catch (\Throwable $e) {
+            \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'Failed to unregister authenticated SSE session', [
+                'session_id' => $sessionId,
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private static function touchActiveSession(string $sessionId): void
+    {
+        $pool = self::getRedisPool();
+        if ($pool === null) {
+            return;
+        }
+
+        $sessionId = trim($sessionId);
+        if ($sessionId === '') {
+            return;
+        }
+
+        try {
+            $pool->withConnection(static function ($redis) use ($sessionId): void {
+                /** @var Client $redis */
+                $redis->setex(self::redisActiveSessionKey($sessionId), self::ACTIVE_SESSION_TTL_SECONDS, '1');
+            });
+        } catch (\Throwable $e) {
+            \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'Failed to touch active SSE session', [
+                'session_id' => $sessionId,
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private static function refreshAuthenticatedSessionMapping(
+        Request $request,
+        string $sessionId,
+        string $authenticatedUserId,
+    ): string {
+        $currentUserId = self::resolveAuthenticatedUserId($request);
+        if ($currentUserId === '') {
+            if ($authenticatedUserId !== '') {
+                self::unregisterAuthenticatedSession($sessionId);
+            }
+            return '';
+        }
+
+        if ($authenticatedUserId !== '' && $currentUserId !== $authenticatedUserId) {
+            self::unregisterAuthenticatedSession($sessionId);
+        }
+
+        self::registerAuthenticatedSession($sessionId, $currentUserId);
+
+        return $currentUserId;
+    }
+
+    private static function canUsePersistentDeferredSse(Request $request): bool
+    {
+        $config = IsomorphicConfig::fromEnvironment();
+        if (!$config->persistentDeferredSse) {
+            return false;
+        }
+
+        if (!$config->persistentDeferredSseRequireAuth) {
+            return true;
+        }
+
+        return self::hasAuthenticatedSession($request);
+    }
+
+    private static function hasAuthenticatedSession(Request $request): bool
+    {
+        return self::resolveAuthenticatedUserId($request) !== '';
+    }
+
+    private static function resolveAuthenticatedUserId(Request $request): string
+    {
+        $cookieName = Environment::getEnvValue('SESSION_COOKIE_NAME') ?? 'semitexa_session';
+        $cookie = is_array($request->cookie) ? $request->cookie : [];
+        $sessionValue = $cookie[$cookieName] ?? null;
+        $sessionId = is_string($sessionValue) ? trim($sessionValue) : '';
+        if ($sessionId === '' || !preg_match('/^[a-f0-9]{32}$/', $sessionId)) {
+            return '';
+        }
+
+        try {
+            $handler = self::createSessionHandler();
+            $data = $handler->read($sessionId);
+        } catch (\Throwable) {
+            return '';
+        }
+
+        $userId = $data[self::AUTH_SESSION_USER_KEY] ?? null;
+        return is_string($userId) ? trim($userId) : '';
+    }
+
+    private static function createSessionHandler(): SessionHandlerInterface
+    {
+        $pool = self::getRedisPool();
+        if ($pool !== null) {
+            return new RedisSessionHandler($pool);
+        }
+
+        return new SwooleTableSessionHandler();
+    }
+
+    private static function getRedisPool(): ?RedisConnectionPool
+    {
+        if (self::$redisPool instanceof RedisConnectionPool) {
+            return self::$redisPool;
+        }
+
+        $redisHost = Environment::getEnvValue('REDIS_HOST');
+        if ($redisHost === null || $redisHost === '') {
+            return null;
+        }
+
+        self::$redisPool = new RedisConnectionPool(1, [
+            'scheme' => (string) (Environment::getEnvValue('REDIS_SCHEME', 'tcp') ?? 'tcp'),
+            'host' => $redisHost,
+            'port' => (int) (Environment::getEnvValue('REDIS_PORT', '6379') ?? '6379'),
+            'password' => (string) (Environment::getEnvValue('REDIS_PASSWORD', '') ?? ''),
+        ]);
+
+        return self::$redisPool;
+    }
+
+    /** @return list<string> */
+    private static function getAuthenticatedUserSessionIds(string $userId): array
+    {
+        $pool = self::getRedisPool();
+        if ($pool === null) {
+            return [];
+        }
+
+        $userId = trim($userId);
+        if ($userId === '') {
+            return [];
+        }
+
+        try {
+            return $pool->withConnection(static function ($redis) use ($userId): array {
+                /** @var Client $redis */
+                $members = $redis->smembers(self::redisUserSessionsKey($userId));
+                return self::filterActiveSessionIds($redis, array_values($members), $userId);
+            });
+        } catch (\Throwable $e) {
+            \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'Failed to get authenticated user session IDs', [
+                'user_id' => $userId,
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+            ]);
+            return [];
+        }
+    }
+
+    /** @return list<string> */
+    private static function getAllAuthenticatedSessionIds(): array
+    {
+        $pool = self::getRedisPool();
+        if ($pool === null) {
+            return [];
+        }
+
+        try {
+            return $pool->withConnection(static function ($redis): array {
+                /** @var Client $redis */
+                $members = $redis->smembers(self::REDIS_AUTH_ALL_SESSIONS_KEY);
+                return self::filterActiveSessionIds($redis, array_values($members));
+            });
+        } catch (\Throwable $e) {
+            \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'Failed to get all authenticated session IDs', [
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+            ]);
+            return [];
+        }
+    }
+
+    /**
+     * @param list<mixed> $sessionIds
+     * @return list<string>
+     */
+    private static function filterActiveSessionIds(mixed $redis, array $sessionIds, ?string $expectedUserId = null): array
+    {
+        $active = [];
+        if (!$redis instanceof Client) {
+            return $active;
+        }
+
+        foreach ($sessionIds as $rawSessionId) {
+            if (!is_scalar($rawSessionId) && !$rawSessionId instanceof \Stringable) {
+                continue;
+            }
+
+            $sessionId = trim((string) $rawSessionId);
+            if ($sessionId === '') {
+                continue;
+            }
+
+            $mappedUserId = trim((string) ($redis->get(self::redisSessionUserKey($sessionId)) ?? ''));
+            $isActive = (string) ($redis->get(self::redisActiveSessionKey($sessionId)) ?? '') === '1';
+            if (
+                $mappedUserId === ''
+                || !$isActive
+                || ($expectedUserId !== null && $mappedUserId !== $expectedUserId)
+            ) {
+                $redis->srem(self::REDIS_AUTH_ALL_SESSIONS_KEY, $sessionId);
+                if ($expectedUserId !== null) {
+                    $redis->srem(self::redisUserSessionsKey($expectedUserId), $sessionId);
+                } elseif ($mappedUserId !== '') {
+                    $redis->srem(self::redisUserSessionsKey($mappedUserId), $sessionId);
+                }
+                $redis->del(self::redisSessionUserKey($sessionId));
+                $redis->del(self::redisActiveSessionKey($sessionId));
+                continue;
+            }
+
+            $active[] = $sessionId;
+        }
+
+        return $active;
+    }
+
+    private static function redisUserSessionsKey(string $userId): string
+    {
+        return self::REDIS_AUTH_USER_SESSIONS_PREFIX . trim($userId);
+    }
+
+    private static function redisSessionUserKey(string $sessionId): string
+    {
+        return self::REDIS_AUTH_SESSION_USER_PREFIX . trim($sessionId);
+    }
+
+    private static function redisSessionQueueKey(string $sessionId): string
+    {
+        return self::REDIS_SESSION_QUEUE_PREFIX . trim($sessionId);
+    }
+
+    private static function redisActiveSessionKey(string $sessionId): string
+    {
+        return self::REDIS_ACTIVE_SESSION_PREFIX . trim($sessionId);
+    }
+
+    private static function isSameOriginRequest(Request $request): bool
+    {
+        $header = [];
+        if (is_array($request->header)) {
+            foreach ($request->header as $key => $value) {
+                if (is_string($key) && (is_scalar($value) || $value === null)) {
+                    $header[strtolower($key)] = (string) $value;
+                }
+            }
+        }
+
+        // Fail closed: Host is required to compare against.
+        $host = trim($header['host'] ?? '');
+        if ($host === '') {
+            return false;
+        }
+
+        // Fail closed: at least one of Origin/Referer must be present AND match.
+        // Browser-originated EventSource always sends Origin; any request without
+        // either header is treated as cross-origin/untrusted.
+        $matched = false;
+        foreach (['origin', 'referer'] as $headerName) {
+            $value = trim($header[$headerName] ?? '');
+            if ($value === '') {
+                continue;
+            }
+
+            $requestHost = parse_url($value, PHP_URL_HOST);
+            if (!is_string($requestHost) || $requestHost === '') {
+                return false;
+            }
+
+            $requestPort = parse_url($value, PHP_URL_PORT);
+            $normalizedHost = strtolower($host);
+            $normalizedRequestHost = strtolower($requestHost . ($requestPort !== null ? ':' . $requestPort : ''));
+
+            if ($normalizedRequestHost !== $normalizedHost && strtolower($requestHost) !== $normalizedHost) {
+                return false;
+            }
+
+            $matched = true;
+        }
+
+        return $matched;
+    }
+}

@@ -10,7 +10,7 @@ use Semitexa\Core\Exception\NotFoundException;
 use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Server\SwooleBootstrap;
 use Semitexa\Ssr\Application\Payload\Request\SseKissPayload;
-use Semitexa\Ssr\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
 
 #[AsPayloadHandler(payload: SseKissPayload::class, resource: ResourceResponse::class)]
 final class SseKissHandler implements TypedHandlerInterface

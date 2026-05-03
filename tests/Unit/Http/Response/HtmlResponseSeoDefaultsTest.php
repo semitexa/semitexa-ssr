@@ -8,10 +8,10 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Core\ModuleRegistry;
 use Semitexa\Core\Discovery\ClassDiscovery;
-use Semitexa\Ssr\Http\Response\HtmlResponse;
-use Semitexa\Ssr\Seo\SeoMeta;
-use Semitexa\Ssr\Extension\TwigExtensionRegistry;
-use Semitexa\Ssr\Template\ModuleTemplateRegistry;
+use Semitexa\Ssr\Application\Service\Http\Response\HtmlResponse;
+use Semitexa\Ssr\Application\Service\Seo\SeoMeta;
+use Semitexa\Ssr\Application\Service\Extension\TwigExtensionRegistry;
+use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
 
 final class HtmlResponseSeoDefaultsTest extends TestCase
 {

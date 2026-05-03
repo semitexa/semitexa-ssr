@@ -7,10 +7,10 @@ namespace Semitexa\Ssr\Tests\Unit\Asset;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Core\ModuleRegistry;
 use Semitexa\Core\Support\ProjectRoot;
-use Semitexa\Ssr\Asset\AssetCollector;
-use Semitexa\Ssr\Asset\AssetManager;
-use Semitexa\Ssr\Asset\ModuleAssetRegistry;
-use Semitexa\Ssr\Asset\AssetRenderer;
+use Semitexa\Ssr\Application\Service\Asset\AssetCollector;
+use Semitexa\Ssr\Application\Service\Asset\AssetManager;
+use Semitexa\Ssr\Application\Service\Asset\ModuleAssetRegistry;
+use Semitexa\Ssr\Application\Service\Asset\AssetRenderer;
 
 final class AssetManagerTest extends TestCase
 {

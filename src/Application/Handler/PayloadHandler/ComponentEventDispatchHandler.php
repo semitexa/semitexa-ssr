@@ -15,8 +15,8 @@ use Semitexa\Core\Exception\ValidationException;
 use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Server\SwooleBootstrap;
 use Semitexa\Ssr\Application\Payload\Request\ComponentEventDispatchPayload;
-use Semitexa\Ssr\Component\ComponentEventBridge;
-use Semitexa\Ssr\Component\ComponentRegistry;
+use Semitexa\Ssr\Application\Service\Component\ComponentEventBridge;
+use Semitexa\Ssr\Application\Service\Component\ComponentRegistry;
 
 #[AsPayloadHandler(payload: ComponentEventDispatchPayload::class, resource: ResourceResponse::class)]
 final class ComponentEventDispatchHandler implements TypedHandlerInterface

@@ -11,7 +11,7 @@ use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Support\ProjectRoot;
 use Semitexa\Core\Tenant\TenantContextInterface;
 use Semitexa\Ssr\Application\Payload\Request\SitemapPartPayload;
-use Semitexa\Ssr\Seo\Sitemap\SitemapStoragePath;
+use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapStoragePath;
 
 #[AsPayloadHandler(payload: SitemapPartPayload::class, resource: ResourceResponse::class)]
 final class SitemapPartHandler implements TypedHandlerInterface

@@ -12,7 +12,7 @@ use Semitexa\Core\Request;
 use Semitexa\Core\Tenant\TenantContextInterface;
 use Semitexa\Core\Support\ProjectRoot;
 use Semitexa\Ssr\Application\Payload\Request\RobotsTxtPayload;
-use Semitexa\Ssr\Seo\RobotsTxtRenderer;
+use Semitexa\Ssr\Application\Service\Seo\RobotsTxtRenderer;
 
 #[AsPayloadHandler(payload: RobotsTxtPayload::class, resource: ResourceResponse::class)]
 final class RobotsTxtHandler implements TypedHandlerInterface

@@ -12,7 +12,7 @@ use Semitexa\Core\Request;
 use Semitexa\Core\Tenant\TenantContextInterface;
 use Semitexa\Core\Support\ProjectRoot;
 use Semitexa\Ssr\Application\Payload\Request\LlmsTxtPayload;
-use Semitexa\Ssr\Seo\LlmsTxtRenderer;
+use Semitexa\Ssr\Application\Service\Seo\LlmsTxtRenderer;
 
 #[AsPayloadHandler(payload: LlmsTxtPayload::class, resource: ResourceResponse::class)]
 final class LlmsTxtHandler implements TypedHandlerInterface

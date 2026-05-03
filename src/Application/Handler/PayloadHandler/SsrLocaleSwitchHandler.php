@@ -14,8 +14,8 @@ use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Request;
 use Semitexa\Ssr\Application\Payload\Request\SsrLocaleSwitchPayload;
 use Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator;
-use Semitexa\Ssr\Async\AsyncResourceSseServer;
-use Semitexa\Ssr\Isomorphic\DeferredRequestRegistry;
+use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry;
 use Swoole\Coroutine;
 
 #[AsPayloadHandler(payload: SsrLocaleSwitchPayload::class, resource: ResourceResponse::class)]
@@ -37,8 +37,8 @@ final class SsrLocaleSwitchHandler implements TypedHandlerInterface
             throw new NotFoundException('Locale', '(empty)');
         }
 
-        if (class_exists(\Semitexa\Locale\LocaleConfig::class)) {
-            $config = \Semitexa\Locale\LocaleConfig::fromEnvironment();
+        if (class_exists(\Semitexa\Locale\Configuration\LocaleConfig::class)) {
+            $config = \Semitexa\Locale\Configuration\LocaleConfig::fromEnvironment();
             if (!in_array($locale, $config->supportedLocales, true)) {
                 throw new NotFoundException('Locale', $locale);
             }

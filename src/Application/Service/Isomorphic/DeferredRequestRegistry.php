@@ -54,6 +54,7 @@ final class DeferredRequestRegistry
     public static function initialize(?IsomorphicConfig $config = null): void
     {
         $config ??= IsomorphicConfig::fromEnvironment();
+        $hasInjectedSharedTable = self::$table !== null;
 
         self::$contextColumnSize = $config->deferredContextSize;
 
@@ -74,7 +75,7 @@ final class DeferredRequestRegistry
         // the `swoole_event_rshutdown(): Event::wait() in shutdown function
         // is deprecated` notice. GC still runs lazily on table writes via the
         // TTL check inside consume(), so we lose nothing here.
-        if (PHP_SAPI !== 'cli'
+        if (($hasInjectedSharedTable || PHP_SAPI !== 'cli')
             && self::$gcTimerId === 0
             && class_exists(Timer::class, false)
         ) {

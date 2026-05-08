@@ -40,6 +40,5 @@
         "components",
         "layouts",
         "deferred"
-    ],
-    "version": "v1.0.33"
+    ]
 }

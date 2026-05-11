@@ -51,7 +51,12 @@ final readonly class UiEventEnvelope
     ) {}
 
     /**
-     * @param array<string, mixed> $data
+     * Accepts any array-key map (e.g. the raw output of json_decode). Type
+     * narrowing happens here — validateShape() guarantees the required
+     * fields are present with the correct PHP scalar types before we
+     * construct the value object.
+     *
+     * @param array<array-key, mixed> $data
      */
     public static function fromArray(array $data): self
     {
@@ -60,18 +65,29 @@ final readonly class UiEventEnvelope
             throw new InvalidUiEventEnvelopeException($errors);
         }
 
+        // Narrow each validated field into a typed local so PHPStan can see
+        // that validateShape() already filtered mismatched types. Defaults
+        // are unreachable in practice (validateShape would have errored),
+        // but they make the contract self-evident to static analysis.
+        $schemaVersion = is_int($data['schemaVersion'] ?? null) ? $data['schemaVersion'] : 0;
+        $eventId = is_string($data['eventId'] ?? null) ? $data['eventId'] : '';
+        $correlationId = is_string($data['correlationId'] ?? null) ? $data['correlationId'] : '';
+        $semanticEvent = is_string($data['semanticEvent'] ?? null) ? $data['semanticEvent'] : '';
+        $signedContext = is_string($data['signedContext'] ?? null) ? $data['signedContext'] : '';
+        $timestamp = is_string($data['timestamp'] ?? null) ? $data['timestamp'] : '';
+
         /** @var array<string, mixed> $payload */
         $payload = is_array($data['payload'] ?? null) ? $data['payload'] : [];
         /** @var array<string, mixed> $transport */
         $transport = is_array($data['transport'] ?? null) ? $data['transport'] : [];
 
         return new self(
-            schemaVersion: (int) $data['schemaVersion'],
-            eventId: (string) $data['eventId'],
-            correlationId: (string) $data['correlationId'],
-            semanticEvent: (string) $data['semanticEvent'],
-            signedContext: (string) $data['signedContext'],
-            timestamp: (string) $data['timestamp'],
+            schemaVersion: $schemaVersion,
+            eventId: $eventId,
+            correlationId: $correlationId,
+            semanticEvent: $semanticEvent,
+            signedContext: $signedContext,
+            timestamp: $timestamp,
             payload: $payload,
             transport: $transport,
             nativeEvent: self::optionalString($data, 'nativeEvent'),
@@ -105,6 +121,7 @@ final readonly class UiEventEnvelope
             ]);
         }
 
+        /** @var array<array-key, mixed> $decoded */
         return self::fromArray($decoded);
     }
 
@@ -230,8 +247,15 @@ final readonly class UiEventEnvelope
     /**
      * Walk the top-level data and each scanned container looking for forbidden
      * keys. Errors are keyed by the dotted path where the field was found
-     * (e.g. "payload.handler" or "payload.meta.handler") so the caller can
-     * fail loudly and pinpoint exactly where the smuggling attempt landed.
+     * (e.g. "payload.handler", "payload.meta.handler", or
+     * "payload.items.0.handler") so the caller can fail loudly and pinpoint
+     * exactly where the smuggling attempt landed.
+     *
+     * Inside scanned containers the walk descends into both associative
+     * objects AND list arrays — integer keys become numeric path segments.
+     * Skipping list entries here would leave a straightforward bypass:
+     * `payload: {"items": [{"handler": "X\\Y::z"}]}`. Only string keys are
+     * matched against the disallow list; numeric keys never name fields.
      *
      * @param array<array-key, mixed>           $data
      * @param array<string, list<string>>       $errors  passed by reference
@@ -240,12 +264,10 @@ final readonly class UiEventEnvelope
     {
         $disallowed = array_flip(self::handlerFieldsDisallowed());
 
-        // top-level (or current level when recursed)
+        // Match the disallow list at the current level. Only string keys are
+        // candidate field names; numeric keys (list indices) never are.
         foreach ($data as $key => $_value) {
-            if (!is_string($key)) {
-                continue;
-            }
-            if (isset($disallowed[$key])) {
+            if (is_string($key) && isset($disallowed[$key])) {
                 $path = $parentPath === null ? $key : ($parentPath . '.' . $key);
                 $errors[$path] = [
                     'Field is not allowed — server-side metadata validated through signed context is the only source of handler identity.',
@@ -264,11 +286,16 @@ final readonly class UiEventEnvelope
             return;
         }
 
+        // Inside a scanned container: recurse into EVERY nested array,
+        // regardless of whether the parent key was a string or an integer.
+        // The path segment is the key cast to string so list indices appear
+        // as "payload.items.0.handler".
         foreach ($data as $key => $value) {
-            if (!is_string($key) || !is_array($value)) {
+            if (!is_array($value)) {
                 continue;
             }
-            self::collectHandlerSmugglingErrors($value, $errors, parentPath: $parentPath . '.' . $key);
+            $segment = is_string($key) ? $key : (string) $key;
+            self::collectHandlerSmugglingErrors($value, $errors, parentPath: $parentPath . '.' . $segment);
         }
     }
 

@@ -134,6 +134,22 @@ final class UiEventEnvelopeTest extends TestCase
     }
 
     #[Test]
+    public function rejects_handler_selection_fields_nested_inside_list_arrays(): void
+    {
+        // Regression: list arrays inside scanned containers must be walked
+        // so handler-identity fields cannot hide behind integer keys.
+        // Numeric keys appear as path segments in the dotted error key.
+        try {
+            UiEventEnvelope::fromArray($this->validShape([
+                'payload' => ['items' => [['handler' => 'X\\Y::z']]],
+            ]));
+            self::fail('Envelope should have rejected payload.items.0.handler');
+        } catch (InvalidUiEventEnvelopeException $e) {
+            self::assertArrayHasKey('payload.items.0.handler', $e->errors);
+        }
+    }
+
+    #[Test]
     public function rejects_handler_selection_fields_nested_inside_transport_metadata_context(): void
     {
         foreach (['transport', 'metadata', 'context'] as $container) {

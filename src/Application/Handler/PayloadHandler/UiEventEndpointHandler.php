@@ -49,7 +49,11 @@ final class UiEventEndpointHandler implements TypedHandlerInterface
     public function handle(UiEventEnvelopePayload $payload, ResourceResponse $resource): ResourceResponse
     {
         $raw = $this->request->getJsonBody();
-        if (!is_array($raw)) {
+        // The body must be a JSON object, not a JSON array. `is_array($raw)`
+        // alone is true for both — `array_is_list()` rejects list-shaped
+        // bodies (`[]`, `[{}]`) so they cannot fall through and produce
+        // misleading per-field envelope errors.
+        if (!is_array($raw) || array_is_list($raw)) {
             throw new ValidationException([
                 'body' => ['Request body must be a JSON object.'],
             ]);
@@ -61,7 +65,18 @@ final class UiEventEndpointHandler implements TypedHandlerInterface
             throw new ValidationException($e->errors);
         }
 
+        // Fail closed when a signed context is present but does not verify.
+        // The signed-context blob is the trust boundary for server-side
+        // handler resolution, so a `verified=false` envelope must never sit
+        // on the success path where a later dispatch step might treat it as
+        // healthy. An empty signedContext is rejected at envelope-shape
+        // validation, so the only branch reaching here is a non-empty blob.
         $signedOk = SignedContext::verify($envelope->signedContext) !== null;
+        if (!$signedOk) {
+            throw new ValidationException([
+                'signedContext' => ['Signed context verification failed.'],
+            ]);
+        }
 
         $body = json_encode(
             [
@@ -73,8 +88,8 @@ final class UiEventEndpointHandler implements TypedHandlerInterface
                 'semanticEvent' => $envelope->semanticEvent,
                 'schemaVersion' => $envelope->schemaVersion,
                 'signedContext' => [
-                    'present' => $envelope->signedContext !== '',
-                    'verified' => $signedOk,
+                    'present' => true,
+                    'verified' => true,
                 ],
                 'resolution' => [
                     'status' => 'not_implemented',

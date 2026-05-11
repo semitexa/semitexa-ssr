@@ -103,15 +103,19 @@ final class UiEventEndpointHandlerTest extends TestCase
     }
 
     #[Test]
-    public function reports_unverified_signed_context_when_tampered(): void
+    public function rejects_envelope_when_signed_context_does_not_verify(): void
     {
+        // signedContext is the trust boundary for server-side handler
+        // resolution; an unverifiable blob must NEVER take the success path.
         $signed = SignedContext::sign(['ctx' => 'valid'], 60) . 'TAMPER';
-        $resource = $this->handlerFor($this->postRequest($this->validBody($signed)))
-            ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
 
-        $body = json_decode($resource->getContent(), true);
-        self::assertTrue($body['signedContext']['present']);
-        self::assertFalse($body['signedContext']['verified']);
+        try {
+            $this->handlerFor($this->postRequest($this->validBody($signed)))
+                ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+            self::fail('Tampered signed context must be rejected.');
+        } catch (ValidationException $e) {
+            self::assertArrayHasKey('signedContext', $e->getErrorContext()['errors']);
+        }
     }
 
     #[Test]
@@ -232,5 +236,55 @@ final class UiEventEndpointHandlerTest extends TestCase
         $this->expectException(ValidationException::class);
         (new UiEventEndpointHandler())->withRequest($req)
             ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+    }
+
+    #[Test]
+    public function rejects_list_shaped_body(): void
+    {
+        // A bare JSON array passes the is_array() check but is NOT a JSON
+        // object — without the array_is_list() guard it would fall through
+        // into envelope validation and produce confusing per-field errors.
+        $req = new Request(
+            method: 'POST',
+            uri: '/__ui/event',
+            headers: ['content-type' => 'application/json'],
+            query: [],
+            post: [],
+            server: [],
+            cookies: [],
+            content: '[{"handler":"X\\\\Y::z"}]',
+        );
+
+        try {
+            (new UiEventEndpointHandler())->withRequest($req)
+                ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+            self::fail('List-shaped JSON body must be rejected at the body guard.');
+        } catch (ValidationException $e) {
+            self::assertArrayHasKey('body', $e->getErrorContext()['errors']);
+        }
+    }
+
+    #[Test]
+    public function rejects_handler_smuggling_nested_inside_list_array(): void
+    {
+        // Regression guard: list arrays inside a scanned container must be
+        // walked so handler-identity fields cannot hide behind integer keys.
+        // The expected dotted path uses the numeric key as a path segment.
+        $signed = SignedContext::sign(['x' => 1], 60);
+        $body = $this->validBody($signed, [
+            'payload' => [
+                'items' => [
+                    ['handler' => 'X\\Y::z'],
+                ],
+            ],
+        ]);
+
+        try {
+            $this->handlerFor($this->postRequest($body))
+                ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+            self::fail('Envelope should have rejected payload.items.0.handler');
+        } catch (ValidationException $e) {
+            self::assertArrayHasKey('payload.items.0.handler', $e->getErrorContext()['errors']);
+        }
     }
 }

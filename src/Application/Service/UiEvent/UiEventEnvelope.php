@@ -230,8 +230,8 @@ final readonly class UiEventEnvelope
     /**
      * Walk the top-level data and each scanned container looking for forbidden
      * keys. Errors are keyed by the dotted path where the field was found
-     * (e.g. "payload.handler") so the caller can fail loudly and pinpoint
-     * exactly where the smuggling attempt landed.
+     * (e.g. "payload.handler" or "payload.meta.handler") so the caller can
+     * fail loudly and pinpoint exactly where the smuggling attempt landed.
      *
      * @param array<array-key, mixed>           $data
      * @param array<string, list<string>>       $errors  passed by reference
@@ -253,9 +253,6 @@ final readonly class UiEventEnvelope
             }
         }
 
-        // recurse into scanned containers (only at the top level — those
-        // contents are then walked once for the disallow list, no deeper
-        // recursion is needed to catch the targeted smuggling vectors).
         if ($parentPath === null) {
             foreach (self::scannedContainers() as $container) {
                 $nested = $data[$container] ?? null;
@@ -264,6 +261,14 @@ final readonly class UiEventEnvelope
                 }
                 self::collectHandlerSmugglingErrors($nested, $errors, parentPath: $container);
             }
+            return;
+        }
+
+        foreach ($data as $key => $value) {
+            if (!is_string($key) || !is_array($value)) {
+                continue;
+            }
+            self::collectHandlerSmugglingErrors($value, $errors, parentPath: $parentPath . '.' . $key);
         }
     }
 

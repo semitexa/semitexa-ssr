@@ -147,6 +147,29 @@ final class UiEventEndpointHandlerTest extends TestCase
     }
 
     #[Test]
+    public function rejects_deeply_nested_handler_smuggling_inside_payload(): void
+    {
+        $signed = SignedContext::sign(['x' => 1], 60);
+        $body = $this->validBody($signed, [
+            'payload' => [
+                'meta' => [
+                    'dispatch' => [
+                        'handler' => 'Sneaky\\Handler::go',
+                    ],
+                ],
+            ],
+        ]);
+
+        try {
+            $this->handlerFor($this->postRequest($body))
+                ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+            self::fail('Handler should have rejected nested payload.meta.dispatch.handler');
+        } catch (ValidationException $e) {
+            self::assertArrayHasKey('payload.meta.dispatch.handler', $e->getErrorContext()['errors']);
+        }
+    }
+
+    #[Test]
     public function rejects_nested_handler_smuggling_inside_transport_and_metadata_and_context(): void
     {
         $signed = SignedContext::sign(['x' => 1], 60);

@@ -115,6 +115,25 @@ final class UiEventEnvelopeTest extends TestCase
     }
 
     #[Test]
+    public function rejects_handler_selection_fields_nested_deep_inside_payload(): void
+    {
+        try {
+            UiEventEnvelope::fromArray($this->validShape([
+                'payload' => [
+                    'meta' => [
+                        'dispatch' => [
+                            'handler' => 'X\\Y::z',
+                        ],
+                    ],
+                ],
+            ]));
+            self::fail('Envelope should have rejected payload.meta.dispatch.handler');
+        } catch (InvalidUiEventEnvelopeException $e) {
+            self::assertArrayHasKey('payload.meta.dispatch.handler', $e->errors);
+        }
+    }
+
+    #[Test]
     public function rejects_handler_selection_fields_nested_inside_transport_metadata_context(): void
     {
         foreach (['transport', 'metadata', 'context'] as $container) {

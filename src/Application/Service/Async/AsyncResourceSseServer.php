@@ -9,7 +9,7 @@ use Semitexa\Core\Redis\RedisConnectionPool;
 use Semitexa\Core\Session\RedisSessionHandler;
 use Semitexa\Core\Session\SessionHandlerInterface;
 use Semitexa\Core\Session\SwooleTableSessionHandler;
-use Semitexa\Core\Container\ContainerFactory;
+use Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Predis\Client;
 use Swoole\Http\Request;
@@ -64,6 +64,7 @@ final class AsyncResourceSseServer
     /** @var \Swoole\Table|null pending messages when client not connected yet: key -> session_id, payload */
     private static ?\Swoole\Table $pendingDeliverTable = null;
     private static ?RedisConnectionPool $redisPool = null;
+    private static ?DeferredBlockOrchestrator $deferredBlockOrchestrator = null;
 
     public static function handle(Request $request, Response $response): bool
     {
@@ -350,8 +351,7 @@ final class AsyncResourceSseServer
         if (class_exists(\Swoole\Coroutine::class, false) && \Swoole\Coroutine::getCid() > 0) {
             self::createSessionCoroutine(static function () use ($sessionId, $registry, $lastEventId, $deferredRequestId, $debugLog, $allowPersistentDeferredSse, $locale): void {
                 try {
-                    $container = ContainerFactory::get();
-                    $orchestrator = $container->get(\Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator::class);
+                    $orchestrator = self::deferredBlockOrchestrator();
                     $debugLog('orchestrator_resolved', ['session_id' => $sessionId]);
                     $orchestrator->streamDeferredBlocks(
                         sessionId: $sessionId,
@@ -384,8 +384,7 @@ final class AsyncResourceSseServer
             }, $sessionId);
         } else {
             try {
-                $container = ContainerFactory::get();
-                $orchestrator = $container->get(\Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator::class);
+                $orchestrator = self::deferredBlockOrchestrator();
                 $debugLog('orchestrator_resolved_sync', ['session_id' => $sessionId]);
                 $orchestrator->streamDeferredBlocks(
                     sessionId: $sessionId,
@@ -411,6 +410,15 @@ final class AsyncResourceSseServer
                 ]);
             }
         }
+    }
+
+    private static function deferredBlockOrchestrator(): DeferredBlockOrchestrator
+    {
+        if (self::$deferredBlockOrchestrator === null) {
+            throw new \RuntimeException('DeferredBlockOrchestrator is not wired for AsyncResourceSseServer.');
+        }
+
+        return self::$deferredBlockOrchestrator;
     }
 
     private static function drainRedisQueueForSession(string $sessionId, Response $response): bool
@@ -473,17 +481,89 @@ final class AsyncResourceSseServer
 
     private static function writeSse(Response $response, array $data): bool
     {
+        return @$response->write(self::composeSseFrame($data));
+    }
+
+    /**
+     * Compose the SSE wire frame for one payload.
+     *
+     * This is the single chokepoint where the canonical `_type` field is
+     * resolved into an SSE `event:` line. Behaviour:
+     *
+     *   - `_type` absent → byte-identical to the pre-Phase-2 wire shape:
+     *     the existing `event` field (if any, e.g. demo producer's
+     *     `event: notification`) is honoured, and no other change is
+     *     made.
+     *   - `_type` present and on the {@see UiSseEventType} allow-list →
+     *     emit `event: <_type>` (the canonical typed mapping overrides
+     *     any client-supplied `event`; arbitrary strings MUST NOT escape
+     *     the allow-list). The `_type` key remains in the JSON body so
+     *     the wire envelope is self-describing.
+     *   - `_type` present but unknown → log a warning, strip `_type`
+     *     from the body, and fall back to default-message emission. We
+     *     do not lose the payload; we only refuse to surface an
+     *     unauthorised event name (matches the existing CR/LF-strip
+     *     defensive normalise pattern).
+     *
+     * CR/LF injection on the `event:` line is prevented twice — first by
+     * the allow-list (typed `_type` only emits values from a closed
+     * enum), then by the existing `str_replace` on the legacy `event`
+     * field. Defence in depth.
+     *
+     * @param array<array-key, mixed> $data
+     */
+    private static function composeSseFrame(array $data): string
+    {
+        [$resolvedEventName, $data] = self::resolveSseEventName($data);
+
         $line = '';
         if (isset($data['id'])) {
             $safeId = str_replace(["\r", "\n"], '', (string) $data['id']);
             $line .= 'id: ' . $safeId . "\n";
         }
-        if (isset($data['event']) && $data['event'] !== '') {
-            $safeEvent = str_replace(["\r", "\n"], '', (string) $data['event']);
+        if ($resolvedEventName !== null && $resolvedEventName !== '') {
+            $safeEvent = str_replace(["\r", "\n"], '', $resolvedEventName);
             $line .= 'event: ' . $safeEvent . "\n";
         }
         $line .= "data: " . json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n";
-        return @$response->write($line);
+        return $line;
+    }
+
+    /**
+     * Resolve the SSE event name from the payload, applying the typed-
+     * `_type` allow-list. Returns `[event_name|null, normalised_data]`.
+     * The normalised data may have `_type` removed when it was unknown
+     * (so unauthorised strings never reach the wire).
+     *
+     * @param array<array-key, mixed> $data
+     * @return array{0: string|null, 1: array<array-key, mixed>}
+     */
+    private static function resolveSseEventName(array $data): array
+    {
+        $rawType = $data['_type'] ?? null;
+        if (is_string($rawType) && $rawType !== '') {
+            if (\Semitexa\Ssr\Application\Service\UiEvent\UiSseEventType::isAllowed($rawType)) {
+                return [$rawType, $data];
+            }
+
+            \Semitexa\Core\Log\StaticLoggerBridge::warning('ssr', 'ui_sse_unknown_type_dropped', [
+                'type' => $rawType,
+            ]);
+            unset($data['_type']);
+            return [null, $data];
+        } elseif (array_key_exists('_type', $data)) {
+            // `_type` was present but non-string or empty → treat as malformed.
+            // Strip it so the wire shape stays clean; do not emit `event:`.
+            unset($data['_type']);
+            return [null, $data];
+        }
+
+        $legacyEvent = $data['event'] ?? null;
+        if (is_string($legacyEvent) && $legacyEvent !== '') {
+            return [$legacyEvent, $data];
+        }
+
+        return [null, $data];
     }
 
     private static function startDemoStreamProducer(string $sessionId, string $demoStream): void
@@ -776,6 +856,11 @@ final class AsyncResourceSseServer
         self::$sessionWorkerTable = $sessionWorkerTable;
         self::$deliverTable = $deliverTable;
         self::$pendingDeliverTable = $pendingDeliverTable;
+    }
+
+    public static function setDeferredBlockOrchestrator(?DeferredBlockOrchestrator $orchestrator): void
+    {
+        self::$deferredBlockOrchestrator = $orchestrator;
     }
 
     /**

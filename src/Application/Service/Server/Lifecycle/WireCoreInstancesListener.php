@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service\Server\Lifecycle;
 
 use Semitexa\Core\Attribute\AsServerLifecycleListener;
+use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Discovery\AttributeDiscovery;
 use Semitexa\Core\Discovery\ClassDiscovery;
 use Semitexa\Core\ModuleRegistry;
@@ -13,7 +14,9 @@ use Semitexa\Core\Server\Lifecycle\ServerLifecycleListenerInterface;
 use Semitexa\Core\Server\Lifecycle\ServerLifecyclePhase;
 use Semitexa\Ssr\Application\Service\Asset\AssetCollector;
 use Semitexa\Ssr\Application\Service\Asset\ModuleAssetRegistry;
+use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
 use Semitexa\Ssr\Application\Service\Component\ComponentRegistry;
+use Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator;
 use Semitexa\Ssr\Application\Service\Extension\TwigExtensionRegistry;
 use Semitexa\Ssr\Application\Service\Routing\UrlGenerator;
 use Semitexa\Ssr\Application\Service\Seo\AiSitemapJsonRenderer;
@@ -32,12 +35,17 @@ use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
 )]
 final class WireCoreInstancesListener implements ServerLifecycleListenerInterface
 {
-    public function __construct(
-        private readonly ClassDiscovery $classDiscovery,
-        private readonly ModuleRegistry $moduleRegistry,
-        private readonly AttributeDiscovery $attributeDiscovery,
-    ) {
-    }
+    #[InjectAsReadonly]
+    protected ClassDiscovery $classDiscovery;
+
+    #[InjectAsReadonly]
+    protected ModuleRegistry $moduleRegistry;
+
+    #[InjectAsReadonly]
+    protected AttributeDiscovery $attributeDiscovery;
+
+    #[InjectAsReadonly]
+    protected DeferredBlockOrchestrator $deferredBlockOrchestrator;
 
     public function handle(ServerLifecycleContext $context): void
     {
@@ -48,5 +56,6 @@ final class WireCoreInstancesListener implements ServerLifecycleListenerInterfac
         AssetCollector::setModuleRegistry($this->moduleRegistry);
         AiSitemapJsonRenderer::setAttributeDiscovery($this->attributeDiscovery);
         UrlGenerator::setAttributeDiscovery($this->attributeDiscovery);
+        AsyncResourceSseServer::setDeferredBlockOrchestrator($this->deferredBlockOrchestrator);
     }
 }

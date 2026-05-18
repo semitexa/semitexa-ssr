@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service\Server\Lifecycle;
 
 use Semitexa\Core\Attribute\AsServerLifecycleListener;
+use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Discovery\AttributeDiscovery;
 use Semitexa\Core\Discovery\ClassDiscovery;
 use Semitexa\Core\ModuleRegistry;
@@ -34,13 +35,17 @@ use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
 )]
 final class WireCoreInstancesListener implements ServerLifecycleListenerInterface
 {
-    public function __construct(
-        private readonly ClassDiscovery $classDiscovery,
-        private readonly ModuleRegistry $moduleRegistry,
-        private readonly AttributeDiscovery $attributeDiscovery,
-        private readonly DeferredBlockOrchestrator $deferredBlockOrchestrator,
-    ) {
-    }
+    #[InjectAsReadonly]
+    protected ClassDiscovery $classDiscovery;
+
+    #[InjectAsReadonly]
+    protected ModuleRegistry $moduleRegistry;
+
+    #[InjectAsReadonly]
+    protected AttributeDiscovery $attributeDiscovery;
+
+    #[InjectAsReadonly]
+    protected DeferredBlockOrchestrator $deferredBlockOrchestrator;
 
     public function handle(ServerLifecycleContext $context): void
     {

@@ -10,6 +10,7 @@ use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Contract\TypedHandlerInterface;
 use Semitexa\Core\Exception\ValidationException;
 use Semitexa\Core\Http\Response\ResourceResponse;
+use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Core\Request;
 use Semitexa\Ssr\Application\Payload\Request\UiEventEnvelopePayload;
 use Semitexa\Ssr\Application\Service\UiEvent\InvalidUiEventEnvelopeException;
@@ -125,25 +126,65 @@ final class UiEventEndpointHandler implements TypedHandlerInterface
 
         try {
             $result = $this->dispatcher->dispatch($envelope, $verifiedClaims);
-        } catch (Throwable) {
+        } catch (Throwable $dispatcherFailure) {
             // The dispatcher contract allows throwing, but we MUST NOT let
             // its stack trace / FQCN / secrets leak. Caller sees a stable
-            // error reason; operator inspects logs through whatever
-            // observability hook is wired by the dispatcher itself or the
-            // framework's error pipeline.
-            $result = new UiResponseDispatchResult(
-                statusCode: 500,
-                status:     'error',
-                phase:      'dispatch',
-                reason:     'ui_event_dispatcher_failure',
-                message:    'UI event dispatcher failed to handle the request.',
+            // error reason; operators get a server-side breadcrumb through
+            // the framework logger (StaticLoggerBridge falls back to
+            // error_log when no container-managed logger is wired).
+            StaticLoggerBridge::error(
+                'ui_event_endpoint',
+                'UI event dispatcher threw',
+                [
+                    'exception_class'   => $dispatcherFailure::class,
+                    'exception_message' => $dispatcherFailure->getMessage(),
+                    'exception_file'    => $dispatcherFailure->getFile(),
+                    'exception_line'    => $dispatcherFailure->getLine(),
+                    'event_id'          => $envelope->eventId,
+                    'correlation_id'    => $envelope->correlationId,
+                    'semantic_event'    => $envelope->semanticEvent,
+                ],
             );
+            $result = $this->dispatcherFailureResult();
+        }
+
+        try {
+            $content = $this->encodeEnvelope($envelope, $result);
+        } catch (Throwable $encodeFailure) {
+            // A non-encodable dispatcher body (e.g. a value JSON_THROW_ON_ERROR
+            // rejects) must not be allowed to escape handle(); the contract
+            // is the same stable dispatcher-failure envelope. The fallback
+            // result has no `body`, so the second encode is safe.
+            StaticLoggerBridge::error(
+                'ui_event_endpoint',
+                'UI event envelope encoding failed',
+                [
+                    'exception_class'   => $encodeFailure::class,
+                    'exception_message' => $encodeFailure->getMessage(),
+                    'event_id'          => $envelope->eventId,
+                    'correlation_id'    => $envelope->correlationId,
+                    'semantic_event'    => $envelope->semanticEvent,
+                ],
+            );
+            $result  = $this->dispatcherFailureResult();
+            $content = $this->encodeEnvelope($envelope, $result);
         }
 
         return $resource
             ->setStatusCode($result->statusCode)
             ->setHeader('Content-Type', 'application/json; charset=utf-8')
-            ->setContent($this->encodeEnvelope($envelope, $result));
+            ->setContent($content);
+    }
+
+    private function dispatcherFailureResult(): UiResponseDispatchResult
+    {
+        return new UiResponseDispatchResult(
+            statusCode: 500,
+            status:     'error',
+            phase:      'dispatch',
+            reason:     'ui_event_dispatcher_failure',
+            message:    'UI event dispatcher failed to handle the request.',
+        );
     }
 
     /**
@@ -174,9 +215,6 @@ final class UiEventEndpointHandler implements TypedHandlerInterface
         // contract documents this — we enforce it here as defence in
         // depth (a buggy dispatcher cannot rewrite the envelope).
         foreach ($result->body as $key => $value) {
-            if (!is_string($key)) {
-                continue;
-            }
             if (in_array($key, self::RESERVED_ENVELOPE_KEYS, true)) {
                 continue;
             }

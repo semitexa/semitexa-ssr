@@ -255,6 +255,44 @@ final class UiEventEndpointHandlerTest extends TestCase
     }
 
     #[Test]
+    public function non_encodable_dispatcher_body_falls_back_to_safe_error_envelope(): void
+    {
+        // A dispatcher MAY return a body whose values trip
+        // JSON_THROW_ON_ERROR (e.g. invalid UTF-8). The encoding failure
+        // must not escape handle() — the contract is the same stable
+        // dispatcher-failure envelope the throwing-dispatcher path emits.
+        $signed = SignedContext::sign(['x' => 1], 60);
+
+        $brokenBody = new class () implements UiResponseDispatcherInterface {
+            public function dispatch(UiEventEnvelope $envelope, array $verifiedClaims): UiResponseDispatchResult
+            {
+                return new UiResponseDispatchResult(
+                    statusCode: 200,
+                    status:     'accepted',
+                    phase:      'dispatch',
+                    reason:     'recorded',
+                    message:    'ok',
+                    body: [
+                        // Invalid UTF-8 sequence — JSON_THROW_ON_ERROR rejects it.
+                        'blob' => "\xB1\x31",
+                    ],
+                );
+            }
+        };
+
+        $resource = $this->handlerFor($this->postRequest($this->validBody($signed)), $brokenBody)
+            ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+
+        self::assertSame(500, $resource->getStatusCode());
+        $body = json_decode($resource->getContent(), true);
+        self::assertSame('error', $body['status']);
+        self::assertSame('dispatch', $body['phase']);
+        self::assertSame('ui_event_dispatcher_failure', $body['reason']);
+        self::assertSame('UI event dispatcher failed to handle the request.', $body['message']);
+        self::assertSame('evt_test', $body['eventId']);
+    }
+
+    #[Test]
     public function dispatcher_is_not_invoked_when_signed_context_does_not_verify(): void
     {
         // Trust boundary: a tampered/invalid signed context MUST NOT

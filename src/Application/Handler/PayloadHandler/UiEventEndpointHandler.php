@@ -6,28 +6,39 @@ namespace Semitexa\Ssr\Application\Handler\PayloadHandler;
 
 use Semitexa\Core\Attribute\AsPayloadHandler;
 use Semitexa\Core\Attribute\InjectAsMutable;
+use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Contract\TypedHandlerInterface;
 use Semitexa\Core\Exception\ValidationException;
 use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Request;
 use Semitexa\Ssr\Application\Payload\Request\UiEventEnvelopePayload;
 use Semitexa\Ssr\Application\Service\UiEvent\InvalidUiEventEnvelopeException;
+use Semitexa\Ssr\Application\Service\UiEvent\NotConfiguredUiResponseDispatcher;
 use Semitexa\Ssr\Application\Service\UiEvent\SignedContext;
 use Semitexa\Ssr\Application\Service\UiEvent\UiEventEnvelope;
+use Semitexa\Ssr\Application\Service\UiEvent\UiResponseDispatcherInterface;
+use Semitexa\Ssr\Application\Service\UiEvent\UiResponseDispatchResult;
+use Throwable;
 
 /**
- * Foundation handler for the unified HTTP UI event endpoint.
+ * Canonical handler for `POST /__ui/event` — the framework's single unified
+ * inbound UI event endpoint.
  *
- * Step-1 scope:
- *   1. Read the raw JSON body — not the hydrated payload — so smuggled
+ * Pipeline (each step fails closed before the next):
+ *
+ *   1. Read the raw JSON body (not the hydrated payload) so smuggled
  *      handler-selection keys cannot be silently dropped by the setter
- *      convention. UiEventEnvelope::validateShape() then rejects any
+ *      convention. {@see UiEventEnvelope::validateShape()} rejects any
  *      forbidden field at the top level OR inside scanned containers
  *      (payload / transport / metadata / context).
- *   2. Verify the signed context blob if present.
- *   3. Return a stable, dev-safe "not_implemented" response — handler
- *      resolution, dispatch through UiInteractionDispatcher, payload-DTO
- *      hydration, and response normalization land in later steps.
+ *   2. Verify the signed context blob. An unverifiable blob NEVER reaches
+ *      the dispatcher.
+ *   3. Delegate to {@see UiResponseDispatcherInterface}. The endpoint
+ *      itself is dispatcher-agnostic; concrete implementations are
+ *      registered through the service-contract registry. The framework
+ *      ships {@see NotConfiguredUiResponseDispatcher} as the default
+ *      so downstream-less calls still produce a stable, well-typed
+ *      response.
  *
  * Hard rule (framework-layer §11):
  *   Server-side metadata validated through signed context is the only source
@@ -38,13 +49,47 @@ use Semitexa\Ssr\Application\Service\UiEvent\UiEventEnvelope;
  *
  * The endpoint is intentionally single, unified, and source-kind-agnostic:
  * primitive / part / component / composite events all POST here, and the
- * envelope + signed context (later) identify the source kind.
+ * envelope + signed context identify the source kind.
+ *
+ * Stable response shape (canonical envelope keys; dispatcher `body` fields
+ * are folded in only if they do NOT collide with these — the allow-list
+ * defends against a buggy dispatcher overwriting the canonical shape):
+ *
+ *   {
+ *     "status":        "accepted" | "rejected" | "error",
+ *     "phase":         "foundation" | "dispatch",
+ *     "reason":        "<stable code>",
+ *     "message":       "<operator-safe>",
+ *     "eventId":       "<from envelope>",
+ *     "correlationId": "<from envelope>",
+ *     "semanticEvent": "<from envelope>",
+ *     "schemaVersion": <int>,
+ *     "signedContext": { "present": true, "verified": true }
+ *     // + any non-colliding keys the dispatcher chose to surface.
+ *   }
  */
 #[AsPayloadHandler(payload: UiEventEnvelopePayload::class, resource: ResourceResponse::class)]
 final class UiEventEndpointHandler implements TypedHandlerInterface
 {
+    /**
+     * Canonical envelope keys the endpoint always emits. A dispatcher's
+     * `UiResponseDispatchResult::$body` MUST NOT overwrite these — the
+     * endpoint silently drops collisions rather than letting a buggy
+     * dispatcher rewrite the contract.
+     *
+     * @var array<int, string>
+     */
+    private const RESERVED_ENVELOPE_KEYS = [
+        'status', 'phase', 'reason', 'message',
+        'eventId', 'correlationId', 'semanticEvent', 'schemaVersion',
+        'signedContext',
+    ];
+
     #[InjectAsMutable]
     protected Request $request;
+
+    #[InjectAsReadonly]
+    protected UiResponseDispatcherInterface $dispatcher;
 
     public function handle(UiEventEnvelopePayload $payload, ResourceResponse $resource): ResourceResponse
     {
@@ -71,39 +116,77 @@ final class UiEventEndpointHandler implements TypedHandlerInterface
         // on the success path where a later dispatch step might treat it as
         // healthy. An empty signedContext is rejected at envelope-shape
         // validation, so the only branch reaching here is a non-empty blob.
-        $signedOk = SignedContext::verify($envelope->signedContext) !== null;
-        if (!$signedOk) {
+        $verifiedClaims = SignedContext::verify($envelope->signedContext);
+        if ($verifiedClaims === null) {
             throw new ValidationException([
                 'signedContext' => ['Signed context verification failed.'],
             ]);
         }
 
-        $body = json_encode(
-            [
-                'status' => 'accepted',
-                'phase' => 'foundation',
-                'message' => 'UI event envelope received. Handler resolution is not implemented yet (step 1).',
-                'eventId' => $envelope->eventId,
-                'correlationId' => $envelope->correlationId,
-                'semanticEvent' => $envelope->semanticEvent,
-                'schemaVersion' => $envelope->schemaVersion,
-                'signedContext' => [
-                    'present' => true,
-                    'verified' => true,
-                ],
-                'resolution' => [
-                    'status' => 'not_implemented',
-                    'reason' => 'handler_resolution_pending',
-                    'plan' => 'See framework-layer-improvements.md §7.6 + §15 step 4.5.',
-                ],
-            ],
-            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR,
-        );
+        try {
+            $result = $this->dispatcher->dispatch($envelope, $verifiedClaims);
+        } catch (Throwable) {
+            // The dispatcher contract allows throwing, but we MUST NOT let
+            // its stack trace / FQCN / secrets leak. Caller sees a stable
+            // error reason; operator inspects logs through whatever
+            // observability hook is wired by the dispatcher itself or the
+            // framework's error pipeline.
+            $result = new UiResponseDispatchResult(
+                statusCode: 500,
+                status:     'error',
+                phase:      'dispatch',
+                reason:     'ui_event_dispatcher_failure',
+                message:    'UI event dispatcher failed to handle the request.',
+            );
+        }
 
         return $resource
-            ->setStatusCode(202)
+            ->setStatusCode($result->statusCode)
             ->setHeader('Content-Type', 'application/json; charset=utf-8')
-            ->setContent($body);
+            ->setContent($this->encodeEnvelope($envelope, $result));
+    }
+
+    /**
+     * Compose the canonical JSON envelope from the (already-validated)
+     * UI event envelope + the dispatcher result. The composition is the
+     * single place the wire shape lives — adding/removing fields here is
+     * the only allowed contract change.
+     */
+    private function encodeEnvelope(UiEventEnvelope $envelope, UiResponseDispatchResult $result): string
+    {
+        $canonical = [
+            'status'        => $result->status,
+            'phase'         => $result->phase,
+            'reason'        => $result->reason,
+            'message'       => $result->message,
+            'eventId'       => $envelope->eventId,
+            'correlationId' => $envelope->correlationId,
+            'semanticEvent' => $envelope->semanticEvent,
+            'schemaVersion' => $envelope->schemaVersion,
+            'signedContext' => [
+                'present'  => true,
+                'verified' => true,
+            ],
+        ];
+
+        // Fold in the dispatcher's extra `body` fields, but drop any key
+        // that would overwrite a reserved canonical field. The dispatcher
+        // contract documents this — we enforce it here as defence in
+        // depth (a buggy dispatcher cannot rewrite the envelope).
+        foreach ($result->body as $key => $value) {
+            if (!is_string($key)) {
+                continue;
+            }
+            if (in_array($key, self::RESERVED_ENVELOPE_KEYS, true)) {
+                continue;
+            }
+            $canonical[$key] = $value;
+        }
+
+        return json_encode(
+            $canonical,
+            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR,
+        );
     }
 
     /**
@@ -114,6 +197,20 @@ final class UiEventEndpointHandler implements TypedHandlerInterface
     public function withRequest(Request $request): self
     {
         $this->request = $request;
+
+        return $this;
+    }
+
+    /**
+     * Test seam mirroring {@see withRequest()} for the dispatcher
+     * dependency. Production wiring resolves the dispatcher through
+     * `#[InjectAsReadonly]`; unit tests inject deterministic fakes
+     * (e.g. a deny-all dispatcher, a throwing dispatcher, a recorder)
+     * without booting the framework container.
+     */
+    public function withDispatcher(UiResponseDispatcherInterface $dispatcher): self
+    {
+        $this->dispatcher = $dispatcher;
 
         return $this;
     }

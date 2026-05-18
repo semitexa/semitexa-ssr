@@ -11,8 +11,11 @@ use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Request;
 use Semitexa\Ssr\Application\Handler\PayloadHandler\UiEventEndpointHandler;
 use Semitexa\Ssr\Application\Payload\Request\UiEventEnvelopePayload;
+use Semitexa\Ssr\Application\Service\UiEvent\NotConfiguredUiResponseDispatcher;
 use Semitexa\Ssr\Application\Service\UiEvent\SignedContext;
 use Semitexa\Ssr\Application\Service\UiEvent\UiEventEnvelope;
+use Semitexa\Ssr\Application\Service\UiEvent\UiResponseDispatcherInterface;
+use Semitexa\Ssr\Application\Service\UiEvent\UiResponseDispatchResult;
 
 final class UiEventEndpointHandlerTest extends TestCase
 {
@@ -81,14 +84,24 @@ final class UiEventEndpointHandlerTest extends TestCase
         );
     }
 
-    private function handlerFor(Request $request): UiEventEndpointHandler
+    private function handlerFor(Request $request, ?UiResponseDispatcherInterface $dispatcher = null): UiEventEndpointHandler
     {
-        return (new UiEventEndpointHandler())->withRequest($request);
+        // Default to the framework's not-configured dispatcher — that's
+        // exactly what production wiring resolves when no platform
+        // package overrides the contract, so it's the right baseline
+        // for "no test seam injected" calls.
+        $handler = (new UiEventEndpointHandler())->withRequest($request);
+        $handler->withDispatcher($dispatcher ?? new NotConfiguredUiResponseDispatcher());
+        return $handler;
     }
 
     #[Test]
-    public function accepts_valid_envelope_with_verified_signed_context(): void
+    public function accepts_valid_envelope_with_verified_signed_context_and_default_not_configured_dispatcher(): void
     {
+        // With no concrete dispatcher installed, the endpoint must still
+        // accept-and-respond rather than crash: the framework default is
+        // NotConfiguredUiResponseDispatcher, returning a stable
+        // `accepted / foundation / dispatcher_not_configured` envelope.
         $signed = SignedContext::sign(['ctx' => 'valid'], 60);
         $resource = $this->handlerFor($this->postRequest($this->validBody($signed)))
             ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
@@ -98,8 +111,175 @@ final class UiEventEndpointHandlerTest extends TestCase
         self::assertIsArray($body);
         self::assertSame('accepted', $body['status']);
         self::assertSame('foundation', $body['phase']);
-        self::assertSame('not_implemented', $body['resolution']['status']);
+        self::assertSame('dispatcher_not_configured', $body['reason']);
+        self::assertSame('UI event endpoint is active, but no UI response dispatcher is installed.', $body['message']);
+        self::assertSame('evt_test', $body['eventId']);
+        self::assertSame('corr_test', $body['correlationId']);
+        self::assertSame('click', $body['semanticEvent']);
+        self::assertSame(UiEventEnvelope::SCHEMA_VERSION, $body['schemaVersion']);
         self::assertTrue($body['signedContext']['verified']);
+        // The handler MUST NOT emit the legacy `resolution`/`not_implemented`
+        // path any more — that lived only while the endpoint was a stub.
+        self::assertArrayNotHasKey('resolution', $body);
+    }
+
+    #[Test]
+    public function delegates_to_injected_dispatcher_with_envelope_and_verified_claims(): void
+    {
+        // Pin the contract: the endpoint hands the dispatcher the
+        // already-validated envelope AND the verified claims array (not
+        // the raw blob, not null). A dispatcher must never have to re-
+        // verify the signed context.
+        $signed = SignedContext::sign(['who' => 'alice', 'lvl' => 7], 60);
+
+        $recording = new class () implements UiResponseDispatcherInterface {
+            public ?UiEventEnvelope $envelope = null;
+            /** @var array<string, mixed>|null */
+            public ?array $claims = null;
+
+            public function dispatch(UiEventEnvelope $envelope, array $verifiedClaims): UiResponseDispatchResult
+            {
+                $this->envelope = $envelope;
+                $this->claims   = $verifiedClaims;
+                return new UiResponseDispatchResult(
+                    statusCode: 200,
+                    status:     'accepted',
+                    phase:      'dispatch',
+                    reason:     'recorded',
+                    message:    'ok',
+                );
+            }
+        };
+
+        $resource = $this->handlerFor($this->postRequest($this->validBody($signed)), $recording)
+            ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+
+        self::assertSame(200, $resource->getStatusCode());
+        self::assertInstanceOf(UiEventEnvelope::class, $recording->envelope);
+        self::assertSame('evt_test', $recording->envelope->eventId);
+        self::assertIsArray($recording->claims);
+        self::assertSame('alice', $recording->claims['who'] ?? null);
+        self::assertSame(7, $recording->claims['lvl'] ?? null);
+
+        $body = json_decode($resource->getContent(), true);
+        self::assertSame('accepted', $body['status']);
+        self::assertSame('dispatch', $body['phase']);
+        self::assertSame('recorded', $body['reason']);
+    }
+
+    #[Test]
+    public function dispatcher_result_body_is_folded_in_but_cannot_overwrite_reserved_keys(): void
+    {
+        // Defence in depth: the dispatcher MAY add free-form fields (e.g.
+        // patch list, correlation hints, debug echo) via $result->body,
+        // but MUST NOT be able to rewrite the canonical envelope keys.
+        $signed = SignedContext::sign(['x' => 1], 60);
+
+        $hostile = new class () implements UiResponseDispatcherInterface {
+            public function dispatch(UiEventEnvelope $envelope, array $verifiedClaims): UiResponseDispatchResult
+            {
+                return new UiResponseDispatchResult(
+                    statusCode: 200,
+                    status:     'accepted',
+                    phase:      'dispatch',
+                    reason:     'extra_fields',
+                    message:    'ok',
+                    body: [
+                        // free-form: should land in the response
+                        'patches'    => [['op' => 'setText', 'target' => 'x', 'value' => 'y']],
+                        'debug'      => ['note' => 'hello'],
+                        // hostile attempts to rewrite the canonical envelope
+                        'status'        => 'ROOTED',
+                        'phase'         => 'ROOTED',
+                        'reason'        => 'ROOTED',
+                        'message'       => 'ROOTED',
+                        'eventId'       => 'ROOTED',
+                        'correlationId' => 'ROOTED',
+                        'semanticEvent' => 'ROOTED',
+                        'schemaVersion' => 999,
+                        'signedContext' => ['present' => false, 'verified' => false],
+                    ],
+                );
+            }
+        };
+
+        $resource = $this->handlerFor($this->postRequest($this->validBody($signed)), $hostile)
+            ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+
+        $body = json_decode($resource->getContent(), true);
+        // canonical keys preserved
+        self::assertSame('accepted', $body['status']);
+        self::assertSame('dispatch', $body['phase']);
+        self::assertSame('extra_fields', $body['reason']);
+        self::assertSame('ok', $body['message']);
+        self::assertSame('evt_test', $body['eventId']);
+        self::assertSame('corr_test', $body['correlationId']);
+        self::assertSame('click', $body['semanticEvent']);
+        self::assertSame(UiEventEnvelope::SCHEMA_VERSION, $body['schemaVersion']);
+        self::assertTrue($body['signedContext']['verified']);
+        // free-form keys folded in
+        self::assertSame([['op' => 'setText', 'target' => 'x', 'value' => 'y']], $body['patches']);
+        self::assertSame(['note' => 'hello'], $body['debug']);
+    }
+
+    #[Test]
+    public function dispatcher_throw_is_translated_into_a_safe_error_envelope(): void
+    {
+        // A dispatcher is allowed to throw; the endpoint MUST NOT leak
+        // the throwable's class / message / file / stack to the caller.
+        // The translation is deterministic: status 500, error/dispatch,
+        // reason ui_event_dispatcher_failure, generic message.
+        $signed = SignedContext::sign(['x' => 1], 60);
+
+        $thrower = new class () implements UiResponseDispatcherInterface {
+            public function dispatch(UiEventEnvelope $envelope, array $verifiedClaims): UiResponseDispatchResult
+            {
+                throw new \RuntimeException('CANARY_SECRET: should not surface');
+            }
+        };
+
+        $resource = $this->handlerFor($this->postRequest($this->validBody($signed)), $thrower)
+            ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+
+        self::assertSame(500, $resource->getStatusCode());
+        $body = json_decode($resource->getContent(), true);
+        self::assertSame('error',  $body['status']);
+        self::assertSame('dispatch', $body['phase']);
+        self::assertSame('ui_event_dispatcher_failure', $body['reason']);
+        self::assertSame('UI event dispatcher failed to handle the request.', $body['message']);
+
+        // Canary check: nothing about the throwable leaks.
+        $raw = (string) $resource->getContent();
+        self::assertStringNotContainsString('CANARY_SECRET', $raw);
+        self::assertStringNotContainsString('RuntimeException', $raw);
+    }
+
+    #[Test]
+    public function dispatcher_is_not_invoked_when_signed_context_does_not_verify(): void
+    {
+        // Trust boundary: a tampered/invalid signed context MUST NOT
+        // reach the dispatcher. Without the early reject, a malicious
+        // payload could trigger dispatcher side effects under
+        // unverified identity.
+        $signed = SignedContext::sign(['x' => 1], 60) . 'TAMPER';
+
+        $sentinel = new class () implements UiResponseDispatcherInterface {
+            public int $calls = 0;
+            public function dispatch(UiEventEnvelope $envelope, array $verifiedClaims): UiResponseDispatchResult
+            {
+                $this->calls++;
+                return new UiResponseDispatchResult(202, 'accepted', 'dispatch', 'ok', 'ok');
+            }
+        };
+
+        try {
+            $this->handlerFor($this->postRequest($this->validBody($signed)), $sentinel)
+                ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+            self::fail('Tampered signed context must be rejected before the dispatcher is called.');
+        } catch (ValidationException $e) {
+            self::assertArrayHasKey('signedContext', $e->getErrorContext()['errors']);
+        }
+        self::assertSame(0, $sentinel->calls, 'Dispatcher must NEVER see a request whose signed ctx failed verification.');
     }
 
     #[Test]

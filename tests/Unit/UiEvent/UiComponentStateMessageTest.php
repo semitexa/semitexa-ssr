@@ -46,4 +46,11 @@ final class UiComponentStateMessageTest extends TestCase
         self::assertSame('corr-abc', $with->toSsePayload()['correlationId']);
         self::assertArrayNotHasKey('correlationId', $without->toSsePayload());
     }
+
+    #[Test]
+    public function empty_component_instance_id_is_rejected(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        new UiComponentStateMessage('', ['rows' => []]);
+    }
 }

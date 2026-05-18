@@ -525,7 +525,19 @@ final class AsyncResourceSseServer
             $safeEvent = str_replace(["\r", "\n"], '', $resolvedEventName);
             $line .= 'event: ' . $safeEvent . "\n";
         }
-        $line .= "data: " . json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n";
+        try {
+            $json = json_encode(
+                $data,
+                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR,
+            );
+        } catch (\JsonException $e) {
+            \Semitexa\Core\Log\StaticLoggerBridge::warning('ssr', 'sse_payload_json_encode_failed', [
+                'exception' => $e::class,
+                'message'   => $e->getMessage(),
+            ]);
+            $json = '{}';
+        }
+        $line .= 'data: ' . $json . "\n\n";
         return $line;
     }
 

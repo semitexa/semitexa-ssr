@@ -62,4 +62,11 @@ final class UiErrorMessageTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
         new UiErrorMessage('', 'something went wrong');
     }
+
+    #[Test]
+    public function whitespace_only_reason_is_rejected(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        new UiErrorMessage("   \t\n", 'something went wrong');
+    }
 }

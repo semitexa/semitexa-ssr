@@ -31,7 +31,11 @@ final readonly class UiPatchMessage implements UiSseMessageInterface
         public string $componentInstanceId,
         public array $patch,
         public ?string $correlationId = null,
-    ) {}
+    ) {
+        if ($this->componentInstanceId === '') {
+            throw new \InvalidArgumentException('UiPatchMessage: componentInstanceId must not be empty.');
+        }
+    }
 
     public function type(): UiSseEventType
     {

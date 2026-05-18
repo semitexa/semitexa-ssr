@@ -34,7 +34,7 @@ final readonly class UiErrorMessage implements UiSseMessageInterface
         public string $message,
         public ?string $correlationId = null,
     ) {
-        if ($this->reason === '') {
+        if (trim($this->reason) === '') {
             throw new \InvalidArgumentException('UiErrorMessage: reason must not be empty.');
         }
     }

@@ -24,7 +24,11 @@ final readonly class UiComponentStateMessage implements UiSseMessageInterface
         public string $componentInstanceId,
         public array $state,
         public ?string $correlationId = null,
-    ) {}
+    ) {
+        if ($this->componentInstanceId === '') {
+            throw new \InvalidArgumentException('UiComponentStateMessage: componentInstanceId must not be empty.');
+        }
+    }
 
     public function type(): UiSseEventType
     {

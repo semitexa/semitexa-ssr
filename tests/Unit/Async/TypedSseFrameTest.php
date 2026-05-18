@@ -210,4 +210,19 @@ final class TypedSseFrameTest extends TestCase
 
         self::assertStringEndsWith("\n\n", $frame);
     }
+
+    #[Test]
+    public function json_encode_failure_falls_back_to_empty_object_instead_of_malformed_frame(): void
+    {
+        // Invalid UTF-8 makes json_encode throw under JSON_THROW_ON_ERROR; the
+        // chokepoint must NOT let `false`/malformed JSON reach the wire.
+        $frame = self::compose([
+            '_type' => 'ui.patch',
+            'patch' => ['bad' => "\xC3\x28"],
+        ]);
+
+        self::assertStringContainsString("event: ui.patch\n", $frame);
+        self::assertStringContainsString("data: {}\n\n", $frame);
+        self::assertStringNotContainsString('data: false', $frame);
+    }
 }

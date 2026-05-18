@@ -49,4 +49,11 @@ final class UiPatchMessageTest extends TestCase
         self::assertArrayNotHasKey('correlationId', $without->toSsePayload());
         self::assertArrayNotHasKey('correlationId', $empty->toSsePayload());
     }
+
+    #[Test]
+    public function empty_component_instance_id_is_rejected(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        new UiPatchMessage('', ['v' => 1]);
+    }
 }

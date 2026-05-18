@@ -22,14 +22,28 @@ use Semitexa\Ssr\Application\Service\UiEvent\UiPatchMessage;
  */
 final class AsyncResourceSseMessagePublisherTest extends TestCase
 {
+    private ?string $previousRedisHost = null;
+
     protected function setUp(): void
     {
+        $raw = \getenv('REDIS_HOST');
+        $this->previousRedisHost = $raw === false ? null : $raw;
         $this->resetTransportState();
     }
 
     protected function tearDown(): void
     {
         $this->resetTransportState();
+
+        if ($this->previousRedisHost === null) {
+            \putenv('REDIS_HOST');
+            unset($_ENV['REDIS_HOST'], $_SERVER['REDIS_HOST']);
+            return;
+        }
+
+        \putenv('REDIS_HOST=' . $this->previousRedisHost);
+        $_ENV['REDIS_HOST']    = $this->previousRedisHost;
+        $_SERVER['REDIS_HOST'] = $this->previousRedisHost;
     }
 
     #[Test]

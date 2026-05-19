@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Tests\Unit\Async;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
@@ -11,6 +12,8 @@ use Swoole\Coroutine\Channel;
 
 final class AsyncResourceSseServerTest extends TestCase
 {
+    private const UNSAFE_BEARER_ERROR_MESSAGE = 'Authorization is required for persistent SSE streams. Set SSE_PUBLIC_ANONYMOUS=true to opt in to anonymous persistent streams, or supply a safe-shaped subscriber channel id.';
+
     #[Test]
     public function authorization_gate_allows_guest_deferred_requests(): void
     {
@@ -19,6 +22,7 @@ final class AsyncResourceSseServerTest extends TestCase
             anonymousAllowed: false,
             demoStream: '',
             deferredRequestId: 'req-123',
+            safeBearerSessionId: false,
         ));
     }
 
@@ -26,12 +30,13 @@ final class AsyncResourceSseServerTest extends TestCase
     public function authorization_gate_rejects_guest_persistent_streams_without_opt_in(): void
     {
         self::assertSame(
-            'Authorization is required for persistent SSE streams. Set SSE_PUBLIC_ANONYMOUS=true to opt in to anonymous persistent streams.',
+            self::UNSAFE_BEARER_ERROR_MESSAGE,
             $this->resolveSseAuthorizationError(
                 authenticated: false,
                 anonymousAllowed: false,
                 demoStream: '',
                 deferredRequestId: '',
+                safeBearerSessionId: false,
             ),
         );
     }
@@ -46,6 +51,7 @@ final class AsyncResourceSseServerTest extends TestCase
                 anonymousAllowed: true,
                 demoStream: 'clock',
                 deferredRequestId: 'req-123',
+                safeBearerSessionId: false,
             ),
         );
     }
@@ -56,13 +62,135 @@ final class AsyncResourceSseServerTest extends TestCase
         self::assertSame(
             [
                 'status' => 401,
-                'message' => 'Authorization is required for persistent SSE streams. Set SSE_PUBLIC_ANONYMOUS=true to opt in to anonymous persistent streams.',
+                'message' => self::UNSAFE_BEARER_ERROR_MESSAGE,
             ],
             $this->resolveSseRequestRejection(
                 sameOrigin: false,
-                authError: 'Authorization is required for persistent SSE streams. Set SSE_PUBLIC_ANONYMOUS=true to opt in to anonymous persistent streams.',
+                authError: self::UNSAFE_BEARER_ERROR_MESSAGE,
             ),
         );
+    }
+
+    #[Test]
+    public function bearer_safe_shape_admits_anonymous_persistent_stream(): void
+    {
+        self::assertNull($this->resolveSseAuthorizationError(
+            authenticated: false,
+            anonymousAllowed: false,
+            demoStream: '',
+            deferredRequestId: '',
+            safeBearerSessionId: true,
+        ));
+    }
+
+    #[Test]
+    public function bearer_safe_shape_does_not_admit_demo_streams(): void
+    {
+        self::assertSame(
+            'Authorization is required for this SSE demo stream.',
+            $this->resolveSseAuthorizationError(
+                authenticated: false,
+                anonymousAllowed: false,
+                demoStream: 'clock',
+                deferredRequestId: '',
+                safeBearerSessionId: true,
+            ),
+        );
+    }
+
+    #[Test]
+    public function bearer_safe_shape_unnecessary_when_authenticated(): void
+    {
+        self::assertNull($this->resolveSseAuthorizationError(
+            authenticated: true,
+            anonymousAllowed: false,
+            demoStream: '',
+            deferredRequestId: '',
+            safeBearerSessionId: false,
+        ));
+    }
+
+    #[Test]
+    public function bearer_safe_shape_unnecessary_when_anonymous_allowed(): void
+    {
+        self::assertNull($this->resolveSseAuthorizationError(
+            authenticated: false,
+            anonymousAllowed: true,
+            demoStream: '',
+            deferredRequestId: '',
+            safeBearerSessionId: false,
+        ));
+    }
+
+    #[Test]
+    public function unsafe_session_id_still_requires_auth_or_anonymous_opt_in(): void
+    {
+        self::assertSame(
+            self::UNSAFE_BEARER_ERROR_MESSAGE,
+            $this->resolveSseAuthorizationError(
+                authenticated: false,
+                anonymousAllowed: false,
+                demoStream: '',
+                deferredRequestId: '',
+                safeBearerSessionId: false,
+            ),
+        );
+    }
+
+    #[Test]
+    public function unsafe_session_id_error_message_is_stable(): void
+    {
+        self::assertSame(
+            'Authorization is required for persistent SSE streams. Set SSE_PUBLIC_ANONYMOUS=true to opt in to anonymous persistent streams, or supply a safe-shaped subscriber channel id.',
+            $this->resolveSseAuthorizationError(
+                authenticated: false,
+                anonymousAllowed: false,
+                demoStream: '',
+                deferredRequestId: '',
+                safeBearerSessionId: false,
+            ),
+        );
+    }
+
+    #[Test]
+    #[DataProvider('safeBearerSessionIdShapeProvider')]
+    public function safe_bearer_session_id_shape_matrix(mixed $rawSessionId, bool $expected): void
+    {
+        self::assertSame($expected, $this->isSafeBearerSessionId($rawSessionId));
+    }
+
+    /**
+     * @return array<string, array{0: mixed, 1: bool}>
+     */
+    public static function safeBearerSessionIdShapeProvider(): array
+    {
+        $hex32 = '0123456789abcdef0123456789abcdef';
+
+        return [
+            'valid_lowercase_32_hex' => ['sse_' . $hex32, true],
+            'empty_string' => ['', false],
+            'null' => [null, false],
+            'int' => [42, false],
+            'array' => [[], false],
+            'bool_false' => [false, false],
+            'uppercase_hex' => ['sse_' . strtoupper($hex32), false],
+            'mixed_case_hex' => ['sse_0123456789ABCDEF0123456789abcdef', false],
+            'too_short' => ['sse_' . substr($hex32, 0, 31), false],
+            'too_long' => ['sse_' . $hex32 . '0', false],
+            'trailing_extra' => ['sse_' . $hex32 . 'extra', false],
+            'wrong_prefix_ui' => ['ui_' . $hex32, false],
+            'wrong_prefix_foo' => ['foo_' . $hex32, false],
+            'no_prefix' => [$hex32, false],
+            'sse_prefix_only' => ['sse_', false],
+            'trailing_lf' => ['sse_' . $hex32 . "\n", false],
+            'embedded_crlf_injection' => ['sse_' . $hex32 . "\r\nX-Inject: 1", false],
+            'embedded_null_byte' => ['sse_' . "\0" . substr($hex32, 1), false],
+            'non_hex_chars' => ['sse_zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz', false],
+            'embedded_whitespace' => ['sse_' . $hex32 . ' ' . $hex32, false],
+            'uniqid_fallback' => ['sse_64a8b9c2d4e8f.12345678', false],
+            'leading_whitespace' => [' sse_' . $hex32, false],
+            'trailing_whitespace' => ['sse_' . $hex32 . ' ', false],
+        ];
     }
 
     #[Test]
@@ -132,6 +260,7 @@ final class AsyncResourceSseServerTest extends TestCase
         bool $anonymousAllowed,
         string $demoStream,
         string $deferredRequestId,
+        bool $safeBearerSessionId,
     ): ?string {
         $method = new \ReflectionMethod(AsyncResourceSseServer::class, 'resolveSseAuthorizationError');
         $method->setAccessible(true);
@@ -142,9 +271,18 @@ final class AsyncResourceSseServerTest extends TestCase
             $anonymousAllowed,
             $demoStream,
             $deferredRequestId,
+            $safeBearerSessionId,
         );
 
         return is_string($result) ? $result : null;
+    }
+
+    private function isSafeBearerSessionId(mixed $rawSessionId): bool
+    {
+        $method = new \ReflectionMethod(AsyncResourceSseServer::class, 'isSafeBearerSessionId');
+        $method->setAccessible(true);
+
+        return (bool) $method->invoke(null, $rawSessionId);
     }
 
     /**

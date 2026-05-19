@@ -1024,6 +1024,10 @@ final class AsyncResourceSseServer
 
     private static function closeSession(string $sessionId, Response $response): void
     {
+        // This handler owns the response lifecycle end-to-end. SseKissHandler
+        // marks the framework ResourceResponse as alreadySent so the emitter
+        // does not also call status/header/end — that double-end pattern
+        // SIGSEGV'd Swoole 6.2.1 workers under server-initiated close.
         self::cancelSessionCoroutines($sessionId);
         self::removeSessionWorkerMapping($sessionId);
         self::unregisterAuthenticatedSession($sessionId);

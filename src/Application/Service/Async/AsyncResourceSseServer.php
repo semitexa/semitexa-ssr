@@ -26,6 +26,33 @@ final class AsyncResourceSseServer
      */
     public const SAFE_BEARER_SESSION_ID_PATTERN = '/\Asse_[a-f0-9]{32}\z/';
 
+    /**
+     * Short-lived KISS transport: flush queued frames + close. Default for
+     * public/guest pages that opt into the canonical subscriber channel —
+     * bounds worker coroutine / FD pressure by not holding the connection
+     * open after the queue is drained.
+     */
+    public const TRANSPORT_MODE_DRAIN = 'drain';
+
+    /**
+     * Long-lived KISS transport: enter the existing while-loop and stay
+     * open until max-age / done / disconnect. Reserved for authenticated
+     * dashboards, admin/internal tools, monitoring, terminal-like
+     * interfaces, and other explicitly trusted deployments.
+     */
+    public const TRANSPORT_MODE_LIVE = 'live';
+
+    /**
+     * No explicit mode supplied. Behaviour:
+     *   - deferred_request_id present, authenticated session, or
+     *     SSE_PUBLIC_ANONYMOUS=1 → preserve the existing long-lived loop
+     *     (legacy callers, deferred SSR streams);
+     *   - safe anonymous bearer (`sse_<32hex>`) only → upgrade to drain so
+     *     a guest page that forgot the mode marker does NOT silently open
+     *     a long-lived stream.
+     */
+    private const TRANSPORT_MODE_LEGACY = 'legacy';
+
     private const AUTH_SESSION_USER_KEY = '_auth_user_id';
     private const AUTH_SESSION_TTL_SECONDS = 7200;
     private const AUTH_SESSION_TOUCH_INTERVAL_SECONDS = 30;
@@ -106,6 +133,7 @@ final class AsyncResourceSseServer
             $demoStream = trim((string) $get['demo_stream']);
         }
         $deferredRequestId = trim((string) ($get['deferred_request_id'] ?? ''));
+        $rawMode = trim((string) ($get['mode'] ?? ''));
 
         // Auth gate — only persistent streams require a session:
         //  1. demo_stream runs an infinite per-minute producer → auth always.
@@ -138,6 +166,22 @@ final class AsyncResourceSseServer
 
             $response->status($rejection['status']);
             $response->end();
+            return;
+        }
+
+        // Resolve transport mode early — an explicit unknown `mode=` value
+        // gets a clean 400 before any IP cap accounting. Missing mode is
+        // legal: the resolver maps it to drain for anonymous bearer
+        // channels and to legacy for everything else.
+        $resolvedMode = self::resolveTransportMode(
+            rawMode: $rawMode,
+            authenticated: $authenticated,
+            anonymousAllowed: $anonymousAllowed,
+            safeBearerSessionId: $safeBearerSessionId,
+            deferredRequestId: $deferredRequestId,
+        );
+        if ($resolvedMode === null) {
+            self::rejectBadRequest($response, 'Unknown SSE transport mode.');
             return;
         }
 
@@ -225,7 +269,33 @@ final class AsyncResourceSseServer
 
         // Send initial event so the client receives something immediately (fixes "Connecting..." stuck
         // and ensures response is flushed; some proxies don't send headers until first byte).
-        self::writeSse($response, ['event' => 'connected', 'connected' => true]);
+        self::writeSse($response, [
+            'event' => 'connected',
+            'connected' => true,
+            'mode' => $resolvedMode,
+        ]);
+
+        // Drain mode short-circuit. deferred_request_id wins when both are
+        // set — its own streamDeferredBlocks() pipeline owns the done/close
+        // semantics. Buffer, pending-table, and Redis queue were already
+        // drained above; flush any same-worker queue items that landed
+        // between admit and here, then emit the canonical close frame so
+        // the client's `close` listener fires deterministically.
+        if ($resolvedMode === self::TRANSPORT_MODE_DRAIN && $deferredRequestId === '') {
+            foreach (self::$queues[$sessionId] as $data) {
+                self::writeSse($response, $data);
+            }
+            unset(self::$queues[$sessionId]);
+            self::writeSse($response, [
+                'event'  => 'close',
+                'type'   => 'done',
+                'close'  => true,
+                'live'   => false,
+                'reason' => 'drain_complete',
+            ]);
+            self::closeSession($sessionId, $response);
+            return;
+        }
 
         $enableDemoStream = filter_var((string) (\getenv('APP_DEBUG') ?: ''), FILTER_VALIDATE_BOOLEAN);
         if ($demoStream !== '' && $enableDemoStream) {
@@ -1068,6 +1138,71 @@ final class AsyncResourceSseServer
             'error' => 'Too Many Requests',
             'message' => $message,
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    }
+
+    private static function rejectBadRequest(Response $response, string $message): void
+    {
+        $response->status(400);
+        $response->header('Content-Type', 'application/json');
+        $response->end(json_encode([
+            'error' => 'Bad Request',
+            'message' => $message,
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    }
+
+    /**
+     * Resolve the requested KISS transport mode against the admit context.
+     *
+     * Called once per admit, AFTER {@see self::resolveSseAuthorizationError()}
+     * has already approved the request. Inputs are scalar so the resolver
+     * can be unit-tested through reflection without standing up Swoole /
+     * Redis / Sessions.
+     *
+     * Mode policy (only callers admitted by the auth gate reach here):
+     *
+     *   | rawMode | deferred | authed | anonAllow | bearer | result        |
+     *   | ------- | -------- | ------ | --------- | ------ | ------------- |
+     *   | drain   | *        | *      | *         | *      | drain         |
+     *   | live    | *        | *      | *         | *      | live          |
+     *   | ''      | yes      | *      | *         | *      | legacy        |
+     *   | ''      | no       | yes    | *         | *      | legacy        |
+     *   | ''      | no       | no     | yes       | *      | legacy        |
+     *   | ''      | no       | no     | no        | yes    | drain ← key   |
+     *   | other   | *        | *      | *         | *      | null (400)    |
+     *
+     * The anonymous-bearer + missing-mode → drain rule prevents a guest
+     * page that forgets the mode marker from silently opening a long-
+     * lived stream. Explicit unknown values are rejected so a typo
+     * never silently degrades to legacy behaviour.
+     *
+     * @return self::TRANSPORT_MODE_DRAIN|self::TRANSPORT_MODE_LIVE|self::TRANSPORT_MODE_LEGACY|null
+     *         `null` ⇒ explicit unknown mode → caller emits 400.
+     */
+    private static function resolveTransportMode(
+        string $rawMode,
+        bool $authenticated,
+        bool $anonymousAllowed,
+        bool $safeBearerSessionId,
+        string $deferredRequestId,
+    ): ?string {
+        if ($rawMode === self::TRANSPORT_MODE_DRAIN) {
+            return self::TRANSPORT_MODE_DRAIN;
+        }
+        if ($rawMode === self::TRANSPORT_MODE_LIVE) {
+            return self::TRANSPORT_MODE_LIVE;
+        }
+        if ($rawMode === '') {
+            if ($deferredRequestId !== '' || $authenticated || $anonymousAllowed) {
+                return self::TRANSPORT_MODE_LEGACY;
+            }
+            if ($safeBearerSessionId) {
+                return self::TRANSPORT_MODE_DRAIN;
+            }
+            // Defensive: the auth gate would have rejected this combination
+            // before mode resolution. Treat conservatively as legacy.
+            return self::TRANSPORT_MODE_LEGACY;
+        }
+        return null;
     }
 
     private static function cancelSessionCoroutines(string $sessionId): void

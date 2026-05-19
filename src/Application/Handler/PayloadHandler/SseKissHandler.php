@@ -31,7 +31,12 @@ final class SseKissHandler implements TypedHandlerInterface
         AsyncResourceSseServer::setServer($server);
         AsyncResourceSseServer::handle($swooleRequest, $swooleResponse);
 
+        // AsyncResourceSseServer owns the raw Swoole Response end-to-end
+        // (status, headers, chunked frames, end()). The framework emitter
+        // must not touch it again — a second status/header/end pass on the
+        // same Swoole Response SIGSEGVs Swoole 6.2.1 workers.
         $resource->setContent('');
+        $resource->markAsAlreadySent();
         return $resource;
     }
 }

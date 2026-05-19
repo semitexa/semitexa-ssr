@@ -17,6 +17,15 @@ use Swoole\Http\Response;
 
 final class AsyncResourceSseServer
 {
+    /**
+     * Strict shape for an anonymous bearer-channel subscriber id.
+     *
+     * 128 bits of entropy (16 random bytes hex-encoded) with the `sse_` prefix.
+     * Platform-UI mints ids of this shape; the KISS endpoint admits anonymous
+     * bare GET requests only when the supplied session_id matches.
+     */
+    public const SAFE_BEARER_SESSION_ID_PATTERN = '/\Asse_[a-f0-9]{32}\z/';
+
     private const AUTH_SESSION_USER_KEY = '_auth_user_id';
     private const AUTH_SESSION_TTL_SECONDS = 7200;
     private const AUTH_SESSION_TOUCH_INTERVAL_SECONDS = 30;
@@ -108,12 +117,14 @@ final class AsyncResourceSseServer
         //     auth required, unless SSE_PUBLIC_ANONYMOUS is opt-in.
         $authenticated = self::hasAuthenticatedSession($request);
         $anonymousAllowed = filter_var((string) (\getenv('SSE_PUBLIC_ANONYMOUS') ?: ''), FILTER_VALIDATE_BOOLEAN);
+        $safeBearerSessionId = self::isSafeBearerSessionId($get['session_id'] ?? null);
 
         $authError = self::resolveSseAuthorizationError(
             authenticated: $authenticated,
             anonymousAllowed: $anonymousAllowed,
             demoStream: $demoStream,
             deferredRequestId: $deferredRequestId,
+            safeBearerSessionId: $safeBearerSessionId,
         );
         $rejection = self::resolveSseRequestRejection(
             sameOrigin: self::isSameOriginRequest($request),
@@ -1007,13 +1018,20 @@ final class AsyncResourceSseServer
         bool $anonymousAllowed,
         string $demoStream,
         string $deferredRequestId,
+        bool $safeBearerSessionId,
     ): ?string {
         if ($demoStream !== '' && !$authenticated) {
             return 'Authorization is required for this SSE demo stream.';
         }
 
-        if ($demoStream === '' && $deferredRequestId === '' && !$authenticated && !$anonymousAllowed) {
-            return 'Authorization is required for persistent SSE streams. Set SSE_PUBLIC_ANONYMOUS=true to opt in to anonymous persistent streams.';
+        if (
+            $demoStream === ''
+            && $deferredRequestId === ''
+            && !$authenticated
+            && !$anonymousAllowed
+            && !$safeBearerSessionId
+        ) {
+            return 'Authorization is required for persistent SSE streams. Set SSE_PUBLIC_ANONYMOUS=true to opt in to anonymous persistent streams, or supply a safe-shaped subscriber channel id.';
         }
 
         return null;
@@ -1258,6 +1276,15 @@ final class AsyncResourceSseServer
     private static function hasAuthenticatedSession(Request $request): bool
     {
         return self::resolveAuthenticatedUserId($request) !== '';
+    }
+
+    private static function isSafeBearerSessionId(mixed $rawSessionId): bool
+    {
+        if (!is_string($rawSessionId) || $rawSessionId === '') {
+            return false;
+        }
+
+        return preg_match(self::SAFE_BEARER_SESSION_ID_PATTERN, $rawSessionId) === 1;
     }
 
     private static function resolveAuthenticatedUserId(Request $request): string

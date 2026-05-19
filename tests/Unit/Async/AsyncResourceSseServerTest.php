@@ -209,6 +209,200 @@ final class AsyncResourceSseServerTest extends TestCase
     }
 
     #[Test]
+    public function transport_mode_explicit_drain_is_resolved_drain(): void
+    {
+        self::assertSame(
+            AsyncResourceSseServer::TRANSPORT_MODE_DRAIN,
+            $this->resolveTransportMode(
+                rawMode: 'drain',
+                authenticated: false,
+                anonymousAllowed: false,
+                safeBearerSessionId: true,
+                deferredRequestId: '',
+            ),
+        );
+    }
+
+    #[Test]
+    public function transport_mode_explicit_live_is_resolved_live(): void
+    {
+        self::assertSame(
+            AsyncResourceSseServer::TRANSPORT_MODE_LIVE,
+            $this->resolveTransportMode(
+                rawMode: 'live',
+                authenticated: true,
+                anonymousAllowed: false,
+                safeBearerSessionId: false,
+                deferredRequestId: '',
+            ),
+        );
+    }
+
+    #[Test]
+    public function transport_mode_missing_with_deferred_request_id_is_legacy(): void
+    {
+        self::assertSame(
+            'legacy',
+            $this->resolveTransportMode(
+                rawMode: '',
+                authenticated: false,
+                anonymousAllowed: false,
+                safeBearerSessionId: false,
+                deferredRequestId: 'req-123',
+            ),
+        );
+    }
+
+    #[Test]
+    public function transport_mode_missing_with_authenticated_session_is_legacy(): void
+    {
+        self::assertSame(
+            'legacy',
+            $this->resolveTransportMode(
+                rawMode: '',
+                authenticated: true,
+                anonymousAllowed: false,
+                safeBearerSessionId: false,
+                deferredRequestId: '',
+            ),
+        );
+    }
+
+    #[Test]
+    public function transport_mode_missing_with_public_anonymous_opt_in_is_legacy(): void
+    {
+        self::assertSame(
+            'legacy',
+            $this->resolveTransportMode(
+                rawMode: '',
+                authenticated: false,
+                anonymousAllowed: true,
+                safeBearerSessionId: false,
+                deferredRequestId: '',
+            ),
+        );
+    }
+
+    #[Test]
+    public function transport_mode_missing_with_anonymous_bearer_is_drain(): void
+    {
+        // Key invariant: an anonymous bearer caller that forgot to declare
+        // a mode MUST NOT silently become a long-lived live stream.
+        self::assertSame(
+            AsyncResourceSseServer::TRANSPORT_MODE_DRAIN,
+            $this->resolveTransportMode(
+                rawMode: '',
+                authenticated: false,
+                anonymousAllowed: false,
+                safeBearerSessionId: true,
+                deferredRequestId: '',
+            ),
+        );
+    }
+
+    #[Test]
+    public function transport_mode_explicit_drain_overrides_authenticated_default(): void
+    {
+        self::assertSame(
+            AsyncResourceSseServer::TRANSPORT_MODE_DRAIN,
+            $this->resolveTransportMode(
+                rawMode: 'drain',
+                authenticated: true,
+                anonymousAllowed: false,
+                safeBearerSessionId: false,
+                deferredRequestId: '',
+            ),
+        );
+    }
+
+    #[Test]
+    public function transport_mode_unknown_value_returns_null_for_400(): void
+    {
+        // Explicit unknown ⇒ caller emits a 400. Do NOT silently normalize.
+        self::assertNull($this->resolveTransportMode(
+            rawMode: 'foo',
+            authenticated: true,
+            anonymousAllowed: true,
+            safeBearerSessionId: true,
+            deferredRequestId: 'req-123',
+        ));
+    }
+
+    #[Test]
+    #[DataProvider('unknownTransportModeProvider')]
+    public function transport_mode_unknown_shapes_are_rejected(string $rawMode): void
+    {
+        self::assertNull($this->resolveTransportMode(
+            rawMode: $rawMode,
+            authenticated: false,
+            anonymousAllowed: false,
+            safeBearerSessionId: true,
+            deferredRequestId: '',
+        ));
+    }
+
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function unknownTransportModeProvider(): array
+    {
+        return [
+            'uppercase_drain' => ['DRAIN'],
+            'uppercase_live'  => ['LIVE'],
+            'mixed_case'      => ['Drain'],
+            'typo_drai'       => ['drai'],
+            'typo_livee'      => ['livee'],
+            'random'          => ['xyz'],
+            'numeric'         => ['1'],
+            'whitespace_pad'  => [' drain'],
+            'trailing_lf'     => ["drain\n"],
+            'crlf_injection'  => ["drain\r\nX-Inject: 1"],
+            'null_byte'       => ["drain\0"],
+        ];
+    }
+
+    #[Test]
+    public function transport_mode_drain_with_deferred_request_id_yields_drain_but_branch_defers(): void
+    {
+        // The resolver returns 'drain' on raw value match — the handler
+        // then short-circuits the drain branch when deferred_request_id is
+        // set so deferred SSR streaming retains its own done/close
+        // semantics. The resolver does not encode that policy; the
+        // handler does. This test pins the resolver contract.
+        self::assertSame(
+            AsyncResourceSseServer::TRANSPORT_MODE_DRAIN,
+            $this->resolveTransportMode(
+                rawMode: 'drain',
+                authenticated: false,
+                anonymousAllowed: false,
+                safeBearerSessionId: true,
+                deferredRequestId: 'req-123',
+            ),
+        );
+    }
+
+    #[Test]
+    public function drain_complete_payload_satisfies_legacy_close_predicate(): void
+    {
+        // Defence-in-depth: even if a future caller reuses the drain-
+        // complete payload shape inside the live loop, the existing
+        // shouldCloseAfterPayload() predicate must already consider it a
+        // close signal. Pins the wire contract the drain branch emits.
+        $payload = [
+            'event'  => 'close',
+            'type'   => 'done',
+            'close'  => true,
+            'live'   => false,
+            'reason' => 'drain_complete',
+        ];
+
+        $method = new \ReflectionMethod(AsyncResourceSseServer::class, 'shouldCloseAfterPayload');
+        $method->setAccessible(true);
+
+        self::assertTrue($method->invoke(null, $payload));
+    }
+
+    #[Test]
     public function session_coroutine_cancellation_clears_registry_and_stops_worker(): void
     {
         if (!extension_loaded('swoole') || !function_exists('Co\\run') || !class_exists(Channel::class)) {
@@ -300,5 +494,27 @@ final class AsyncResourceSseServerTest extends TestCase
         );
 
         return is_array($result) ? $result : null;
+    }
+
+    private function resolveTransportMode(
+        string $rawMode,
+        bool $authenticated,
+        bool $anonymousAllowed,
+        bool $safeBearerSessionId,
+        string $deferredRequestId,
+    ): ?string {
+        $method = new \ReflectionMethod(AsyncResourceSseServer::class, 'resolveTransportMode');
+        $method->setAccessible(true);
+
+        $result = $method->invoke(
+            null,
+            $rawMode,
+            $authenticated,
+            $anonymousAllowed,
+            $safeBearerSessionId,
+            $deferredRequestId,
+        );
+
+        return is_string($result) ? $result : null;
     }
 }

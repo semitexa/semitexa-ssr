@@ -4,13 +4,30 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Component;
 
+use Semitexa\Core\Attribute\TransportType;
 use Semitexa\Core\Support\CoroutineLocal;
 use Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore;
+use Semitexa\Ssr\Application\Service\DataProviderRegistry;
+use Semitexa\Ssr\Application\Service\Isomorphic\PlaceholderRenderer;
 use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
+use Semitexa\Ssr\Domain\Model\DataProviderContext;
 
 final class ComponentRenderer
 {
     private const CTX_RENDERED_SLOTS = '__ssr_rendered_slots';
+    private const CTX_CURRENT_REQUEST = '__ssr_current_request';
+
+    private static ?DataProviderRegistry $dataProviderRegistry = null;
+
+    public static function setDataProviderRegistry(?DataProviderRegistry $registry): void
+    {
+        self::$dataProviderRegistry = $registry;
+    }
+
+    public static function setCurrentRequest(?object $request): void
+    {
+        CoroutineLocal::set(self::CTX_CURRENT_REQUEST, $request);
+    }
 
     /**
      * @param array<array-key, mixed> $props
@@ -24,7 +41,7 @@ final class ComponentRenderer
             return "<!-- Component '{$name}' not found -->";
         }
 
-        /** @var array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string} $component */
+        /** @var array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string, dataProviderClass: ?string, transportMode: TransportType, deferred: bool} $component */
         $currentSlots = CoroutineLocal::get(self::CTX_RENDERED_SLOTS, []);
         $previousSlots = $currentSlots;
         $currentSlots[$name] = $slots;
@@ -37,6 +54,29 @@ final class ComponentRenderer
 
             if (($component['event'] ?? null) !== null || ($component['script'] ?? null) !== null) {
                 $componentId = 'cmp_' . bin2hex(random_bytes(8));
+            }
+
+            $transportMode = $component['transportMode'] ?? TransportType::Http;
+            $deferred = $component['deferred'] ?? false;
+            if ($deferred && $transportMode === TransportType::Sse) {
+                return PlaceholderRenderer::renderComponentPlaceholder($name, $componentId);
+            }
+
+            $providerClass = $component['dataProviderClass'] ?? null;
+            if ($providerClass !== null && self::$dataProviderRegistry !== null) {
+                $provider = self::$dataProviderRegistry->resolveByClass($providerClass);
+                if ($provider !== null) {
+                    $providerData = $provider->resolveForComponent(
+                        new DataProviderContext(
+                            request: CoroutineLocal::get(self::CTX_CURRENT_REQUEST, null),
+                            instanceId: $componentId,
+                            subscriberId: null,
+                        ),
+                        $props,
+                    );
+                    // Provider data underlays — explicit props win.
+                    $props = array_merge($providerData, $props);
+                }
             }
 
             if (($component['event'] ?? null) !== null) {

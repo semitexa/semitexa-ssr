@@ -16,6 +16,8 @@ use Semitexa\Ssr\Application\Service\Asset\AssetCollector;
 use Semitexa\Ssr\Application\Service\Asset\ModuleAssetRegistry;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
 use Semitexa\Ssr\Application\Service\Component\ComponentRegistry;
+use Semitexa\Ssr\Application\Service\Component\ComponentRenderer;
+use Semitexa\Ssr\Application\Service\DataProviderRegistry;
 use Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator;
 use Semitexa\Ssr\Application\Service\Extension\TwigExtensionRegistry;
 use Semitexa\Ssr\Application\Service\Routing\UrlGenerator;
@@ -47,9 +49,13 @@ final class WireCoreInstancesListener implements ServerLifecycleListenerInterfac
     #[InjectAsReadonly]
     protected DeferredBlockOrchestrator $deferredBlockOrchestrator;
 
+    #[InjectAsReadonly]
+    protected DataProviderRegistry $dataProviderRegistry;
+
     public function handle(ServerLifecycleContext $context): void
     {
         ComponentRegistry::setClassDiscovery($this->classDiscovery);
+        ComponentRenderer::setDataProviderRegistry($this->dataProviderRegistry);
         TwigExtensionRegistry::setClassDiscovery($this->classDiscovery);
         ModuleTemplateRegistry::setModuleRegistry($this->moduleRegistry);
         ModuleAssetRegistry::setModuleRegistry($this->moduleRegistry);

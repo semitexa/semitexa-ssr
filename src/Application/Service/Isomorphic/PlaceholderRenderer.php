@@ -38,6 +38,28 @@ final class PlaceholderRenderer
     }
 
     /**
+     * Generate skeleton placeholder HTML for a deferred component
+     * (component using #[WithTransport(Sse, deferred: true)]).
+     *
+     * Mirrors the slot placeholder envelope but keyed on the component
+     * instance id so the client runtime can target it on Sse delivery.
+     */
+    public static function renderComponentPlaceholder(string $componentName, ?string $instanceId = null): string
+    {
+        $componentEscaped = htmlspecialchars($componentName, ENT_QUOTES, 'UTF-8');
+        $instanceEscaped = htmlspecialchars($instanceId ?? '', ENT_QUOTES, 'UTF-8');
+        $skeleton = self::defaultSkeleton($componentName);
+
+        $instanceAttr = $instanceEscaped !== ''
+            ? ' data-ssr-component-instance="' . $instanceEscaped . '"'
+            : '';
+
+        return '<div data-ssr-deferred-component="' . $componentEscaped . '"' . $instanceAttr . '>'
+            . $skeleton
+            . '</div>';
+    }
+
+    /**
      * Generate <link rel="preload"> hints for template-mode deferred slots.
      *
      * @param DeferredSlotDefinition[] $slots

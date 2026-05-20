@@ -5,13 +5,18 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service\Component;
 
 use Semitexa\Core\Attribute\AsEvent;
+use Semitexa\Core\Attribute\TransportType;
 use Semitexa\Ssr\Attribute\AsComponent;
+use Semitexa\Ssr\Attribute\WithDataProvider;
+use Semitexa\Ssr\Attribute\WithTransport;
 use Semitexa\Ssr\Application\Service\Asset\AssetEntry;
+use Semitexa\Ssr\Domain\Contract\DataProviderInterface;
+use Semitexa\Ssr\Domain\Exception\InvalidComponentConfigurationException;
 use Semitexa\Core\Discovery\ClassDiscovery;
 
 final class ComponentRegistry
 {
-    /** @var array<string, array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string}> */
+    /** @var array<string, array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string, dataProviderClass: ?string, transportMode: TransportType, deferred: bool}> */
     private static array $components = [];
     private static bool $initialized = false;
     private static ?ClassDiscovery $classDiscovery = null;
@@ -89,6 +94,39 @@ final class ComponentRegistry
                 }
             }
 
+            $dataProviderClass = null;
+            $withDataProviderAttrs = $reflection->getAttributes(WithDataProvider::class);
+            if ($withDataProviderAttrs !== []) {
+                /** @var WithDataProvider $withDataProvider */
+                $withDataProvider = $withDataProviderAttrs[0]->newInstance();
+                if (!is_a($withDataProvider->providerClass, DataProviderInterface::class, true)) {
+                    throw new InvalidComponentConfigurationException(sprintf(
+                        "Component '%s': WithDataProvider class %s must implement %s",
+                        $attr->name,
+                        $withDataProvider->providerClass,
+                        DataProviderInterface::class,
+                    ));
+                }
+                $dataProviderClass = $withDataProvider->providerClass;
+            }
+
+            $transportMode = TransportType::Http;
+            $deferred = false;
+            $withTransportAttrs = $reflection->getAttributes(WithTransport::class);
+            if ($withTransportAttrs !== []) {
+                /** @var WithTransport $withTransport */
+                $withTransport = $withTransportAttrs[0]->newInstance();
+                if ($withTransport->deferred && $withTransport->mode !== TransportType::Sse) {
+                    throw new InvalidComponentConfigurationException(sprintf(
+                        "Component '%s': WithTransport deferred:true requires mode:TransportType::Sse, got %s",
+                        $attr->name,
+                        $withTransport->mode->name,
+                    ));
+                }
+                $transportMode = $withTransport->mode;
+                $deferred = $withTransport->deferred;
+            }
+
             self::$components[$attr->name] = [
                 'class' => $class,
                 'name' => $attr->name,
@@ -98,6 +136,9 @@ final class ComponentRegistry
                 'event' => $attr->event,
                 'triggers' => $triggers,
                 'script' => $attr->script !== null ? trim($attr->script) : null,
+                'dataProviderClass' => $dataProviderClass,
+                'transportMode' => $transportMode,
+                'deferred' => $deferred,
             ];
         }
 
@@ -117,10 +158,13 @@ final class ComponentRegistry
     }
 
     /**
-     * @param array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string} $component
+     * @param array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string, dataProviderClass?: ?string, transportMode?: TransportType, deferred?: bool} $component
      */
     public static function register(array $component): void
     {
+        $component['dataProviderClass'] = $component['dataProviderClass'] ?? null;
+        $component['transportMode'] = $component['transportMode'] ?? TransportType::Http;
+        $component['deferred'] = $component['deferred'] ?? false;
         self::$components[$component['name']] = $component;
     }
 }

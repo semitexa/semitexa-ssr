@@ -75,6 +75,34 @@ final class DataProviderRegistry
     }
 
     /**
+     * Resolve a DataProvider instance by FQCN — used by component-level
+     * #[WithDataProvider] resolution where there is no slot id.
+     */
+    public function resolveByClass(string $providerClass): ?DataProviderInterface
+    {
+        try {
+            if (isset($this->container) && $this->container->has($providerClass)) {
+                $instance = $this->container->get($providerClass);
+            } else {
+                $instance = new $providerClass();
+            }
+        } catch (\Throwable $e) {
+            \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'DataProviderRegistry: Failed to instantiate provider by class', [
+                'class' => $providerClass,
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+            ]);
+            return null;
+        }
+
+        if (!$instance instanceof DataProviderInterface) {
+            return null;
+        }
+
+        return $instance;
+    }
+
+    /**
      * Check if a provider is registered and active for a given handle.
      */
     public static function hasProvider(string $slotId, ?string $handle = null): bool

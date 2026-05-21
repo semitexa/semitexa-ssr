@@ -16,19 +16,37 @@ final class DataProviderContextTest extends TestCase
             request: $request,
             instanceId: 'cmp_abc123',
             subscriberId: 'sub_xyz',
+            slotId: 'sidebar',
+            pageHandle: 'demo.home',
         );
 
         self::assertSame($request, $ctx->request);
         self::assertSame('cmp_abc123', $ctx->instanceId);
         self::assertSame('sub_xyz', $ctx->subscriberId);
+        self::assertSame('sidebar', $ctx->slotId);
+        self::assertSame('demo.home', $ctx->pageHandle);
     }
 
     public function testAcceptsNullFields(): void
     {
-        $ctx = new DataProviderContext(request: null, instanceId: null, subscriberId: null);
+        $ctx = new DataProviderContext();
         self::assertNull($ctx->request);
         self::assertNull($ctx->instanceId);
         self::assertNull($ctx->subscriberId);
+        self::assertNull($ctx->slotId);
+        self::assertNull($ctx->pageHandle);
+    }
+
+    public function testAcceptsRequestSnapshotArray(): void
+    {
+        $snapshot = [
+            'query'  => ['page' => '2'],
+            'route'  => ['slug' => 'hello'],
+            'method' => 'GET',
+        ];
+        $ctx = new DataProviderContext(request: $snapshot);
+
+        self::assertSame($snapshot, $ctx->request);
     }
 
     public function testClassIsReadonly(): void

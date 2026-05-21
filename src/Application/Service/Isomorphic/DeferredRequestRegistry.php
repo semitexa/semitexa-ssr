@@ -14,6 +14,7 @@ final class DeferredRequestRegistry
     private static ?Table $table = null;
     private static int $gcTimerId = 0;
     private static int $contextColumnSize = 0;
+    private static int $snapshotColumnSize = 0;
     private static ?\Swoole\Lock $deliveredLock = null;
 
     private const TTL_SECONDS = 120;
@@ -36,6 +37,7 @@ final class DeferredRequestRegistry
         $table->column('locale', Table::TYPE_STRING, 16);
         $table->column('slots', Table::TYPE_STRING, 2048);
         $table->column('delivered', Table::TYPE_STRING, 2048);
+        $table->column('request_snapshot', Table::TYPE_STRING, $config->requestSnapshotSize);
         $table->column('created_at', Table::TYPE_INT);
         $table->create();
         return $table;
@@ -57,6 +59,7 @@ final class DeferredRequestRegistry
         $hasInjectedSharedTable = self::$table !== null;
 
         self::$contextColumnSize = $config->deferredContextSize;
+        self::$snapshotColumnSize = $config->requestSnapshotSize;
 
         // If the table was pre-created and injected via setTable() (Swoole multi-worker path),
         // skip table creation — use the already-shared table.
@@ -140,11 +143,119 @@ final class DeferredRequestRegistry
             'locale' => $locale,
             'slots' => $slotsJson,
             'delivered' => $deliveredJson,
+            'request_snapshot' => '',
             'created_at' => time(),
         ]);
         if ($ok === false) {
             throw new DeferredRenderingException('Failed to store deferred request entry.');
         }
+    }
+
+    /**
+     * Capture an HTTP request snapshot for a deferred request, so DataProviders
+     * resolving inside a child SSE coroutine can still read query params, route
+     * params, method, and path even though CoroutineLocal does not propagate.
+     *
+     * @param array{query?: array<string, mixed>, route?: array<string, mixed>, method?: string, path?: string} $snapshot
+     */
+    public static function storeRequestSnapshot(string $requestId, array $snapshot): void
+    {
+        if (self::$table === null) {
+            return;
+        }
+
+        $key = self::tableKey($requestId);
+        $row = self::$table->get($key);
+        if ($row === false) {
+            return;
+        }
+
+        try {
+            $snapshotJson = json_encode(
+                $snapshot,
+                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
+            );
+        } catch (\JsonException $e) {
+            throw new DeferredRenderingException(
+                'Failed to serialize request snapshot: ' . $e->getMessage()
+            );
+        }
+
+        $snapshotColumnSize = self::$snapshotColumnSize > 0 ? self::$snapshotColumnSize : 4096;
+        if (strlen($snapshotJson) > $snapshotColumnSize) {
+            throw new DeferredRenderingException(
+                "Serialized request snapshot exceeds configured SSR_REQUEST_SNAPSHOT_SIZE ({$snapshotColumnSize} bytes). "
+                . 'Increase SSR_REQUEST_SNAPSHOT_SIZE or trim the captured request data.'
+            );
+        }
+
+        $ok = self::$table->set($key, [
+            'page_handle' => $row['page_handle'],
+            'page_context' => $row['page_context'],
+            'bind_token' => $row['bind_token'] ?? '',
+            'locale' => $row['locale'] ?? '',
+            'slots' => $row['slots'],
+            'delivered' => $row['delivered'],
+            'request_snapshot' => $snapshotJson,
+            'created_at' => $row['created_at'],
+        ]);
+        if ($ok === false) {
+            throw new DeferredRenderingException('Failed to store request snapshot.');
+        }
+    }
+
+    /**
+     * @return array{query?: array<string, mixed>, route?: array<string, mixed>, method?: string, path?: string}|null
+     */
+    public static function getRequestSnapshot(string $requestId): ?array
+    {
+        if (self::$table === null) {
+            return null;
+        }
+
+        $key = self::tableKey($requestId);
+        $row = self::$table->get($key);
+        if ($row === false) {
+            return null;
+        }
+
+        $snapshot = (string) ($row['request_snapshot'] ?? '');
+        if ($snapshot === '') {
+            return null;
+        }
+
+        $decoded = json_decode($snapshot, true);
+        return is_array($decoded) ? $decoded : null;
+    }
+
+    /**
+     * Build a request snapshot from the current Swoole request, if available.
+     * Returns null when no Swoole request is bound to the current coroutine
+     * (CLI, queue worker, tests).
+     *
+     * @return array{query: array<string, mixed>, route: array<string, mixed>, method: string, path: string}|null
+     */
+    public static function snapshotFromCurrentSwooleRequest(): ?array
+    {
+        if (!class_exists(\Semitexa\Core\Server\SwooleBootstrap::class, false)) {
+            return null;
+        }
+
+        $ctx = \Semitexa\Core\Server\SwooleBootstrap::getCurrentSwooleRequestResponse();
+        if ($ctx === null) {
+            return null;
+        }
+
+        $req = $ctx[0];
+        $get = is_array($req->get ?? null) ? $req->get : [];
+        $server = is_array($req->server ?? null) ? $req->server : [];
+
+        return [
+            'query'  => $get,
+            'route'  => [],
+            'method' => (string) ($server['request_method'] ?? 'GET'),
+            'path'   => (string) ($server['request_uri'] ?? '/'),
+        ];
     }
 
     /**
@@ -171,6 +282,9 @@ final class DeferredRequestRegistry
             return null;
         }
 
+        $snapshotJson = (string) ($row['request_snapshot'] ?? '');
+        $snapshot = $snapshotJson !== '' ? json_decode($snapshotJson, true) : null;
+
         return [
             'page_handle' => trim((string) $row['page_handle']),
             'page_context' => json_decode((string) $row['page_context'], true) ?: [],
@@ -178,6 +292,7 @@ final class DeferredRequestRegistry
             'locale' => trim((string) ($row['locale'] ?? '')),
             'slots' => json_decode((string) $row['slots'], true) ?: [],
             'delivered' => json_decode((string) $row['delivered'], true) ?: [],
+            'request_snapshot' => is_array($snapshot) ? $snapshot : null,
         ];
     }
 
@@ -219,6 +334,7 @@ final class DeferredRequestRegistry
                 'locale' => $row['locale'] ?? '',
                 'slots' => $row['slots'],
                 'delivered' => $deliveredJson,
+                'request_snapshot' => $row['request_snapshot'] ?? '',
                 'created_at' => $row['created_at'],
             ]);
             if ($ok === false) {
@@ -267,6 +383,7 @@ final class DeferredRequestRegistry
             'locale' => $row['locale'] ?? '',
             'slots' => $slotsJson,
             'delivered' => $row['delivered'],
+            'request_snapshot' => $row['request_snapshot'] ?? '',
             'created_at' => $row['created_at'],
         ]);
         if ($ok === false) {
@@ -410,6 +527,7 @@ final class DeferredRequestRegistry
         }
         self::$deliveredLock = null;
         self::$contextColumnSize = 0;
+        self::$snapshotColumnSize = 0;
         self::$table = null;
     }
 }

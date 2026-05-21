@@ -14,7 +14,6 @@ use Semitexa\Ssr\Attribute\WithTransport;
 use Semitexa\Ssr\Domain\Model\DataProviderContext;
 use Semitexa\Ssr\Domain\Contract\DataProviderInterface;
 use Semitexa\Ssr\Domain\Exception\InvalidComponentConfigurationException;
-use Semitexa\Ssr\Domain\Model\DeferredSlotDefinition;
 
 #[AsComponent(name: 'cratest_plain')]
 final class CraTestPlainComponent
@@ -47,12 +46,7 @@ final class CraTestComponentWithInvalidHttpDeferred
 
 final class CraTestValidProvider implements DataProviderInterface
 {
-    public function resolve(DeferredSlotDefinition $slot, array $pageContext): array
-    {
-        return [];
-    }
-
-    public function resolveForComponent(DataProviderContext $context, array $twigContext): array
+    public function resolve(DataProviderContext $context, array $hint = []): array
     {
         return [];
     }

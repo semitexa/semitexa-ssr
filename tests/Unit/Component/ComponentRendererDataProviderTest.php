@@ -12,26 +12,20 @@ use Semitexa\Ssr\Application\Service\DataProviderRegistry;
 use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
 use Semitexa\Ssr\Domain\Model\DataProviderContext;
 use Semitexa\Ssr\Domain\Contract\DataProviderInterface;
-use Semitexa\Ssr\Domain\Model\DeferredSlotDefinition;
 use Twig\Environment as TwigEnvironment;
 use Twig\Loader\ArrayLoader;
 
 final class CrdptCapturingProvider implements DataProviderInterface
 {
-    /** @var array<int, array{ctx: DataProviderContext, twig: array}> */
+    /** @var array<int, array{ctx: DataProviderContext, hint: array}> */
     public static array $calls = [];
 
     /** @var array<string, mixed> */
     public static array $returnData = [];
 
-    public function resolve(DeferredSlotDefinition $slot, array $pageContext): array
+    public function resolve(DataProviderContext $context, array $hint = []): array
     {
-        return [];
-    }
-
-    public function resolveForComponent(DataProviderContext $context, array $twigContext): array
-    {
-        self::$calls[] = ['ctx' => $context, 'twig' => $twigContext];
+        self::$calls[] = ['ctx' => $context, 'hint' => $hint];
         return self::$returnData;
     }
 }

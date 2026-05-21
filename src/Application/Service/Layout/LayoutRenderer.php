@@ -76,6 +76,11 @@ class LayoutRenderer
                     }
                     DeferredRequestRegistry::store($requestId, $handle, $context, $slotIds, $bindToken, $locale);
 
+                    $requestSnapshot = DeferredRequestRegistry::snapshotFromCurrentSwooleRequest();
+                    if ($requestSnapshot !== null) {
+                        DeferredRequestRegistry::storeRequestSnapshot($requestId, $requestSnapshot);
+                    }
+
                     IsomorphicContextStore::setPageHandle($handle);
                     IsomorphicContextStore::setDeferredSlots($deferredSlots);
 

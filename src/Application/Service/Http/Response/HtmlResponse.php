@@ -350,6 +350,11 @@ class HtmlResponse extends ResourceResponse
         }
         DeferredRequestRegistry::store($requestId, $handle, $serializableContext, $slotIds, $bindToken, $locale);
 
+        $requestSnapshot = DeferredRequestRegistry::snapshotFromCurrentSwooleRequest();
+        if ($requestSnapshot !== null) {
+            DeferredRequestRegistry::storeRequestSnapshot($requestId, $requestSnapshot);
+        }
+
         IsomorphicContextStore::setPageHandle($handle);
         IsomorphicContextStore::setDeferredSlots($deferredSlots);
 

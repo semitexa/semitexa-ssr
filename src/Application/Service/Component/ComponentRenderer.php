@@ -66,11 +66,10 @@ final class ComponentRenderer
             if ($providerClass !== null && self::$dataProviderRegistry !== null) {
                 $provider = self::$dataProviderRegistry->resolveByClass($providerClass);
                 if ($provider !== null) {
-                    $providerData = $provider->resolveForComponent(
+                    $providerData = $provider->resolve(
                         new DataProviderContext(
                             request: CoroutineLocal::get(self::CTX_CURRENT_REQUEST, null),
                             instanceId: $componentId,
-                            subscriberId: null,
                         ),
                         $props,
                     );

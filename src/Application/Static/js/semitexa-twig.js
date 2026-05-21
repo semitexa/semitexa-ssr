@@ -8,6 +8,19 @@
         return String(str).replace(/[&<>"']/g, function (c) { return ESC_MAP[c]; });
     }
 
+    // ── CSS Attribute-Value Escaping ───────────────────────────────────
+    // Used to safely embed user-controlled values inside an attribute-selector
+    // (e.g. [data-x="..."]). Backslash-escapes characters that would terminate
+    // or alter the selector; falls back gracefully when native CSS.escape is
+    // missing (older browsers).
+    function cssEscape(str) {
+        if (str == null) return '';
+        if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+            return CSS.escape(String(str));
+        }
+        return String(str).replace(/(["\\\]])/g, '\\$1');
+    }
+
     // ── Deep Property Resolution ───────────────────────────────────────
     function resolve(path, ctx) {
         if (path == null || path === '') return '';
@@ -463,6 +476,16 @@
                 manifest.slots.forEach(function (s) { pendingSlots.add(s.id); });
             }
 
+            // Component instances are tracked separately; they have no XHR fallback
+            // (no slot-style /__semitexa_hug endpoint) — on 'done' we just leave any
+            // unfulfilled placeholder as its skeleton and report via the stream event.
+            var pendingComponents = new Set();
+            if (Array.isArray(manifest.components)) {
+                manifest.components.forEach(function (c) {
+                    if (c && c.instance_id) pendingComponents.add(c.instance_id);
+                });
+            }
+
             var es = new EventSource(sseUrl);
             self._eventSource = es;
             self._connected = true;
@@ -509,7 +532,8 @@
                             requestId: manifest.requestId,
                             sessionId: manifest.sessionId,
                             live: !!payload.live,
-                            pendingSlots: pendingSlots.size
+                            pendingSlots: pendingSlots.size,
+                            pendingComponents: pendingComponents.size
                         });
                         return;
                     }
@@ -526,6 +550,17 @@
                             mode: payload.mode || 'unknown'
                         });
                         self._handleMessage(payload);
+                        return;
+                    }
+                    if (payload.type === 'deferred_component') {
+                        pendingComponents.delete(payload.instance_id);
+                        self._fireEvent('semitexa:deferred:component', {
+                            requestId: manifest.requestId,
+                            sessionId: manifest.sessionId,
+                            componentName: payload.component_name,
+                            instanceId: payload.instance_id
+                        });
+                        self._handleComponentMessage(payload);
                         return;
                     }
                     self._fireEvent('semitexa:deferred:message', {
@@ -594,6 +629,25 @@
                     self._fallbackSlot(payload.slot_id);
                 });
             }
+        },
+
+        _handleComponentMessage: function (payload) {
+            var start = performance.now();
+            if (!payload || !payload.instance_id || !payload.component_name) return;
+
+            var selector = '[data-ssr-deferred-component="' + cssEscape(payload.component_name) + '"]'
+                + '[data-ssr-component-instance="' + cssEscape(payload.instance_id) + '"]';
+            var el = document.querySelector(selector);
+            if (!el) return;
+
+            el.innerHTML = payload.html || '';
+            el.setAttribute('data-ssr-loaded', '1');
+            this._fireEvent('semitexa:component:rendered', {
+                element: el.firstElementChild || el,
+                componentName: payload.component_name,
+                instanceId: payload.instance_id,
+                renderTimeMs: Math.round(performance.now() - start)
+            });
         },
 
         _fetchTemplate: function (url) {

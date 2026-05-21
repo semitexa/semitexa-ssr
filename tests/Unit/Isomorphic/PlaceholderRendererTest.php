@@ -10,6 +10,66 @@ use Semitexa\Ssr\Application\Service\Isomorphic\PlaceholderRenderer;
 
 final class PlaceholderRendererTest extends TestCase
 {
+    public function testRenderComponentPlaceholderEmitsExpectedDataAttributes(): void
+    {
+        $html = PlaceholderRenderer::renderComponentPlaceholder('ui-playground.leads-grid', 'cmp_abcd1234');
+
+        self::assertStringContainsString('data-ssr-deferred-component="ui-playground.leads-grid"', $html);
+        self::assertStringContainsString('data-ssr-component-instance="cmp_abcd1234"', $html);
+        self::assertStringNotContainsString('data-ssr-deferred=', $html, 'Must not overlap with layout-slot placeholder attribute');
+    }
+
+    public function testRenderComponentPlaceholderEscapesAttributes(): void
+    {
+        $html = PlaceholderRenderer::renderComponentPlaceholder('<script>', '"&onerror=alert(1)');
+
+        self::assertStringNotContainsString('<script>', $html);
+        self::assertStringContainsString('&lt;script&gt;', $html);
+        self::assertStringContainsString('&quot;&amp;onerror=alert(1)', $html);
+    }
+
+    public function testRenderManifestIncludesComponents(): void
+    {
+        $manifest = PlaceholderRenderer::renderManifest(
+            'dr_abc',
+            'sse_def',
+            [],
+            'bind_xyz',
+            [
+                ['instance_id' => 'cmp_1', 'name' => 'ui-playground.leads-grid', 'props' => ['x' => 1]],
+                ['instance_id' => '', 'name' => 'dropped'],
+                ['instance_id' => 'cmp_2', 'name' => ''],
+            ],
+        );
+
+        self::assertStringContainsString('"components":[', $manifest);
+        self::assertStringContainsString('"instance_id":"cmp_1"', $manifest);
+        self::assertStringContainsString('"name":"ui-playground.leads-grid"', $manifest);
+        self::assertStringNotContainsString('"name":"dropped"', $manifest);
+        self::assertStringNotContainsString('"instance_id":"cmp_2"', $manifest);
+    }
+
+    public function testFilterRenderedComponentsFromHtmlReturnsOnlyRendered(): void
+    {
+        $instances = [
+            ['instance_id' => 'cmp_a', 'name' => 'grid', 'props' => []],
+            ['instance_id' => 'cmp_b', 'name' => 'chart', 'props' => []],
+            ['instance_id' => 'cmp_c', 'name' => 'sidebar', 'props' => []],
+        ];
+
+        $html = <<<HTML
+<div data-ssr-deferred-component="grid" data-ssr-component-instance="cmp_a"></div>
+<div data-ssr-deferred-component="chart" data-ssr-component-instance="cmp_c"></div>
+HTML;
+
+        $rendered = PlaceholderRenderer::filterRenderedComponentsFromHtml($html, $instances);
+
+        self::assertSame(
+            ['cmp_a', 'cmp_c'],
+            array_map(static fn (array $c): string => $c['instance_id'], $rendered)
+        );
+    }
+
     public function testFilterRenderedSlotsFromHtmlReturnsOnlyRenderedPlaceholders(): void
     {
         $product = new DeferredSlotDefinition(

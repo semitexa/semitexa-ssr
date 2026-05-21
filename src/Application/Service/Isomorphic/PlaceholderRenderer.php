@@ -89,12 +89,14 @@ final class PlaceholderRenderer
      * Generate the __SSR_DEFERRED manifest script block.
      *
      * @param DeferredSlotDefinition[] $slots
+     * @param array<int, array{instance_id: string, name: string}> $components
      */
     public static function renderManifest(
         string $requestId,
         string $sessionId,
         array $slots,
         string $bindToken = '',
+        array $components = [],
     ): string {
         $slotManifest = [];
         foreach ($slots as $slot) {
@@ -118,11 +120,25 @@ final class PlaceholderRenderer
             $slotManifest[] = $entry;
         }
 
+        $componentManifest = [];
+        foreach ($components as $component) {
+            $instanceId = (string) ($component['instance_id'] ?? '');
+            $name = (string) ($component['name'] ?? '');
+            if ($instanceId === '' || $name === '') {
+                continue;
+            }
+            $componentManifest[] = [
+                'instance_id' => $instanceId,
+                'name' => $name,
+            ];
+        }
+
         $manifest = [
             'requestId' => $requestId,
             'sessionId' => $sessionId,
             'bindToken' => $bindToken,
             'slots' => $slotManifest,
+            'components' => $componentManifest,
         ];
 
         try {
@@ -159,6 +175,36 @@ final class PlaceholderRenderer
             $slots,
             static fn (DeferredSlotDefinition $slot): bool => isset($renderedIds[$slot->slotId])
         ));
+    }
+
+    /**
+     * Filter the candidate component instances down to those whose placeholder
+     * actually appears in the final rendered HTML.
+     *
+     * @param array<int|string, array{instance_id: string, name: string, props: array<array-key, mixed>}> $instances
+     *
+     * @return array<int, array{instance_id: string, name: string, props: array<array-key, mixed>}>
+     */
+    public static function filterRenderedComponentsFromHtml(string $html, array $instances): array
+    {
+        if ($instances === []) {
+            return [];
+        }
+
+        if (!preg_match_all('/data-ssr-component-instance="([^"]+)"/', $html, $matches)) {
+            return [];
+        }
+
+        $renderedIds = array_fill_keys(array_map('html_entity_decode', $matches[1]), true);
+
+        $out = [];
+        foreach ($instances as $instance) {
+            $instanceId = $instance['instance_id'] ?? '';
+            if ($instanceId !== '' && isset($renderedIds[$instanceId])) {
+                $out[] = $instance;
+            }
+        }
+        return $out;
     }
 
     /**

@@ -87,6 +87,55 @@ final class DeferredRequestRegistryTest extends TestCase
         self::assertNull(DeferredRequestRegistry::getRequestSnapshot('dr_missing'));
     }
 
+    public function testStoreComponentInstancesRoundTripsThroughConsume(): void
+    {
+        $this->bootRegistry();
+        DeferredRequestRegistry::store('dr_components', 'demo.home', [], ['slot-a']);
+
+        $instances = [
+            ['instance_id' => 'cmp_1', 'name' => 'ui-playground.leads-grid', 'props' => ['limit' => 5]],
+            ['instance_id' => 'cmp_2', 'name' => 'demo.chart',               'props' => []],
+        ];
+        DeferredRequestRegistry::storeComponentInstances('dr_components', $instances);
+
+        $entry = DeferredRequestRegistry::consume('dr_components');
+
+        self::assertNotNull($entry);
+        self::assertCount(2, $entry['components']);
+        self::assertSame('cmp_1', $entry['components'][0]['instance_id']);
+        self::assertSame('ui-playground.leads-grid', $entry['components'][0]['name']);
+        self::assertSame(['limit' => 5], $entry['components'][0]['props']);
+        self::assertSame(['slot-a'], $entry['slots']);
+    }
+
+    public function testStoreComponentInstancesForUnknownRequestIdIsNoop(): void
+    {
+        $this->bootRegistry();
+
+        DeferredRequestRegistry::storeComponentInstances('dr_unknown', [
+            ['instance_id' => 'cmp_x', 'name' => 'whatever', 'props' => []],
+        ]);
+
+        self::assertNull(DeferredRequestRegistry::consume('dr_unknown'));
+    }
+
+    public function testMarkDeliveredWithComponentInstanceId(): void
+    {
+        $this->bootRegistry();
+        DeferredRequestRegistry::store('dr_mixed', 'demo.home', [], ['slot-a']);
+        DeferredRequestRegistry::storeComponentInstances('dr_mixed', [
+            ['instance_id' => 'cmp_42', 'name' => 'leads-grid', 'props' => []],
+        ]);
+
+        DeferredRequestRegistry::markDelivered('dr_mixed', 'slot-a');
+        DeferredRequestRegistry::markDelivered('dr_mixed', 'cmp_42');
+
+        $entry = DeferredRequestRegistry::consume('dr_mixed');
+        self::assertNotNull($entry);
+        self::assertContains('slot-a', $entry['delivered']);
+        self::assertContains('cmp_42', $entry['delivered']);
+    }
+
     public function testStoreRequestSnapshotThrowsWhenSerializedSizeExceedsBudget(): void
     {
         $this->bootRegistry(snapshotSize: 64);

@@ -36,6 +36,7 @@ final class DeferredRequestRegistry
         $table->column('bind_token', Table::TYPE_STRING, 64);
         $table->column('locale', Table::TYPE_STRING, 16);
         $table->column('slots', Table::TYPE_STRING, 2048);
+        $table->column('components', Table::TYPE_STRING, $config->deferredContextSize);
         $table->column('delivered', Table::TYPE_STRING, 2048);
         $table->column('request_snapshot', Table::TYPE_STRING, $config->requestSnapshotSize);
         $table->column('created_at', Table::TYPE_INT);
@@ -129,6 +130,7 @@ final class DeferredRequestRegistry
         $key = self::tableKey($requestId);
         try {
             $slotsJson = json_encode($slotIds, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+            $componentsJson = json_encode([], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
             $deliveredJson = json_encode([], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
         } catch (\JsonException $e) {
             throw new DeferredRenderingException(
@@ -142,12 +144,67 @@ final class DeferredRequestRegistry
             'bind_token' => $bindToken,
             'locale' => $locale,
             'slots' => $slotsJson,
+            'components' => $componentsJson,
             'delivered' => $deliveredJson,
             'request_snapshot' => '',
             'created_at' => time(),
         ]);
         if ($ok === false) {
             throw new DeferredRenderingException('Failed to store deferred request entry.');
+        }
+    }
+
+    /**
+     * Persist deferred component instances rendered during Twig execution.
+     * Called by LayoutRenderer / HtmlResponse after the page renders so the orchestrator
+     * can resolve each instance against ComponentRenderer + the recorded props.
+     *
+     * @param array<int, array{instance_id: string, name: string, props: array<array-key, mixed>}> $components
+     */
+    public static function storeComponentInstances(string $requestId, array $components): void
+    {
+        if (self::$table === null) {
+            return;
+        }
+
+        $key = self::tableKey($requestId);
+        $row = self::$table->get($key);
+        if ($row === false) {
+            return;
+        }
+
+        try {
+            $componentsJson = json_encode(
+                array_values($components),
+                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
+            );
+        } catch (\JsonException $e) {
+            throw new DeferredRenderingException(
+                'Failed to serialize deferred component instances: ' . $e->getMessage()
+            );
+        }
+
+        $contextColumnSize = self::$contextColumnSize > 0 ? self::$contextColumnSize : 8192;
+        if (strlen($componentsJson) > $contextColumnSize) {
+            throw new DeferredRenderingException(
+                "Serialized deferred component instances exceed configured SSR_DEFERRED_CONTEXT_SIZE ({$contextColumnSize} bytes). "
+                . 'Increase SSR_DEFERRED_CONTEXT_SIZE or reduce per-component props.'
+            );
+        }
+
+        $ok = self::$table->set($key, [
+            'page_handle' => $row['page_handle'],
+            'page_context' => $row['page_context'],
+            'bind_token' => $row['bind_token'] ?? '',
+            'locale' => $row['locale'] ?? '',
+            'slots' => $row['slots'],
+            'components' => $componentsJson,
+            'delivered' => $row['delivered'],
+            'request_snapshot' => $row['request_snapshot'] ?? '',
+            'created_at' => $row['created_at'],
+        ]);
+        if ($ok === false) {
+            throw new DeferredRenderingException('Failed to update deferred component instances.');
         }
     }
 
@@ -195,6 +252,7 @@ final class DeferredRequestRegistry
             'bind_token' => $row['bind_token'] ?? '',
             'locale' => $row['locale'] ?? '',
             'slots' => $row['slots'],
+            'components' => $row['components'] ?? '[]',
             'delivered' => $row['delivered'],
             'request_snapshot' => $snapshotJson,
             'created_at' => $row['created_at'],
@@ -285,12 +343,16 @@ final class DeferredRequestRegistry
         $snapshotJson = (string) ($row['request_snapshot'] ?? '');
         $snapshot = $snapshotJson !== '' ? json_decode($snapshotJson, true) : null;
 
+        $componentsRaw = (string) ($row['components'] ?? '');
+        $componentsDecoded = $componentsRaw !== '' ? json_decode($componentsRaw, true) : [];
+
         return [
             'page_handle' => trim((string) $row['page_handle']),
             'page_context' => json_decode((string) $row['page_context'], true) ?: [],
             'bind_token' => trim((string) ($row['bind_token'] ?? '')),
             'locale' => trim((string) ($row['locale'] ?? '')),
             'slots' => json_decode((string) $row['slots'], true) ?: [],
+            'components' => is_array($componentsDecoded) ? $componentsDecoded : [],
             'delivered' => json_decode((string) $row['delivered'], true) ?: [],
             'request_snapshot' => is_array($snapshot) ? $snapshot : null,
         ];
@@ -333,6 +395,7 @@ final class DeferredRequestRegistry
                 'bind_token' => $row['bind_token'] ?? '',
                 'locale' => $row['locale'] ?? '',
                 'slots' => $row['slots'],
+                'components' => $row['components'] ?? '[]',
                 'delivered' => $deliveredJson,
                 'request_snapshot' => $row['request_snapshot'] ?? '',
                 'created_at' => $row['created_at'],
@@ -382,6 +445,7 @@ final class DeferredRequestRegistry
             'bind_token' => $row['bind_token'] ?? '',
             'locale' => $row['locale'] ?? '',
             'slots' => $slotsJson,
+            'components' => $row['components'] ?? '[]',
             'delivered' => $row['delivered'],
             'request_snapshot' => $row['request_snapshot'] ?? '',
             'created_at' => $row['created_at'],

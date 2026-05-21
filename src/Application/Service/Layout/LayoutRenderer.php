@@ -6,6 +6,8 @@ namespace Semitexa\Ssr\Application\Service\Layout;
 
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Semitexa\Core\Log\StaticLoggerBridge;
+use Semitexa\Ssr\Application\Service\Component\ComponentInstanceStore;
+use Semitexa\Ssr\Application\Service\Component\ComponentRegistry;
 use Semitexa\Ssr\Context\IsomorphicContextStore;
 use Semitexa\Ssr\Context\PageRenderContextStore;
 use Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry;
@@ -54,8 +56,11 @@ class LayoutRenderer
                 }
 
                 $deferredSlots = LayoutSlotRegistry::getDeferredSlots($handle);
+                $hasDeferredComponentCandidates = ComponentRegistry::hasDeferredSseComponent();
 
-                if ($deferredSlots !== []) {
+                if ($deferredSlots !== [] || $hasDeferredComponentCandidates) {
+                    ComponentInstanceStore::reset();
+
                     if (!DeferredTemplateRegistry::isInitialized()) {
                         DeferredTemplateRegistry::initialize($config);
                     }
@@ -99,6 +104,7 @@ class LayoutRenderer
                     );
                     $baseContext['__ssr_runtime_script'] = PlaceholderRenderer::renderRuntimeScript();
                     $baseContext['__ssr_handle_attr'] = ' data-ssr-handle="' . htmlspecialchars($handle, ENT_QUOTES, 'UTF-8') . '"';
+                    $baseContext['__ssr_deferred_bind_token'] = $bindToken;
                 }
             }
 
@@ -123,12 +129,20 @@ class LayoutRenderer
                     $renderedSlotIds = array_map(static fn ($slot) => $slot->slotId, $renderedSlots);
                     DeferredRequestRegistry::updateSlots($requestId, $renderedSlotIds);
 
+                    $renderedComponents = PlaceholderRenderer::filterRenderedComponentsFromHtml(
+                        $html,
+                        ComponentInstanceStore::all()
+                    );
+                    DeferredRequestRegistry::storeComponentInstances($requestId, $renderedComponents);
+                    ComponentInstanceStore::reset();
+
                     $updatedPreloadHints = PlaceholderRenderer::renderPreloadHints($renderedSlots);
                     $updatedManifest = PlaceholderRenderer::renderManifest(
                         $requestId,
                         (string) ($baseContext['__ssr_deferred_session_id'] ?? ''),
                         $renderedSlots,
                         (string) $bindToken,
+                        $renderedComponents,
                     );
 
                     $html = str_replace((string) ($baseContext['__ssr_preload_hints'] ?? ''), $updatedPreloadHints, $html);

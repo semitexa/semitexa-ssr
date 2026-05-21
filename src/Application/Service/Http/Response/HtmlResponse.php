@@ -11,6 +11,8 @@ use Semitexa\Core\Server\SwooleBootstrap;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Semitexa\Ssr\Context\IsomorphicContextStore;
 use Semitexa\Ssr\Context\PageRenderContextStore;
+use Semitexa\Ssr\Application\Service\Component\ComponentInstanceStore;
+use Semitexa\Ssr\Application\Service\Component\ComponentRegistry;
 use Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry;
 use Semitexa\Ssr\Application\Service\Isomorphic\DeferredTemplateRegistry;
 use Semitexa\Ssr\Application\Service\Isomorphic\PlaceholderRenderer;
@@ -326,9 +328,12 @@ class HtmlResponse extends ResourceResponse
         }
 
         $deferredSlots = LayoutSlotRegistry::getDeferredSlots($handle);
-        if ($deferredSlots === []) {
+        $hasDeferredComponentCandidates = ComponentRegistry::hasDeferredSseComponent();
+        if ($deferredSlots === [] && !$hasDeferredComponentCandidates) {
             return $context;
         }
+
+        ComponentInstanceStore::reset();
 
         if (!DeferredTemplateRegistry::isInitialized()) {
             DeferredTemplateRegistry::initialize($config);
@@ -396,12 +401,20 @@ class HtmlResponse extends ResourceResponse
             $renderedSlotIds = array_map(static fn ($slot) => $slot->slotId, $renderedSlots);
             DeferredRequestRegistry::updateSlots($requestId, $renderedSlotIds);
 
+            $renderedComponents = PlaceholderRenderer::filterRenderedComponentsFromHtml(
+                $html,
+                ComponentInstanceStore::all()
+            );
+            DeferredRequestRegistry::storeComponentInstances($requestId, $renderedComponents);
+            ComponentInstanceStore::reset();
+
             $updatedPreloadHints = PlaceholderRenderer::renderPreloadHints($renderedSlots);
             $updatedManifest = PlaceholderRenderer::renderManifest(
                 $requestId,
                 is_string($context['__ssr_deferred_session_id'] ?? null) ? $context['__ssr_deferred_session_id'] : '',
                 $renderedSlots,
                 is_string($context['__ssr_deferred_bind_token'] ?? null) ? $context['__ssr_deferred_bind_token'] : '',
+                $renderedComponents,
             );
 
             $html = str_replace(is_string($context['__ssr_preload_hints'] ?? null) ? $context['__ssr_preload_hints'] : '', $updatedPreloadHints, $html);

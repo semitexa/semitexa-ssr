@@ -32,9 +32,16 @@ final class ComponentRenderer
     /**
      * @param array<array-key, mixed> $props
      * @param array<array-key, mixed> $slots
+     * @param bool $forceImmediateRender Skip the #[WithTransport(Sse, deferred:true)] short-circuit
+     *                                   and render synchronously. Used by DeferredBlockOrchestrator
+     *                                   when resolving a previously-deferred instance for SSE delivery.
      */
-    public static function render(string $name, array $props = [], array $slots = []): string
-    {
+    public static function render(
+        string $name,
+        array $props = [],
+        array $slots = [],
+        bool $forceImmediateRender = false,
+    ): string {
         $component = ComponentRegistry::get($name);
 
         if ($component === null) {
@@ -52,13 +59,20 @@ final class ComponentRenderer
             $manifest = null;
             $componentId = null;
 
-            if (($component['event'] ?? null) !== null || ($component['script'] ?? null) !== null) {
+            $transportMode = $component['transportMode'] ?? TransportType::Http;
+            $deferred = $component['deferred'] ?? false;
+            $deferringNow = $deferred && $transportMode === TransportType::Sse && !$forceImmediateRender;
+
+            if (
+                ($component['event'] ?? null) !== null
+                || ($component['script'] ?? null) !== null
+                || $deferringNow
+            ) {
                 $componentId = 'cmp_' . bin2hex(random_bytes(8));
             }
 
-            $transportMode = $component['transportMode'] ?? TransportType::Http;
-            $deferred = $component['deferred'] ?? false;
-            if ($deferred && $transportMode === TransportType::Sse) {
+            if ($deferringNow) {
+                ComponentInstanceStore::record($componentId ?? '', $name, $props);
                 return PlaceholderRenderer::renderComponentPlaceholder($name, $componentId);
             }
 

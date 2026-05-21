@@ -8,9 +8,11 @@ use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Log\LoggerInterface;
 use Semitexa\Ssr\Application\Service\Async\SseAsyncResultDelivery;
+use Semitexa\Ssr\Application\Service\Component\ComponentRenderer;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Semitexa\Ssr\Domain\Model\DataProviderContext;
 use Semitexa\Ssr\Domain\Model\DeferredBlockPayload;
+use Semitexa\Ssr\Domain\Model\DeferredComponentPayload;
 use Semitexa\Ssr\Domain\Model\DeferredSlotDefinition;
 use Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry;
 use Semitexa\Ssr\Application\Service\Isomorphic\DeferredTemplateRegistry;
@@ -59,27 +61,33 @@ final class DeferredBlockOrchestrator
 
         $this->applyLocale($locale);
 
-        // Determine already-delivered slots for reconnect scenario
-        $deliveredSlots = [];
+        // Determine already-delivered slots + components for reconnect scenario
+        $deliveredIds = [];
         $requestSnapshot = null;
+        $componentInstances = [];
         if ($deferredRequestId !== null) {
             $entry = DeferredRequestRegistry::consume($deferredRequestId);
             if ($entry !== null) {
-                $deliveredSlots = $entry['delivered'];
+                $deliveredIds = $entry['delivered'];
                 $requestSnapshot = $entry['request_snapshot'] ?? null;
+                $componentInstances = is_array($entry['components'] ?? null) ? $entry['components'] : [];
             }
         }
 
-        // Filter out already-delivered slots
-        if ($lastEventId !== null && $deliveredSlots !== []) {
+        // Filter out already-delivered slots (shared delivered list with components)
+        if ($lastEventId !== null && $deliveredIds !== []) {
             $slots = array_filter(
                 $slots,
-                static fn (DeferredSlotDefinition $s) => !in_array($s->slotId, $deliveredSlots, true)
+                static fn (DeferredSlotDefinition $s) => !in_array($s->slotId, $deliveredIds, true)
             );
             $slots = array_values($slots);
+            $componentInstances = array_values(array_filter(
+                $componentInstances,
+                static fn (array $c): bool => !in_array($c['instance_id'] ?? '', $deliveredIds, true)
+            ));
         }
 
-        if ($slots === []) {
+        if ($slots === [] && $componentInstances === []) {
             $liveEnabled = $startLiveLoop && $persistentDeferredSse;
             SseAsyncResultDelivery::deliverRaw($sessionId, [
                 'type' => 'done',
@@ -126,6 +134,14 @@ final class DeferredBlockOrchestrator
                     DeferredRequestRegistry::markDelivered($deferredRequestId, $slot->slotId);
                 }
             }
+
+            $eventId = $this->streamComponentInstances(
+                $sessionId,
+                $componentInstances,
+                $eventId,
+                $deferredRequestId,
+                $locale,
+            );
 
             $liveEnabled = $startLiveLoop && $persistentDeferredSse;
             SseAsyncResultDelivery::deliverRaw($sessionId, [
@@ -222,6 +238,14 @@ final class DeferredBlockOrchestrator
             }
         }
 
+        $eventId = $this->streamComponentInstances(
+            $sessionId,
+            $componentInstances,
+            $eventId,
+            $deferredRequestId,
+            $locale,
+        );
+
         $liveEnabled = $startLiveLoop && $persistentDeferredSse;
         if (\Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
             SseAsyncResultDelivery::deliverRaw($sessionId, [
@@ -234,6 +258,70 @@ final class DeferredBlockOrchestrator
         if ($liveEnabled) {
             $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale, $requestSnapshot);
         }
+    }
+
+    /**
+     * Resolve each deferred component instance through ComponentRenderer (bypassing the
+     * deferred short-circuit via $forceImmediateRender=true) and emit a 'deferred_component'
+     * SSE frame for the client to swap into the matching placeholder.
+     *
+     * @param array<int, array{instance_id: string, name: string, props: array<array-key, mixed>}> $instances
+     */
+    private function streamComponentInstances(
+        string $sessionId,
+        array $instances,
+        int $eventId,
+        ?string $deferredRequestId,
+        ?string $locale,
+    ): int {
+        if ($instances === []) {
+            return $eventId;
+        }
+
+        foreach ($instances as $instance) {
+            if (!\Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+                break;
+            }
+
+            $instanceId = (string) ($instance['instance_id'] ?? '');
+            $name = (string) ($instance['name'] ?? '');
+            $props = is_array($instance['props'] ?? null) ? $instance['props'] : [];
+
+            if ($instanceId === '' || $name === '') {
+                continue;
+            }
+
+            $html = '';
+            try {
+                $this->applyLocale($locale);
+                $html = ComponentRenderer::render($name, $props, [], forceImmediateRender: true);
+            } catch (\Throwable $e) {
+                $this->logger->error('Deferred component render failed', [
+                    'component' => $name,
+                    'instance_id' => $instanceId,
+                    'exception' => $e::class,
+                    'message' => $e->getMessage(),
+                ]);
+                continue;
+            }
+
+            $eventId++;
+            $payload = new DeferredComponentPayload(
+                componentName: $name,
+                instanceId: $instanceId,
+                html: $html,
+            );
+            $sseData = $payload->toArray();
+            $sseData['id'] = $eventId;
+
+            SseAsyncResultDelivery::deliverRaw($sessionId, $sseData);
+
+            if ($deferredRequestId !== null) {
+                DeferredRequestRegistry::markDelivered($deferredRequestId, $instanceId);
+            }
+        }
+
+        return $eventId;
     }
 
     private function resolveSlotSafely(

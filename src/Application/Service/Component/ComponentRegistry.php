@@ -158,6 +158,23 @@ final class ComponentRegistry
     }
 
     /**
+     * True when any registered component declares #[WithTransport(mode: Sse, deferred: true)].
+     * Used by isomorphic gates that must allocate a deferred request even when the page
+     * has no layout-level deferred slots, because Twig may still render a deferred-Sse
+     * component placeholder during page render.
+     */
+    public static function hasDeferredSseComponent(): bool
+    {
+        self::initialize();
+        foreach (self::$components as $component) {
+            if (($component['deferred'] ?? false) && ($component['transportMode'] ?? null) === TransportType::Sse) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * @param array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string, dataProviderClass?: ?string, transportMode?: TransportType, deferred?: bool} $component
      */
     public static function register(array $component): void

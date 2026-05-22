@@ -417,20 +417,32 @@ class HtmlResponse extends ResourceResponse
                 $renderedComponents,
             );
 
-            $html = str_replace(is_string($context['__ssr_preload_hints'] ?? null) ? $context['__ssr_preload_hints'] : '', $updatedPreloadHints, $html);
-            $html = str_replace(is_string($context['__ssr_deferred_manifest'] ?? null) ? $context['__ssr_deferred_manifest'] : '', $updatedManifest, $html);
+            // Mark whether the page actually rendered any deferred content.
+            // Both the str_replace and the injectIfMissing paths are gated on this
+            // so a template that explicitly printed the deferred markers (belt) and
+            // the framework fail-safe (braces) both stay no-ops on non-deferred
+            // pages, even when applyIsomorphicContext pre-allocated the manifest.
+            $rendered = $renderedSlots !== [] || $renderedComponents !== [];
+            $preloadMarker = is_string($context['__ssr_preload_hints'] ?? null) ? $context['__ssr_preload_hints'] : '';
+            $manifestMarker = is_string($context['__ssr_deferred_manifest'] ?? null) ? $context['__ssr_deferred_manifest'] : '';
+            $runtimeMarker = is_string($context['__ssr_runtime_script'] ?? null) ? $context['__ssr_runtime_script'] : '';
+
+            $html = str_replace($preloadMarker, $rendered ? $updatedPreloadHints : '', $html);
+            $html = str_replace($manifestMarker, $rendered ? $updatedManifest : '', $html);
+            // Runtime marker doesn't change between pre-render and post-render, so
+            // we only need to drop it when no content rendered. When content did
+            // render, leave the printed marker in place (it is its own final value).
+            if (!$rendered) {
+                $html = str_replace($runtimeMarker, '', $html);
+            }
 
             // Fail-safe: when the page template forgot to print
             // {{ __ssr_deferred_manifest|raw }} / {{ __ssr_runtime_script|raw }},
             // the str_replace above silently drops them. Inject before </body>
             // so deferred hydration always has a manifest + runtime to bind to.
-            // Gate: only inject when the page actually rendered deferred content;
-            // otherwise we'd add an empty manifest + runtime script to every page
-            // in apps where any deferred-Sse component is registered globally.
-            if ($renderedSlots !== [] || $renderedComponents !== []) {
-                $runtimeScript = is_string($context['__ssr_runtime_script'] ?? null) ? $context['__ssr_runtime_script'] : '';
+            if ($rendered) {
                 $html = PlaceholderRenderer::injectIfMissing($html, $updatedManifest);
-                $html = PlaceholderRenderer::injectIfMissing($html, $runtimeScript);
+                $html = PlaceholderRenderer::injectIfMissing($html, $runtimeMarker);
             }
         } catch (\Throwable $e) {
             \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'Failed to finalize deferred SSR HTML', [

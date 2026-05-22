@@ -70,6 +70,57 @@ HTML;
         );
     }
 
+    public function testInjectIfMissingInsertsFragmentBeforeBodyClose(): void
+    {
+        $html = "<!doctype html><html><body><p>hi</p></body></html>";
+        $fragment = '<script>window.__SSR_DEFERRED={"slots":[]};</script>';
+
+        $out = PlaceholderRenderer::injectIfMissing($html, $fragment);
+
+        self::assertStringContainsString($fragment . '</body>', $out);
+        self::assertSame(1, substr_count($out, $fragment));
+    }
+
+    public function testInjectIfMissingIsNoopWhenFragmentAlreadyPresent(): void
+    {
+        $fragment = '<script>window.__SSR_DEFERRED={"slots":[]};</script>';
+        $html = "<!doctype html><html><body><p>hi</p>{$fragment}</body></html>";
+
+        $out = PlaceholderRenderer::injectIfMissing($html, $fragment);
+
+        self::assertSame($html, $out);
+        self::assertSame(1, substr_count($out, $fragment));
+    }
+
+    public function testInjectIfMissingAppendsWhenNoBodyClose(): void
+    {
+        $html = '<div>partial fragment with no body tag</div>';
+        $fragment = '<script>window.__SSR_DEFERRED={"slots":[]};</script>';
+
+        $out = PlaceholderRenderer::injectIfMissing($html, $fragment);
+
+        self::assertSame($html . $fragment, $out);
+    }
+
+    public function testInjectIfMissingIsNoopWhenFragmentIsEmpty(): void
+    {
+        $html = "<!doctype html><html><body></body></html>";
+
+        $out = PlaceholderRenderer::injectIfMissing($html, '');
+
+        self::assertSame($html, $out);
+    }
+
+    public function testInjectIfMissingHandlesUppercaseBodyClose(): void
+    {
+        $html = "<!doctype html><html><BODY><p>hi</p></BODY></html>";
+        $fragment = '<script>window.__SSR_DEFERRED={"slots":[]};</script>';
+
+        $out = PlaceholderRenderer::injectIfMissing($html, $fragment);
+
+        self::assertStringContainsString($fragment . '</BODY>', $out);
+    }
+
     public function testFilterRenderedSlotsFromHtmlReturnsOnlyRenderedPlaceholders(): void
     {
         $product = new DeferredSlotDefinition(

@@ -147,6 +147,13 @@ class LayoutRenderer
 
                     $html = str_replace((string) ($baseContext['__ssr_preload_hints'] ?? ''), $updatedPreloadHints, $html);
                     $html = str_replace((string) ($baseContext['__ssr_deferred_manifest'] ?? ''), $updatedManifest, $html);
+
+                    // Fail-safe: layout templates that omit
+                    // {{ __ssr_deferred_manifest|raw }} / {{ __ssr_runtime_script|raw }}
+                    // still need the manifest + runtime when the page renders a
+                    // #[WithTransport(Sse, deferred:true)] component.
+                    $html = PlaceholderRenderer::injectIfMissing($html, $updatedManifest);
+                    $html = PlaceholderRenderer::injectIfMissing($html, (string) ($baseContext['__ssr_runtime_script'] ?? ''));
                 } catch (\Throwable $e) {
                     StaticLoggerBridge::error('ssr', 'Failed to finalize deferred SSR slots', [
                         'handle' => $handle,

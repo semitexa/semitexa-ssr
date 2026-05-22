@@ -419,6 +419,14 @@ class HtmlResponse extends ResourceResponse
 
             $html = str_replace(is_string($context['__ssr_preload_hints'] ?? null) ? $context['__ssr_preload_hints'] : '', $updatedPreloadHints, $html);
             $html = str_replace(is_string($context['__ssr_deferred_manifest'] ?? null) ? $context['__ssr_deferred_manifest'] : '', $updatedManifest, $html);
+
+            // Fail-safe: when the page template forgot to print
+            // {{ __ssr_deferred_manifest|raw }} / {{ __ssr_runtime_script|raw }},
+            // the str_replace above silently drops them. Inject before </body>
+            // so deferred hydration always has a manifest + runtime to bind to.
+            $runtimeScript = is_string($context['__ssr_runtime_script'] ?? null) ? $context['__ssr_runtime_script'] : '';
+            $html = PlaceholderRenderer::injectIfMissing($html, $updatedManifest);
+            $html = PlaceholderRenderer::injectIfMissing($html, $runtimeScript);
         } catch (\Throwable $e) {
             \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'Failed to finalize deferred SSR HTML', [
                 'exception' => $e::class,

@@ -222,6 +222,30 @@ final class PlaceholderRenderer
         return '<script src="/assets/ssr/js/semitexa-twig.js?v=' . $version . '" defer></script>' . "\n";
     }
 
+    /**
+     * Inject $fragment into $html before the closing </body> tag when it
+     * is not already present. Falls back to appending when no </body>
+     * anchor exists. Empty $fragment is a no-op.
+     *
+     * Used by the isomorphic render finalizers so component-only deferred
+     * pages still emit the manifest + runtime script even when the page
+     * template forgot to print {{ __ssr_deferred_manifest|raw }} /
+     * {{ __ssr_runtime_script|raw }}.
+     */
+    public static function injectIfMissing(string $html, string $fragment): string
+    {
+        if ($fragment === '' || str_contains($html, $fragment)) {
+            return $html;
+        }
+
+        $pos = stripos($html, '</body>');
+        if ($pos === false) {
+            return $html . $fragment;
+        }
+
+        return substr($html, 0, $pos) . $fragment . substr($html, $pos);
+    }
+
     private static function defaultSkeleton(string $slotId): string
     {
         $safeId = htmlspecialchars($slotId, ENT_QUOTES, 'UTF-8');

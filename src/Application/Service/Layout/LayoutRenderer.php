@@ -145,19 +145,29 @@ class LayoutRenderer
                         $renderedComponents,
                     );
 
-                    $html = str_replace((string) ($baseContext['__ssr_preload_hints'] ?? ''), $updatedPreloadHints, $html);
-                    $html = str_replace((string) ($baseContext['__ssr_deferred_manifest'] ?? ''), $updatedManifest, $html);
+                    // Mark whether the page rendered deferred content. Both the
+                    // str_replace and the fail-safe injectIfMissing paths are
+                    // gated on this so a template that explicitly printed the
+                    // markers (belt) and the framework fail-safe (braces) both
+                    // stay no-ops on non-deferred pages.
+                    $rendered = $renderedSlots !== [] || $renderedComponents !== [];
+                    $preloadMarker = (string) ($baseContext['__ssr_preload_hints'] ?? '');
+                    $manifestMarker = (string) ($baseContext['__ssr_deferred_manifest'] ?? '');
+                    $runtimeMarker = (string) ($baseContext['__ssr_runtime_script'] ?? '');
+
+                    $html = str_replace($preloadMarker, $rendered ? $updatedPreloadHints : '', $html);
+                    $html = str_replace($manifestMarker, $rendered ? $updatedManifest : '', $html);
+                    if (!$rendered) {
+                        $html = str_replace($runtimeMarker, '', $html);
+                    }
 
                     // Fail-safe: layout templates that omit
                     // {{ __ssr_deferred_manifest|raw }} / {{ __ssr_runtime_script|raw }}
                     // still need the manifest + runtime when the page renders a
                     // #[WithTransport(Sse, deferred:true)] component.
-                    // Gate: only inject when the page actually rendered deferred
-                    // content; otherwise non-deferred pages in apps that register
-                    // any deferred-Sse component would pick up an empty manifest.
-                    if ($renderedSlots !== [] || $renderedComponents !== []) {
+                    if ($rendered) {
                         $html = PlaceholderRenderer::injectIfMissing($html, $updatedManifest);
-                        $html = PlaceholderRenderer::injectIfMissing($html, (string) ($baseContext['__ssr_runtime_script'] ?? ''));
+                        $html = PlaceholderRenderer::injectIfMissing($html, $runtimeMarker);
                     }
                 } catch (\Throwable $e) {
                     StaticLoggerBridge::error('ssr', 'Failed to finalize deferred SSR slots', [

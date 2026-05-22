@@ -152,8 +152,13 @@ class LayoutRenderer
                     // {{ __ssr_deferred_manifest|raw }} / {{ __ssr_runtime_script|raw }}
                     // still need the manifest + runtime when the page renders a
                     // #[WithTransport(Sse, deferred:true)] component.
-                    $html = PlaceholderRenderer::injectIfMissing($html, $updatedManifest);
-                    $html = PlaceholderRenderer::injectIfMissing($html, (string) ($baseContext['__ssr_runtime_script'] ?? ''));
+                    // Gate: only inject when the page actually rendered deferred
+                    // content; otherwise non-deferred pages in apps that register
+                    // any deferred-Sse component would pick up an empty manifest.
+                    if ($renderedSlots !== [] || $renderedComponents !== []) {
+                        $html = PlaceholderRenderer::injectIfMissing($html, $updatedManifest);
+                        $html = PlaceholderRenderer::injectIfMissing($html, (string) ($baseContext['__ssr_runtime_script'] ?? ''));
+                    }
                 } catch (\Throwable $e) {
                     StaticLoggerBridge::error('ssr', 'Failed to finalize deferred SSR slots', [
                         'handle' => $handle,

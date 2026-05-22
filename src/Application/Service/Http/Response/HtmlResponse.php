@@ -424,9 +424,14 @@ class HtmlResponse extends ResourceResponse
             // {{ __ssr_deferred_manifest|raw }} / {{ __ssr_runtime_script|raw }},
             // the str_replace above silently drops them. Inject before </body>
             // so deferred hydration always has a manifest + runtime to bind to.
-            $runtimeScript = is_string($context['__ssr_runtime_script'] ?? null) ? $context['__ssr_runtime_script'] : '';
-            $html = PlaceholderRenderer::injectIfMissing($html, $updatedManifest);
-            $html = PlaceholderRenderer::injectIfMissing($html, $runtimeScript);
+            // Gate: only inject when the page actually rendered deferred content;
+            // otherwise we'd add an empty manifest + runtime script to every page
+            // in apps where any deferred-Sse component is registered globally.
+            if ($renderedSlots !== [] || $renderedComponents !== []) {
+                $runtimeScript = is_string($context['__ssr_runtime_script'] ?? null) ? $context['__ssr_runtime_script'] : '';
+                $html = PlaceholderRenderer::injectIfMissing($html, $updatedManifest);
+                $html = PlaceholderRenderer::injectIfMissing($html, $runtimeScript);
+            }
         } catch (\Throwable $e) {
             \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'Failed to finalize deferred SSR HTML', [
                 'exception' => $e::class,

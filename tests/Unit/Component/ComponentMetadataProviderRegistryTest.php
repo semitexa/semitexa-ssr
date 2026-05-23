@@ -67,6 +67,39 @@ final class CmprtBrokenProvider
     }
 }
 
+#[AsComponentMetadataProvider]
+final class CmprtSupportsThrowsProvider implements ComponentMetadataProviderInterface
+{
+    public function supports(ReflectionClass $componentClass): bool
+    {
+        throw new \RuntimeException('supports() blew up');
+    }
+
+    public function getProps(ReflectionClass $componentClass): array
+    {
+        return [];
+    }
+}
+
+#[AsComponentMetadataProvider]
+final class CmprtCtorThrowsProvider implements ComponentMetadataProviderInterface
+{
+    public function __construct()
+    {
+        throw new \RuntimeException('ctor blew up');
+    }
+
+    public function supports(ReflectionClass $componentClass): bool
+    {
+        return true;
+    }
+
+    public function getProps(ReflectionClass $componentClass): array
+    {
+        return [];
+    }
+}
+
 final class CmprtTargetComponent {}
 final class CmprtOtherComponent {}
 
@@ -174,6 +207,32 @@ final class ComponentMetadataProviderRegistryTest extends TestCase
         $this->expectExceptionMessage(CmprtBrokenProvider::class);
 
         $registry->ensureBuilt();
+    }
+
+    public function testSupportsThrowingIsWrappedAsConfigError(): void
+    {
+        $registry = $this->buildRegistry([CmprtSupportsThrowsProvider::class]);
+
+        $this->expectException(InvalidComponentConfigurationException::class);
+        $this->expectExceptionMessage(CmprtSupportsThrowsProvider::class);
+        $this->expectExceptionMessage(CmprtTargetComponent::class);
+        $this->expectExceptionMessage('supports() blew up');
+
+        $registry->getProviders(new ReflectionClass(CmprtTargetComponent::class));
+    }
+
+    public function testResolutionFailureIsWrappedAsConfigError(): void
+    {
+        // Container::has() returns false (CmprtFakeContainer is empty), so
+        // ComponentMetadataProviderRegistry::resolveInstance falls through to
+        // `new $className()` — which here throws from the ctor.
+        $registry = $this->buildRegistry([CmprtCtorThrowsProvider::class]);
+
+        $this->expectException(InvalidComponentConfigurationException::class);
+        $this->expectExceptionMessage(CmprtCtorThrowsProvider::class);
+        $this->expectExceptionMessage('ctor blew up');
+
+        $registry->getProviders(new ReflectionClass(CmprtTargetComponent::class));
     }
 
     public function testContainerResolvedInstanceIsUsed(): void

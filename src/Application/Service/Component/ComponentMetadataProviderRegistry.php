@@ -26,7 +26,7 @@ final class ComponentMetadataProviderRegistry
     #[InjectAsReadonly]
     protected ContainerInterface $container;
 
-    /** @var list<array{class: string, priority: int}> */
+    /** @var list<array{class: class-string, priority: int}> */
     private array $providerMeta = [];
 
     private bool $built = false;
@@ -34,6 +34,11 @@ final class ComponentMetadataProviderRegistry
     /**
      * Return providers (ascending priority) whose supports($componentClass) is true.
      *
+     * Raw throwables from container resolution or supports() are wrapped as
+     * InvalidComponentConfigurationException so every boot-time provider
+     * failure surfaces on the same configuration-error path.
+     *
+     * @param ReflectionClass<object> $componentClass
      * @return list<ComponentMetadataProviderInterface>
      */
     public function getProviders(ReflectionClass $componentClass): array
@@ -42,9 +47,25 @@ final class ComponentMetadataProviderRegistry
 
         $matched = [];
         foreach ($this->providerMeta as $meta) {
-            $instance = $this->resolveInstance($meta['class']);
-            if ($instance->supports($componentClass)) {
-                $matched[] = $instance;
+            try {
+                $instance = $this->resolveInstance($meta['class']);
+                if ($instance->supports($componentClass)) {
+                    $matched[] = $instance;
+                }
+            } catch (InvalidComponentConfigurationException $e) {
+                // resolveInstance raises this with a specific message
+                // (e.g. "Resolved class X does not implement Y") — keep it.
+                throw $e;
+            } catch (\Throwable $e) {
+                throw new InvalidComponentConfigurationException(
+                    sprintf(
+                        'Metadata provider %s failed for component %s: %s',
+                        $meta['class'],
+                        $componentClass->getName(),
+                        $e->getMessage(),
+                    ),
+                    previous: $e,
+                );
             }
         }
         return $matched;
@@ -66,6 +87,7 @@ final class ComponentMetadataProviderRegistry
         );
 
         foreach ($filtered as $className) {
+            /** @var class-string $className */
             $ref = new ReflectionClass($className);
             $attrs = $ref->getAttributes(AsComponentMetadataProvider::class);
             if ($attrs === []) {
@@ -95,6 +117,9 @@ final class ComponentMetadataProviderRegistry
         $this->built = true;
     }
 
+    /**
+     * @param class-string $className
+     */
     private function resolveInstance(string $className): ComponentMetadataProviderInterface
     {
         if (isset($this->container) && $this->container->has($className)) {

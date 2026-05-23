@@ -48,7 +48,7 @@ final class ComponentRenderer
             return "<!-- Component '{$name}' not found -->";
         }
 
-        /** @var array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string, dataProviderClass: ?string, transportMode: TransportType, deferred: bool} $component */
+        /** @var array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string, dataProviderClass: ?string, transportMode: TransportType, deferred: bool, providerProps: array<string, mixed>} $component */
         $currentSlots = CoroutineLocal::get(self::CTX_RENDERED_SLOTS, []);
         $previousSlots = $currentSlots;
         $currentSlots[$name] = $slots;
@@ -80,7 +80,7 @@ final class ComponentRenderer
             //   1. providerProps    — structural metadata captured at boot
             //   2. DataProvider data — runtime data resolved per request
             //   3. explicit caller props
-            $metaProps = $component['providerProps'] ?? [];
+            $metaProps = $component['providerProps'];
             $explicitProps = $props;
 
             $providerData = [];

@@ -16,14 +16,20 @@ use Semitexa\Core\Discovery\ClassDiscovery;
 
 final class ComponentRegistry
 {
-    /** @var array<string, array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string, dataProviderClass: ?string, transportMode: TransportType, deferred: bool}> */
+    /** @var array<string, array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string, dataProviderClass: ?string, transportMode: TransportType, deferred: bool, providerProps: array<string, mixed>}> */
     private static array $components = [];
     private static bool $initialized = false;
     private static ?ClassDiscovery $classDiscovery = null;
+    private static ?ComponentMetadataProviderRegistry $metadataProviders = null;
 
     public static function setClassDiscovery(ClassDiscovery $classDiscovery): void
     {
         self::$classDiscovery = $classDiscovery;
+    }
+
+    public static function setMetadataProviderRegistry(?ComponentMetadataProviderRegistry $registry): void
+    {
+        self::$metadataProviders = $registry;
     }
 
     public static function initialize(): void
@@ -127,6 +133,28 @@ final class ComponentRegistry
                 $deferred = $withTransport->deferred;
             }
 
+            $providerProps = [];
+            if (self::$metadataProviders !== null) {
+                foreach (self::$metadataProviders->getProviders($reflection) as $provider) {
+                    try {
+                        $providerProps = array_merge(
+                            $providerProps,
+                            $provider->getProps($reflection),
+                        );
+                    } catch (\Throwable $e) {
+                        throw new InvalidComponentConfigurationException(
+                            sprintf(
+                                "Component '%s': metadata provider %s failed: %s",
+                                $attr->name,
+                                $provider::class,
+                                $e->getMessage(),
+                            ),
+                            previous: $e,
+                        );
+                    }
+                }
+            }
+
             self::$components[$attr->name] = [
                 'class' => $class,
                 'name' => $attr->name,
@@ -139,6 +167,7 @@ final class ComponentRegistry
                 'dataProviderClass' => $dataProviderClass,
                 'transportMode' => $transportMode,
                 'deferred' => $deferred,
+                'providerProps' => $providerProps,
             ];
         }
 
@@ -175,13 +204,14 @@ final class ComponentRegistry
     }
 
     /**
-     * @param array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string, dataProviderClass?: ?string, transportMode?: TransportType, deferred?: bool} $component
+     * @param array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string, dataProviderClass?: ?string, transportMode?: TransportType, deferred?: bool, providerProps?: array<string, mixed>} $component
      */
     public static function register(array $component): void
     {
         $component['dataProviderClass'] = $component['dataProviderClass'] ?? null;
         $component['transportMode'] = $component['transportMode'] ?? TransportType::Http;
         $component['deferred'] = $component['deferred'] ?? false;
+        $component['providerProps'] = $component['providerProps'] ?? [];
         self::$components[$component['name']] = $component;
     }
 }

@@ -15,6 +15,7 @@ use Semitexa\Core\Server\Lifecycle\ServerLifecyclePhase;
 use Semitexa\Ssr\Application\Service\Asset\AssetCollector;
 use Semitexa\Ssr\Application\Service\Asset\ModuleAssetRegistry;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Component\ComponentMetadataProviderRegistry;
 use Semitexa\Ssr\Application\Service\Component\ComponentRegistry;
 use Semitexa\Ssr\Application\Service\Component\ComponentRenderer;
 use Semitexa\Ssr\Application\Service\DataProviderRegistry;
@@ -52,9 +53,13 @@ final class WireCoreInstancesListener implements ServerLifecycleListenerInterfac
     #[InjectAsReadonly]
     protected DataProviderRegistry $dataProviderRegistry;
 
+    #[InjectAsReadonly]
+    protected ComponentMetadataProviderRegistry $metadataProviderRegistry;
+
     public function handle(ServerLifecycleContext $context): void
     {
         ComponentRegistry::setClassDiscovery($this->classDiscovery);
+        ComponentRegistry::setMetadataProviderRegistry($this->metadataProviderRegistry);
         ComponentRenderer::setDataProviderRegistry($this->dataProviderRegistry);
         TwigExtensionRegistry::setClassDiscovery($this->classDiscovery);
         ModuleTemplateRegistry::setModuleRegistry($this->moduleRegistry);

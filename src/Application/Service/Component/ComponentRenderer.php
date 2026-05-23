@@ -76,6 +76,14 @@ final class ComponentRenderer
                 return PlaceholderRenderer::renderComponentPlaceholder($name, $componentId);
             }
 
+            // Merge layering (bottom → top, later wins):
+            //   1. providerProps    — structural metadata captured at boot
+            //   2. DataProvider data — runtime data resolved per request
+            //   3. explicit caller props
+            $metaProps = $component['providerProps'] ?? [];
+            $explicitProps = $props;
+
+            $providerData = [];
             $providerClass = $component['dataProviderClass'] ?? null;
             if ($providerClass !== null && self::$dataProviderRegistry !== null) {
                 $provider = self::$dataProviderRegistry->resolveByClass($providerClass);
@@ -85,12 +93,12 @@ final class ComponentRenderer
                             request: CoroutineLocal::get(self::CTX_CURRENT_REQUEST, null),
                             instanceId: $componentId,
                         ),
-                        $props,
+                        $explicitProps,
                     );
-                    // Provider data underlays — explicit props win.
-                    $props = array_merge($providerData, $props);
                 }
             }
+
+            $props = array_merge($metaProps, $providerData, $explicitProps);
 
             if (($component['event'] ?? null) !== null) {
                 $manifest = ComponentEventBridge::buildManifest($component, $componentId);

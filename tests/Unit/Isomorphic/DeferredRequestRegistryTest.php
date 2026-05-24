@@ -44,6 +44,52 @@ final class DeferredRequestRegistryTest extends TestCase
         self::assertNull($entry['request_snapshot']);
     }
 
+    public function testStoreCapturesPlatformUiSseSessionIntoPageContext(): void
+    {
+        // Deferred-SSR session propagation (capture half): when the page
+        // minted a platform-ui SSE session during the main render, store()
+        // folds it into the persisted page context as `__ui_sse_session`
+        // so the orchestrator can restore it before the deferred component
+        // renders. Without this the component mints a fresh id no live
+        // EventSource subscribes to.
+        $sessionState = \Semitexa\PlatformUi\Application\Service\Event\PlatformUiSseSessionState::class;
+        if (!class_exists($sessionState)) {
+            self::markTestSkipped('platform-ui not installed in this test environment.');
+        }
+        $sessionState::reset();
+        $sessionState::setForTesting('sse_live_page_session_01');
+
+        $this->bootRegistry();
+        DeferredRequestRegistry::store('dr_sse', 'demo.home', ['k' => 'v'], ['slot-a']);
+
+        $entry = DeferredRequestRegistry::consume('dr_sse');
+        $sessionState::reset();
+
+        self::assertNotNull($entry);
+        self::assertSame('sse_live_page_session_01', $entry['page_context']['__ui_sse_session'] ?? null);
+        // The original context is preserved alongside the injected key.
+        self::assertSame('v', $entry['page_context']['k'] ?? null);
+    }
+
+    public function testStoreDoesNotInjectSessionKeyWhenNoSessionMinted(): void
+    {
+        // Pages that never minted a platform-ui SSE session (no SSE opt-in)
+        // must NOT get a spurious `__ui_sse_session` key — preserves the
+        // pre-canonical-SSE behaviour for non-SSE deferred pages.
+        $sessionState = \Semitexa\PlatformUi\Application\Service\Event\PlatformUiSseSessionState::class;
+        if (class_exists($sessionState)) {
+            $sessionState::reset();
+        }
+
+        $this->bootRegistry();
+        DeferredRequestRegistry::store('dr_nosse', 'demo.home', ['k' => 'v'], ['slot-a']);
+
+        $entry = DeferredRequestRegistry::consume('dr_nosse');
+
+        self::assertNotNull($entry);
+        self::assertArrayNotHasKey('__ui_sse_session', $entry['page_context']);
+    }
+
     public function testStoreRequestSnapshotRoundTrip(): void
     {
         $this->bootRegistry();

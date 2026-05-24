@@ -108,6 +108,34 @@ final class DeferredRequestRegistry
         $pageContext = self::sanitizeContext($pageContext);
         self::validateContext($pageContext);
 
+        // Capture the originating page's canonical platform-ui SSE session
+        // id (the live `sub` channel minted by ui_page_sse_session_meta() /
+        // the page resource) so the deferred-render pipeline can RESTORE it
+        // before rendering deferred components. Without this, a deferred
+        // component renders in a separate `/__semitexa_kiss` request where
+        // PlatformUiSseSessionState was reset, mints a FRESH session id, and
+        // bakes it into its `sub` claim — so the dispatcher publishes frames
+        // to a channel no live EventSource subscribes to. Soft dependency
+        // via class_exists, mirroring how the orchestrator applies locale.
+        // Skipped when platform-ui is absent or the page minted no session.
+        //
+        // TODO(known-limitation): in the LayoutRenderer path store() runs
+        // BEFORE the page template renders, so current() is only set here if
+        // the session was minted earlier in the request (the standard
+        // pattern: the page handler/resource calls mintIfAbsent()). A page
+        // that mints its session ONLY via the in-template
+        // ui_page_sse_session_meta() helper AND defers a component would not
+        // be captured. If such a page appears, hoist the session mint into
+        // its resource, or capture post-render alongside storeComponentInstances().
+        if (!array_key_exists('__ui_sse_session', $pageContext)
+            && class_exists(\Semitexa\PlatformUi\Application\Service\Event\PlatformUiSseSessionState::class)
+        ) {
+            $uiSseSession = \Semitexa\PlatformUi\Application\Service\Event\PlatformUiSseSessionState::current();
+            if (is_string($uiSseSession) && $uiSseSession !== '') {
+                $pageContext['__ui_sse_session'] = $uiSseSession;
+            }
+        }
+
         try {
             $serializedContext = json_encode(
                 $pageContext,

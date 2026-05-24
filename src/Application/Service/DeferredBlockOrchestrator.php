@@ -59,7 +59,16 @@ final class DeferredBlockOrchestrator
             'slots' => array_map(static fn ($s) => $s->slotId, $slots),
         ]);
 
+        // Originating page's live SSE session id, captured into the
+        // deferred page context during the main render. Threaded into the
+        // component-render path (which has no $pageContext) so deferred
+        // components inherit the page's `sub` channel.
+        $uiSseSession = is_string($pageContext['__ui_sse_session'] ?? null)
+            ? $pageContext['__ui_sse_session']
+            : null;
+
         $this->applyLocale($locale);
+        $this->applyUiSseSessionFromContext($pageContext);
 
         // Determine already-delivered slots + components for reconnect scenario
         $deliveredIds = [];
@@ -110,6 +119,7 @@ final class DeferredBlockOrchestrator
                 $data = [];
                 try {
                     $this->applyLocale($locale);
+                    $this->applyUiSseSessionFromContext($pageContext);
                     $data = $this->resolveSlotData($slot, $pageHandle, $pageContext, $requestSnapshot);
                 } catch (\Throwable $e) {
                     $this->logger->error('DataProvider failed for slot', [
@@ -176,6 +186,7 @@ final class DeferredBlockOrchestrator
                 $data = [];
                 try {
                     $this->applyLocale($locale);
+                    $this->applyUiSseSessionFromContext($pageContext);
                     $data = $this->resolveSlotData($slot, $pageHandle, $pageContext, $requestSnapshot);
                 } catch (\Throwable $e) {
                     $this->logger->error('DataProvider failed for slot', [
@@ -244,6 +255,7 @@ final class DeferredBlockOrchestrator
             $eventId,
             $deferredRequestId,
             $locale,
+            $uiSseSession,
         );
 
         $liveEnabled = $startLiveLoop && $persistentDeferredSse;
@@ -273,6 +285,7 @@ final class DeferredBlockOrchestrator
         int $eventId,
         ?string $deferredRequestId,
         ?string $locale,
+        ?string $uiSseSession = null,
     ): int {
         if ($instances === []) {
             return $eventId;
@@ -294,6 +307,7 @@ final class DeferredBlockOrchestrator
             $html = '';
             try {
                 $this->applyLocale($locale);
+                $this->applyUiSseSession($uiSseSession);
                 $html = ComponentRenderer::render($name, $props, [], forceImmediateRender: true);
             } catch (\Throwable $e) {
                 $this->logger->error('Deferred component render failed', [
@@ -333,6 +347,7 @@ final class DeferredBlockOrchestrator
     ): array {
         try {
             $this->applyLocale($locale);
+            $this->applyUiSseSessionFromContext($pageContext);
             return $this->resolveSlotData($slot, $pageHandle, $pageContext, $requestSnapshot);
         } catch (\Throwable $e) {
             $this->logger->error('DataProvider failed for slot', [
@@ -366,6 +381,7 @@ final class DeferredBlockOrchestrator
 
             try {
                 $this->applyLocale($locale);
+                $this->applyUiSseSessionFromContext($pageContext);
                 $data = $this->resolveSlotData(
                     $slot,
                     $pageHandle,
@@ -439,6 +455,7 @@ final class DeferredBlockOrchestrator
 
                 try {
                     $this->applyLocale($locale);
+                    $this->applyUiSseSessionFromContext($pageContext);
                     $data = $this->resolveSlotData($slot, $pageHandle, $pageContext, $requestSnapshot);
                 } catch (\Throwable $e) {
                     $this->logger->error('Live slot refresh failed', [
@@ -557,6 +574,39 @@ final class DeferredBlockOrchestrator
 
         if (class_exists(\Semitexa\Ssr\Application\Service\I18n\Translator::class)) {
             \Semitexa\Ssr\Application\Service\I18n\Translator::setLocale($locale);
+        }
+    }
+
+    /**
+     * Re-establish the originating page's canonical platform-ui SSE
+     * session id (captured into the deferred page context as
+     * `__ui_sse_session` by DeferredRequestRegistry::store()) before a
+     * deferred component / slot renders. This makes the component's
+     * `ui_event_manifest()` `sub` claim — and any
+     * PlatformUiSseSessionState::mintIfAbsent() its data provider calls —
+     * resolve to the page's LIVE stream session instead of a fresh
+     * per-deferred-request id no EventSource subscribes to.
+     *
+     * Applied right before each render (mirroring {@see self::applyLocale()})
+     * so a concurrent request in the same worker cannot leave a stale id
+     * in the process-global holder across a coroutine boundary.
+     *
+     * @param array<array-key, mixed> $pageContext
+     */
+    private function applyUiSseSessionFromContext(array $pageContext): void
+    {
+        $sid = $pageContext['__ui_sse_session'] ?? null;
+        $this->applyUiSseSession(is_string($sid) ? $sid : null);
+    }
+
+    private function applyUiSseSession(?string $sessionId): void
+    {
+        if ($sessionId === null || $sessionId === '') {
+            return;
+        }
+
+        if (class_exists(\Semitexa\PlatformUi\Application\Service\Event\PlatformUiSseSessionState::class)) {
+            \Semitexa\PlatformUi\Application\Service\Event\PlatformUiSseSessionState::restore($sessionId);
         }
     }
 

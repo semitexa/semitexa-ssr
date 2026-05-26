@@ -153,6 +153,9 @@ final class AsyncResourceSseServer
             demoStream: $demoStream,
             deferredRequestId: $deferredRequestId,
             safeBearerSessionId: $safeBearerSessionId,
+            // An explicit mode=live request is persistent — it must not borrow
+            // the deferred door's guest-permissive bypass (see method docblock).
+            persistentRequested: $rawMode === self::TRANSPORT_MODE_LIVE,
         );
         $rejection = self::resolveSseRequestRejection(
             sameOrigin: self::isSameOriginRequest($request),
@@ -322,6 +325,7 @@ final class AsyncResourceSseServer
                 $deferredRequestId,
                 $lastEventId,
                 self::canUsePersistentDeferredSse($request),
+                $resolvedMode === self::TRANSPORT_MODE_LIVE,
             );
         }
 
@@ -399,6 +403,7 @@ final class AsyncResourceSseServer
         string $deferredRequestId,
         ?string $lastEventId,
         bool $allowPersistentDeferredSse,
+        bool $keepChannelOpen,
     ): void
     {
         $registry = \Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry::consume($deferredRequestId);
@@ -430,7 +435,7 @@ final class AsyncResourceSseServer
 
         // Use coroutine to resolve deferred blocks concurrently
         if (class_exists(\Swoole\Coroutine::class, false) && \Swoole\Coroutine::getCid() > 0) {
-            self::createSessionCoroutine(static function () use ($sessionId, $registry, $lastEventId, $deferredRequestId, $debugLog, $allowPersistentDeferredSse, $locale): void {
+            self::createSessionCoroutine(static function () use ($sessionId, $registry, $lastEventId, $deferredRequestId, $debugLog, $allowPersistentDeferredSse, $keepChannelOpen, $locale): void {
                 try {
                     $orchestrator = self::deferredBlockOrchestrator();
                     $debugLog('orchestrator_resolved', ['session_id' => $sessionId]);
@@ -442,6 +447,7 @@ final class AsyncResourceSseServer
                         deferredRequestId: $deferredRequestId,
                         locale: $locale !== '' ? $locale : null,
                         startLiveLoop: $allowPersistentDeferredSse,
+                        keepChannelOpen: $keepChannelOpen,
                     );
                 } catch (\Throwable $e) {
                     if (self::isCoroutineCancellation($e)) {
@@ -475,6 +481,7 @@ final class AsyncResourceSseServer
                     deferredRequestId: $deferredRequestId,
                     locale: $locale !== '' ? $locale : null,
                     startLiveLoop: $allowPersistentDeferredSse,
+                    keepChannelOpen: $keepChannelOpen,
                 );
             } catch (\Throwable $e) {
                 $debugLog('streaming_failed_sync', ['error' => $e->getMessage()]);
@@ -1087,20 +1094,41 @@ final class AsyncResourceSseServer
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
     }
 
+    /**
+     * Resolve the admit error (if any) for an SSE request.
+     *
+     * `deferred_request_id` is normally guest-permissive: a deferred stream
+     * runs its delivery then sends done/close, so guests may receive the
+     * one-shot deferred drain without auth. But an explicit `mode=live`
+     * request ($persistentRequested) asks the server to HOLD THE CONNECTION
+     * OPEN past the deferred drain (DeferredBlockOrchestrator keepChannelOpen),
+     * turning the deferred door into a persistent stream. The bind-token that
+     * gates the deferred door is a request-binding held by every client that
+     * loaded the deferred page — NOT an auth credential — so a persistent
+     * request must independently satisfy the persistent-stream credential
+     * check (authenticated, SSE_PUBLIC_ANONYMOUS, or a safe bearer-channel id)
+     * regardless of deferred_request_id. Otherwise an anonymous, non-bearer
+     * caller could obtain a long-lived stream through the deferred door.
+     */
     private static function resolveSseAuthorizationError(
         bool $authenticated,
         bool $anonymousAllowed,
         string $demoStream,
         string $deferredRequestId,
         bool $safeBearerSessionId,
+        bool $persistentRequested = false,
     ): ?string {
         if ($demoStream !== '' && !$authenticated) {
             return 'Authorization is required for this SSE demo stream.';
         }
 
+        // The deferred door is only a bypass for the NON-persistent (drain)
+        // case. A persistent (mode=live) request never gets the bypass.
+        $deferredBypassesPersistentCheck = $deferredRequestId !== '' && !$persistentRequested;
+
         if (
             $demoStream === ''
-            && $deferredRequestId === ''
+            && !$deferredBypassesPersistentCheck
             && !$authenticated
             && !$anonymousAllowed
             && !$safeBearerSessionId

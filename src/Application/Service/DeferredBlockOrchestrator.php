@@ -45,6 +45,7 @@ final class DeferredBlockOrchestrator
         ?string $deferredRequestId = null,
         ?string $locale = null,
         bool $startLiveLoop = true,
+        bool $keepChannelOpen = false,
     ): void {
         $slots = $this->getDeferredSlots($pageHandle);
         $config = IsomorphicConfig::fromEnvironment();
@@ -98,11 +99,17 @@ final class DeferredBlockOrchestrator
 
         if ($slots === [] && $componentInstances === []) {
             $liveEnabled = $startLiveLoop && $persistentDeferredSse;
+            // On a unified live channel the deferred 'done' must NOT close the
+            // connection: the live UI-event loop runs on the same connection
+            // after the deferred drain. runLiveLoop (deferred slot refresh)
+            // stays gated on $liveEnabled; only the close/live/reconnect
+            // signalling widens to $channelStaysOpen.
+            $channelStaysOpen = $keepChannelOpen || $liveEnabled;
             SseAsyncResultDelivery::deliverRaw($sessionId, [
                 'type' => 'done',
-                'live' => $liveEnabled,
-                'close' => !$liveEnabled,
-                'reconnect' => $liveEnabled,
+                'live' => $channelStaysOpen,
+                'close' => !$channelStaysOpen,
+                'reconnect' => $channelStaysOpen,
             ]);
             if ($liveEnabled) {
                 $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale, $requestSnapshot);
@@ -154,11 +161,17 @@ final class DeferredBlockOrchestrator
             );
 
             $liveEnabled = $startLiveLoop && $persistentDeferredSse;
+            // On a unified live channel the deferred 'done' must NOT close the
+            // connection: the live UI-event loop runs on the same connection
+            // after the deferred drain. runLiveLoop (deferred slot refresh)
+            // stays gated on $liveEnabled; only the close/live/reconnect
+            // signalling widens to $channelStaysOpen.
+            $channelStaysOpen = $keepChannelOpen || $liveEnabled;
             SseAsyncResultDelivery::deliverRaw($sessionId, [
                 'type' => 'done',
-                'live' => $liveEnabled,
-                'close' => !$liveEnabled,
-                'reconnect' => $liveEnabled,
+                'live' => $channelStaysOpen,
+                'close' => !$channelStaysOpen,
+                'reconnect' => $channelStaysOpen,
             ]);
             if ($liveEnabled) {
                 $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale, $requestSnapshot);
@@ -259,12 +272,15 @@ final class DeferredBlockOrchestrator
         );
 
         $liveEnabled = $startLiveLoop && $persistentDeferredSse;
+        // See the empty-slots branch: $channelStaysOpen keeps a unified live
+        // channel open past the deferred drain; runLiveLoop stays on $liveEnabled.
+        $channelStaysOpen = $keepChannelOpen || $liveEnabled;
         if (\Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
             SseAsyncResultDelivery::deliverRaw($sessionId, [
                 'type' => 'done',
-                'live' => $liveEnabled,
-                'close' => !$liveEnabled,
-                'reconnect' => $liveEnabled,
+                'live' => $channelStaysOpen,
+                'close' => !$channelStaysOpen,
+                'reconnect' => $channelStaysOpen,
             ]);
         }
         if ($liveEnabled) {

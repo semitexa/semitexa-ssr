@@ -222,7 +222,7 @@ final class DeferredRequestRegistry
 
         $ok = self::$table->set($key, [
             'page_handle' => $row['page_handle'],
-            'page_context' => $row['page_context'],
+            'page_context' => self::backfillUiSseSession((string) $row['page_context']),
             'bind_token' => $row['bind_token'] ?? '',
             'locale' => $row['locale'] ?? '',
             'slots' => $row['slots'],
@@ -233,6 +233,50 @@ final class DeferredRequestRegistry
         ]);
         if ($ok === false) {
             throw new DeferredRenderingException('Failed to update deferred component instances.');
+        }
+    }
+
+    /**
+     * Post-render backfill of the originating page's canonical live SSE session
+     * id into the stored deferred page context.
+     *
+     * {@see self::store()} captures `__ui_sse_session` pre-render, but a page
+     * that mints its session ONLY via the in-template ui_page_sse_session_meta()
+     * helper has no {@see PlatformUiSseSessionState::current()} id at that point
+     * (see the known-limitation note in store()). By the time the page has
+     * rendered — this method's caller — the id IS set, so we backfill it here
+     * so the orchestrator can restore the live `sub` channel for deferred
+     * components. Soft dependency on platform-ui via class_exists, mirroring
+     * store(). Returns the input untouched when platform-ui is absent, no
+     * session was minted, the context already carries the key, or the JSON
+     * cannot be decoded/re-encoded.
+     */
+    private static function backfillUiSseSession(string $serializedContext): string
+    {
+        $stateClass = \Semitexa\PlatformUi\Application\Service\Event\PlatformUiSseSessionState::class;
+        if (!class_exists($stateClass)) {
+            return $serializedContext;
+        }
+
+        $current = $stateClass::current();
+        if (!is_string($current) || $current === '') {
+            return $serializedContext;
+        }
+
+        $decoded = json_decode($serializedContext, true);
+        if (!is_array($decoded) || array_key_exists('__ui_sse_session', $decoded)) {
+            return $serializedContext;
+        }
+
+        $decoded['__ui_sse_session'] = $current;
+
+        try {
+            return json_encode(
+                $decoded,
+                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
+            );
+        } catch (\JsonException) {
+            return $serializedContext;
         }
     }
 

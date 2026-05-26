@@ -342,7 +342,16 @@ class HtmlResponse extends ResourceResponse
         $requestId = 'dr_' . bin2hex(random_bytes(12));
         $sessionId = IsomorphicContextStore::getSessionId();
         if ($sessionId === '') {
-            $sessionId = 'sse_' . bin2hex(random_bytes(16));
+            // Converge with the page's canonical live platform-ui SSE session id
+            // (scenario 1: minted in the page handler/resource) so the deferred
+            // stream and the live UI-event stream share ONE /__semitexa_kiss
+            // channel. Falls back to a fresh bearer-safe id when no live session
+            // was minted yet — including the in-template mint case, which is
+            // re-resolved post-render in finalizeIsomorphicHtml().
+            $sessionId = self::resolveLiveUiSessionId();
+            if ($sessionId === '') {
+                $sessionId = 'sse_' . bin2hex(random_bytes(16));
+            }
             IsomorphicContextStore::setSessionId($sessionId);
         }
 
@@ -409,9 +418,22 @@ class HtmlResponse extends ResourceResponse
             ComponentInstanceStore::reset();
 
             $updatedPreloadHints = PlaceholderRenderer::renderPreloadHints($renderedSlots);
+            $deferredSessionId = is_string($context['__ssr_deferred_session_id'] ?? null)
+                ? $context['__ssr_deferred_session_id']
+                : '';
+            // Scenario 2 (in-template mint): the page minted its live SSE session
+            // only while rendering (e.g. via ui_page_sse_session_meta()), so it
+            // was absent when applyIsomorphicContext() seeded the deferred id
+            // pre-render. Re-resolve now and converge the DELIVERED manifest so
+            // the deferred stream uses the live page id (one channel per page).
+            $liveSessionId = self::resolveLiveUiSessionId();
+            if ($liveSessionId !== '' && $liveSessionId !== $deferredSessionId) {
+                $deferredSessionId = $liveSessionId;
+                IsomorphicContextStore::setSessionId($deferredSessionId);
+            }
             $updatedManifest = PlaceholderRenderer::renderManifest(
                 $requestId,
-                is_string($context['__ssr_deferred_session_id'] ?? null) ? $context['__ssr_deferred_session_id'] : '',
+                $deferredSessionId,
                 $renderedSlots,
                 is_string($context['__ssr_deferred_bind_token'] ?? null) ? $context['__ssr_deferred_bind_token'] : '',
                 $renderedComponents,
@@ -452,6 +474,29 @@ class HtmlResponse extends ResourceResponse
         }
 
         return $html;
+    }
+
+    /**
+     * Resolve the page's canonical live platform-ui SSE session id, when one
+     * was minted this request. Soft dependency on platform-ui via class_exists
+     * (mirrors DeferredBlockOrchestrator::applyUiSseSession()). Only a
+     * canonical bearer-shaped id (`sse_` + 32 hex) is adopted so the converged
+     * deferred stream id stays admit-safe on the KISS endpoint; any other shape
+     * is ignored and the caller falls back to a fresh mint.
+     */
+    private static function resolveLiveUiSessionId(): string
+    {
+        $stateClass = \Semitexa\PlatformUi\Application\Service\Event\PlatformUiSseSessionState::class;
+        if (!class_exists($stateClass)) {
+            return '';
+        }
+
+        $current = $stateClass::current();
+        if (!is_string($current) || preg_match('/\Asse_[a-f0-9]{32}\z/', $current) !== 1) {
+            return '';
+        }
+
+        return $current;
     }
 
     /**

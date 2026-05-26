@@ -322,6 +322,7 @@ final class AsyncResourceSseServer
                 $deferredRequestId,
                 $lastEventId,
                 self::canUsePersistentDeferredSse($request),
+                $resolvedMode === self::TRANSPORT_MODE_LIVE,
             );
         }
 
@@ -399,6 +400,7 @@ final class AsyncResourceSseServer
         string $deferredRequestId,
         ?string $lastEventId,
         bool $allowPersistentDeferredSse,
+        bool $keepChannelOpen,
     ): void
     {
         $registry = \Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry::consume($deferredRequestId);
@@ -430,7 +432,7 @@ final class AsyncResourceSseServer
 
         // Use coroutine to resolve deferred blocks concurrently
         if (class_exists(\Swoole\Coroutine::class, false) && \Swoole\Coroutine::getCid() > 0) {
-            self::createSessionCoroutine(static function () use ($sessionId, $registry, $lastEventId, $deferredRequestId, $debugLog, $allowPersistentDeferredSse, $locale): void {
+            self::createSessionCoroutine(static function () use ($sessionId, $registry, $lastEventId, $deferredRequestId, $debugLog, $allowPersistentDeferredSse, $keepChannelOpen, $locale): void {
                 try {
                     $orchestrator = self::deferredBlockOrchestrator();
                     $debugLog('orchestrator_resolved', ['session_id' => $sessionId]);
@@ -442,6 +444,7 @@ final class AsyncResourceSseServer
                         deferredRequestId: $deferredRequestId,
                         locale: $locale !== '' ? $locale : null,
                         startLiveLoop: $allowPersistentDeferredSse,
+                        keepChannelOpen: $keepChannelOpen,
                     );
                 } catch (\Throwable $e) {
                     if (self::isCoroutineCancellation($e)) {
@@ -475,6 +478,7 @@ final class AsyncResourceSseServer
                     deferredRequestId: $deferredRequestId,
                     locale: $locale !== '' ? $locale : null,
                     startLiveLoop: $allowPersistentDeferredSse,
+                    keepChannelOpen: $keepChannelOpen,
                 );
             } catch (\Throwable $e) {
                 $debugLog('streaming_failed_sync', ['error' => $e->getMessage()]);

@@ -1,6 +1,32 @@
 (function () {
     'use strict';
 
+    // ── Deferred-SSR transport: shared-stream consumer vs. legacy self-open ──
+    //
+    // This runtime fills deferred-SSR placeholders from a /__semitexa_kiss
+    // stream. Whether it OPENS that stream is conditional:
+    //
+    //   • Unified owner present (platform-ui's event-runtime.js loaded, auto-
+    //     attach enabled, page advertises the SSE session meta): event-runtime
+    //     owns the SINGLE per-page EventSource. This runtime does NOT open one;
+    //     it CONSUMES deferred frames re-emitted as `semitexa:ui-sse:frame`
+    //     document events. The deferred 'done' here means "deferred phase
+    //     complete" — it must NOT close the stream (the owner keeps it open for
+    //     live UI events). See _consume().
+    //
+    //   • No owner (semitexa-ssr used without platform-ui — a supported,
+    //     standalone configuration): this runtime self-opens its own
+    //     EventSource exactly as before. See _connect() (unchanged legacy path).
+    //
+    // The rule is "stop opening a COMPETING stream when an owner exists," not
+    // "never open." _hasUnifiedOwner() decides; bootstrap + setLocale branch on
+    // it.
+
+    // Safety net for consumer mode: if the shared stream never delivers a
+    // deferred 'done' (e.g. the owner did not open a stream for this page),
+    // fill still-pending slots via the XHR fallback so placeholders never hang.
+    var SHARED_STREAM_FALLBACK_MS = 6000;
+
     // ── HTML Escaping ──────────────────────────────────────────────────
     var ESC_MAP = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'};
     function htmlEscape(str) {
@@ -589,6 +615,131 @@
             };
         },
 
+        // True when platform-ui's event-runtime owns the single per-page SSE
+        // stream and WILL open it for this page. Mirrors event-runtime's own
+        // open gate (maybeAutoOpenSse): the runtime is loaded, auto-attach is
+        // not disabled, and the page advertises the SSE session meta tag. When
+        // any of these is false the owner won't open a stream, so we self-open
+        // (legacy) instead.
+        _hasUnifiedOwner: function () {
+            if (typeof window === 'undefined' || !window.SemitexaUi || !window.SemitexaUi.sse) {
+                return false;
+            }
+            if (window.SEMITEXA_UI_DISABLE_AUTOATTACH === true) {
+                return false;
+            }
+            return !!(typeof document !== 'undefined'
+                && document.querySelector
+                && document.querySelector('meta[name="semitexa-ui-sse-session"]'));
+        },
+
+        // Consumer mode: subscribe to the owner's shared stream instead of
+        // opening our own EventSource. Deferred frames are re-emitted by
+        // event-runtime as `semitexa:ui-sse:frame` document events.
+        _consume: function (manifest) {
+            if (!manifest || !manifest.requestId) return;
+            var self = this;
+            self._manifest = manifest;
+            self._connected = true;
+            self._consumerActive = true;
+            self._deferredCompleted = false;
+            self._deferredLive = false;
+
+            var pendingSlots = new Set();
+            if (Array.isArray(manifest.slots)) {
+                manifest.slots.forEach(function (s) { pendingSlots.add(s.id); });
+            }
+            var pendingComponents = new Set();
+            if (Array.isArray(manifest.components)) {
+                manifest.components.forEach(function (c) {
+                    if (c && c.instance_id) pendingComponents.add(c.instance_id);
+                });
+            }
+
+            self._fireEvent('semitexa:deferred:stream', {
+                phase: 'connecting',
+                requestId: manifest.requestId,
+                sessionId: manifest.sessionId,
+                transport: 'shared'
+            });
+
+            function fallbackPending() {
+                if (pendingSlots.size === 0) return;
+                var missed = [];
+                pendingSlots.forEach(function (id) { missed.push(id); });
+                self._fallback({
+                    requestId: manifest.requestId,
+                    sessionId: manifest.sessionId,
+                    slots: missed.map(function (id) { return {id: id}; })
+                });
+            }
+
+            var fallbackTimer = setTimeout(function () {
+                if (self._deferredCompleted) return;
+                // Owner never delivered a deferred 'done' — fill any pending
+                // slots over the XHR fallback so placeholders do not hang.
+                fallbackPending();
+            }, SHARED_STREAM_FALLBACK_MS);
+
+            document.addEventListener('semitexa:ui-sse:connected', function () {
+                self._fireEvent('semitexa:deferred:stream', {
+                    phase: 'connected',
+                    requestId: manifest.requestId,
+                    sessionId: manifest.sessionId,
+                    transport: 'shared'
+                });
+            });
+
+            document.addEventListener('semitexa:ui-sse:frame', function (ev) {
+                var payload = (ev && ev.detail) ? ev.detail.message : null;
+                if (!payload || typeof payload !== 'object') return;
+
+                if (payload.type === 'done') {
+                    self._deferredCompleted = true;
+                    self._deferredLive = !!payload.live;
+                    clearTimeout(fallbackTimer);
+                    fallbackPending();
+                    // CRITICAL: do NOT close the stream. event-runtime owns it;
+                    // the deferred 'done' only marks the deferred phase complete.
+                    // On a live page the same connection keeps serving UI events,
+                    // and on a drain page the server (keepChannelOpen=false) closes
+                    // it — never this consumer.
+                    self._fireEvent('semitexa:deferred:stream', {
+                        phase: 'done',
+                        requestId: manifest.requestId,
+                        sessionId: manifest.sessionId,
+                        live: !!payload.live,
+                        pendingSlots: pendingSlots.size,
+                        pendingComponents: pendingComponents.size,
+                        transport: 'shared'
+                    });
+                    return;
+                }
+                if (payload.type === 'deferred_block') {
+                    pendingSlots.delete(payload.slot_id);
+                    self._fireEvent('semitexa:deferred:block', {
+                        requestId: manifest.requestId,
+                        sessionId: manifest.sessionId,
+                        slotId: payload.slot_id,
+                        mode: payload.mode || 'unknown'
+                    });
+                    self._handleMessage(payload);
+                    return;
+                }
+                if (payload.type === 'deferred_component') {
+                    pendingComponents.delete(payload.instance_id);
+                    self._fireEvent('semitexa:deferred:component', {
+                        requestId: manifest.requestId,
+                        sessionId: manifest.sessionId,
+                        componentName: payload.component_name,
+                        instanceId: payload.instance_id
+                    });
+                    self._handleComponentMessage(payload);
+                    return;
+                }
+            });
+        },
+
         _setBindCookie: function (manifest) {
             if (!manifest || !manifest.bindToken) return;
             document.cookie = 'semitexa_ssr_bind=' + encodeURIComponent(manifest.bindToken) + '; Path=/; SameSite=Lax';
@@ -745,7 +896,11 @@
             if (!manifest || !manifest.requestId || !manifest.sessionId) return;
 
             if (!this._connected) {
-                this._connect(manifest);
+                if (this._hasUnifiedOwner()) {
+                    this._consume(manifest);
+                } else {
+                    this._connect(manifest);
+                }
             }
 
             var url = '/__semitexa_locale?session_id=' + encodeURIComponent(manifest.sessionId)
@@ -764,16 +919,20 @@
 
     window.SemitexaSSR = SemitexaSSR;
 
-    // Auto-initialize when manifest is available
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', function () {
-            if (window.__SSR_DEFERRED) {
-                SemitexaSSR._connect(window.__SSR_DEFERRED);
-            }
-        });
-    } else {
-        if (window.__SSR_DEFERRED) {
+    // Auto-initialize when manifest is available. Consume the unified owner's
+    // shared stream when present; otherwise self-open the legacy stream. See
+    // the header comment for the conditional.
+    function bootstrapDeferred() {
+        if (!window.__SSR_DEFERRED) return;
+        if (SemitexaSSR._hasUnifiedOwner()) {
+            SemitexaSSR._consume(window.__SSR_DEFERRED);
+        } else {
             SemitexaSSR._connect(window.__SSR_DEFERRED);
         }
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', bootstrapDeferred);
+    } else {
+        bootstrapDeferred();
     }
 })();

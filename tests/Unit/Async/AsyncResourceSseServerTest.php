@@ -505,6 +505,37 @@ final class AsyncResourceSseServerTest extends TestCase
     }
 
     #[Test]
+    public function encode_session_queue_preserves_order_and_skips_unencodable(): void
+    {
+        $queue = [
+            ['type' => 'a', 'n' => 1],
+            'not-an-array',          // dropped: not an array
+            ['type' => 'b', 's' => 'slash/and-ünïcode'],
+            42,                      // dropped: not an array
+            ['type' => 'c'],
+        ];
+
+        $encoded = $this->encodeSessionQueueForRedis($queue);
+
+        self::assertSame(
+            [
+                '{"type":"a","n":1}',
+                // JSON_UNESCAPED_SLASHES + JSON_UNESCAPED_UNICODE mirror deliver()
+                '{"type":"b","s":"slash/and-ünïcode"}',
+                '{"type":"c"}',
+            ],
+            $encoded,
+        );
+    }
+
+    #[Test]
+    public function encode_session_queue_empty_in_empty_out(): void
+    {
+        self::assertSame([], $this->encodeSessionQueueForRedis([]));
+        self::assertSame([], $this->encodeSessionQueueForRedis(['x', 1, null]));
+    }
+
+    #[Test]
     public function session_coroutine_cancellation_clears_registry_and_stops_worker(): void
     {
         if (!extension_loaded('swoole') || !function_exists('Co\\run') || !class_exists(Channel::class)) {
@@ -589,6 +620,21 @@ final class AsyncResourceSseServerTest extends TestCase
         $method->setAccessible(true);
 
         return (bool) $method->invoke(null, $now, $lastWriteAt, $intervalSeconds);
+    }
+
+    /**
+     * @param list<mixed> $queue
+     * @return list<string>
+     */
+    private function encodeSessionQueueForRedis(array $queue): array
+    {
+        $method = new \ReflectionMethod(AsyncResourceSseServer::class, 'encodeSessionQueueForRedis');
+        $method->setAccessible(true);
+
+        /** @var list<string> $result */
+        $result = $method->invoke(null, $queue);
+
+        return $result;
     }
 
     /**

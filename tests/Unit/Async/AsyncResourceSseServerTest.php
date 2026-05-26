@@ -474,6 +474,37 @@ final class AsyncResourceSseServerTest extends TestCase
     }
 
     #[Test]
+    #[DataProvider('heartbeatDecisionProvider')]
+    public function heartbeat_fires_only_after_the_idle_interval_elapses(
+        int $now,
+        int $lastWriteAt,
+        int $intervalSeconds,
+        bool $expected,
+    ): void {
+        self::assertSame(
+            $expected,
+            $this->shouldSendHeartbeat($now, $lastWriteAt, $intervalSeconds),
+        );
+    }
+
+    /**
+     * @return array<string, array{0: int, 1: int, 2: int, 3: bool}>
+     */
+    public static function heartbeatDecisionProvider(): array
+    {
+        return [
+            // now, lastWriteAt, interval, expected
+            'idle_below_interval'      => [1_000_010, 1_000_000, 20, false],
+            'idle_one_short'           => [1_000_019, 1_000_000, 20, false],
+            'idle_exactly_at_interval' => [1_000_020, 1_000_000, 20, true],
+            'idle_past_interval'       => [1_000_045, 1_000_000, 20, true],
+            'just_wrote'               => [1_000_000, 1_000_000, 20, false],
+            'disabled_zero_interval'   => [9_999_999, 0,         0,  false],
+            'disabled_negative'        => [9_999_999, 0,         -1, false],
+        ];
+    }
+
+    #[Test]
     public function session_coroutine_cancellation_clears_registry_and_stops_worker(): void
     {
         if (!extension_loaded('swoole') || !function_exists('Co\\run') || !class_exists(Channel::class)) {
@@ -550,6 +581,14 @@ final class AsyncResourceSseServerTest extends TestCase
         $method->setAccessible(true);
 
         return (bool) $method->invoke(null, $rawSessionId);
+    }
+
+    private function shouldSendHeartbeat(int $now, int $lastWriteAt, int $intervalSeconds): bool
+    {
+        $method = new \ReflectionMethod(AsyncResourceSseServer::class, 'shouldSendHeartbeat');
+        $method->setAccessible(true);
+
+        return (bool) $method->invoke(null, $now, $lastWriteAt, $intervalSeconds);
     }
 
     /**

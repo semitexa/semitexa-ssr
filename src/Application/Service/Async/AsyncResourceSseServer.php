@@ -69,6 +69,18 @@ final class AsyncResourceSseServer
     private const DEFAULT_MAX_CONN_GLOBAL = 500;
     private const DEFAULT_MAX_CONNECTION_AGE_SECONDS = 600;
 
+    /**
+     * Keepalive cadence for persistent SSE loops. After this many seconds
+     * with no outbound frame, the loop writes an inert SSE comment
+     * (":\n\n") so an idle-but-healthy stream is not silently dropped by an
+     * intermediary (nginx's default 60s proxy_read_timeout being the
+     * canonical offender) and so a dead socket is detected promptly on the
+     * next write. Comfortably under the 60s default proxy window. Drain
+     * streams short-circuit before the loop, so the heartbeat only ever
+     * applies to live / legacy / persistent-deferred streams.
+     */
+    private const HEARTBEAT_INTERVAL_SECONDS = 20;
+
     /** @var array<string, int> Per-worker IP → open-connection counter. */
     private static array $ipConnections = [];
 
@@ -332,6 +344,9 @@ final class AsyncResourceSseServer
         $closed = false;
         $lastAuthTouchAt = time();
         $connectionStartedAt = time();
+        // Seed the heartbeat clock from the `connected` frame written just
+        // above; refreshed on every successful outbound write below.
+        $lastWriteAt = time();
         $maxAgeSeconds = self::envInt('SSE_MAX_CONNECTION_AGE_SECONDS', self::DEFAULT_MAX_CONNECTION_AGE_SECONDS);
         while (!$closed && isset(self::$sessions[$sessionId])) {
             // Hard connection-age cap — bounds hanging-connection attacks.
@@ -352,6 +367,7 @@ final class AsyncResourceSseServer
                     $closed = true;
                     break;
                 }
+                $lastWriteAt = time();
                 if (self::shouldCloseAfterPayload($data)) {
                     $closed = true;
                     break;
@@ -368,6 +384,7 @@ final class AsyncResourceSseServer
                         if (is_array($data) && self::writeSse($response, $data)) {
                             $toDel[] = $deliverKey;
                             $deliverCount++;
+                            $lastWriteAt = time();
                             if (self::shouldCloseAfterPayload($data)) {
                                 $closed = true;
                                 break;
@@ -390,6 +407,16 @@ final class AsyncResourceSseServer
 
             if (function_exists('connection_aborted') && connection_aborted()) {
                 break;
+            }
+
+            // Keepalive: emit an inert comment after an idle gap so the
+            // connection survives proxy idle timeouts and a dead socket is
+            // detected here rather than only on the next data frame.
+            if (self::shouldSendHeartbeat(time(), $lastWriteAt, self::HEARTBEAT_INTERVAL_SECONDS)) {
+                if (!self::writeSseComment($response)) {
+                    break;
+                }
+                $lastWriteAt = time();
             }
 
             \Swoole\Coroutine::sleep(0.2);
@@ -570,6 +597,33 @@ final class AsyncResourceSseServer
     private static function writeSse(Response $response, array $data): bool
     {
         return @$response->write(self::composeSseFrame($data));
+    }
+
+    /**
+     * Write an inert SSE keepalive comment. Per the SSE spec a line that
+     * begins with ":" is a comment — EventSource ignores it entirely, so
+     * no client-side handling is required. Returns false when the socket
+     * is gone; the caller treats that as a closed connection.
+     */
+    private static function writeSseComment(Response $response): bool
+    {
+        return @$response->write(":\n\n");
+    }
+
+    /**
+     * Pure heartbeat decision: should the loop emit a keepalive comment,
+     * given the current time, the last outbound-write time, and the
+     * configured interval? Extracted so the cadence is unit-testable
+     * without a Swoole Response / coroutine runtime. A non-positive
+     * interval disables the heartbeat.
+     */
+    private static function shouldSendHeartbeat(int $now, int $lastWriteAt, int $intervalSeconds): bool
+    {
+        if ($intervalSeconds <= 0) {
+            return false;
+        }
+
+        return ($now - $lastWriteAt) >= $intervalSeconds;
     }
 
     /**

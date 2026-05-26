@@ -57,6 +57,77 @@ final class AsyncResourceSseServerTest extends TestCase
     }
 
     #[Test]
+    public function persistent_live_stream_through_deferred_door_still_requires_bearer_or_auth(): void
+    {
+        // SECURITY INVARIANT: deferred_request_id makes the auth gate
+        // permissive so a guest can receive the one-shot deferred DRAIN. But an
+        // explicit mode=live request asks the server to hold the connection
+        // open as a persistent stream (DeferredBlockOrchestrator keepChannelOpen
+        // keeps it alive past the deferred 'done'). A bind-token is held by
+        // EVERY client that loaded the deferred page, so it is NOT an auth
+        // credential. An anonymous, non-bearer caller therefore MUST NOT obtain
+        // a persistent live stream through the deferred door — it must still
+        // present the bearer-channel id (or be authenticated / opted in via
+        // SSE_PUBLIC_ANONYMOUS).
+        self::assertSame(
+            self::UNSAFE_BEARER_ERROR_MESSAGE,
+            $this->resolveSseAuthorizationError(
+                authenticated: false,
+                anonymousAllowed: false,
+                demoStream: '',
+                deferredRequestId: 'req-123',
+                safeBearerSessionId: false,
+                persistentRequested: true,
+            ),
+        );
+    }
+
+    #[Test]
+    public function deferred_drain_through_deferred_door_remains_guest_permissive(): void
+    {
+        // Complement: a non-persistent (drain / legacy) deferred request keeps
+        // the deferred door open for guests — it drains the deferred content
+        // then closes, so no long-lived stream is granted.
+        self::assertNull($this->resolveSseAuthorizationError(
+            authenticated: false,
+            anonymousAllowed: false,
+            demoStream: '',
+            deferredRequestId: 'req-123',
+            safeBearerSessionId: false,
+            persistentRequested: false,
+        ));
+    }
+
+    #[Test]
+    public function persistent_live_stream_with_deferred_request_id_admits_bearer_channel(): void
+    {
+        // A legitimate unified connection (after session-id convergence) carries
+        // the page's bearer-shaped sse_<32hex> id; the persistent live stream is
+        // admitted on the bearer credential even alongside deferred_request_id.
+        self::assertNull($this->resolveSseAuthorizationError(
+            authenticated: false,
+            anonymousAllowed: false,
+            demoStream: '',
+            deferredRequestId: 'req-123',
+            safeBearerSessionId: true,
+            persistentRequested: true,
+        ));
+    }
+
+    #[Test]
+    public function persistent_live_stream_with_deferred_request_id_admits_authenticated(): void
+    {
+        self::assertNull($this->resolveSseAuthorizationError(
+            authenticated: true,
+            anonymousAllowed: false,
+            demoStream: '',
+            deferredRequestId: 'req-123',
+            safeBearerSessionId: false,
+            persistentRequested: true,
+        ));
+    }
+
+    #[Test]
     public function guest_persistent_stream_is_rejected_as_unauthorized_before_same_origin_guard(): void
     {
         self::assertSame(
@@ -455,6 +526,7 @@ final class AsyncResourceSseServerTest extends TestCase
         string $demoStream,
         string $deferredRequestId,
         bool $safeBearerSessionId,
+        bool $persistentRequested = false,
     ): ?string {
         $method = new \ReflectionMethod(AsyncResourceSseServer::class, 'resolveSseAuthorizationError');
         $method->setAccessible(true);
@@ -466,6 +538,7 @@ final class AsyncResourceSseServerTest extends TestCase
             $demoStream,
             $deferredRequestId,
             $safeBearerSessionId,
+            $persistentRequested,
         );
 
         return is_string($result) ? $result : null;

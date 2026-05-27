@@ -69,6 +69,18 @@ final class AsyncResourceSseServer
     private const DEFAULT_MAX_CONN_GLOBAL = 500;
     private const DEFAULT_MAX_CONNECTION_AGE_SECONDS = 600;
 
+    /**
+     * Keepalive cadence for persistent SSE loops. After this many seconds
+     * with no outbound frame, the loop writes an inert SSE comment
+     * (":\n\n") so an idle-but-healthy stream is not silently dropped by an
+     * intermediary (nginx's default 60s proxy_read_timeout being the
+     * canonical offender) and so a dead socket is detected promptly on the
+     * next write. Comfortably under the 60s default proxy window. Drain
+     * streams short-circuit before the loop, so the heartbeat only ever
+     * applies to live / legacy / persistent-deferred streams.
+     */
+    private const HEARTBEAT_INTERVAL_SECONDS = 20;
+
     /** @var array<string, int> Per-worker IP → open-connection counter. */
     private static array $ipConnections = [];
 
@@ -332,6 +344,9 @@ final class AsyncResourceSseServer
         $closed = false;
         $lastAuthTouchAt = time();
         $connectionStartedAt = time();
+        // Seed the heartbeat clock from the `connected` frame written just
+        // above; refreshed on every successful outbound write below.
+        $lastWriteAt = time();
         $maxAgeSeconds = self::envInt('SSE_MAX_CONNECTION_AGE_SECONDS', self::DEFAULT_MAX_CONNECTION_AGE_SECONDS);
         while (!$closed && isset(self::$sessions[$sessionId])) {
             // Hard connection-age cap — bounds hanging-connection attacks.
@@ -349,9 +364,15 @@ final class AsyncResourceSseServer
             while (isset(self::$queues[$sessionId]) && self::$queues[$sessionId] !== []) {
                 $data = array_shift(self::$queues[$sessionId]);
                 if (!self::writeSse($response, $data)) {
+                    // Durability: the socket died mid-send. Requeue this
+                    // in-flight payload (already shifted off the queue) to
+                    // Redis so the reconnecting subscriber drains it; any
+                    // remaining queue items are flushed by closeSession.
+                    self::requeueToRedis($sessionId, [$data]);
                     $closed = true;
                     break;
                 }
+                $lastWriteAt = time();
                 if (self::shouldCloseAfterPayload($data)) {
                     $closed = true;
                     break;
@@ -368,6 +389,7 @@ final class AsyncResourceSseServer
                         if (is_array($data) && self::writeSse($response, $data)) {
                             $toDel[] = $deliverKey;
                             $deliverCount++;
+                            $lastWriteAt = time();
                             if (self::shouldCloseAfterPayload($data)) {
                                 $closed = true;
                                 break;
@@ -390,6 +412,16 @@ final class AsyncResourceSseServer
 
             if (function_exists('connection_aborted') && connection_aborted()) {
                 break;
+            }
+
+            // Keepalive: emit an inert comment after an idle gap so the
+            // connection survives proxy idle timeouts and a dead socket is
+            // detected here rather than only on the next data frame.
+            if (self::shouldSendHeartbeat(time(), $lastWriteAt, self::HEARTBEAT_INTERVAL_SECONDS)) {
+                if (!self::writeSseComment($response)) {
+                    break;
+                }
+                $lastWriteAt = time();
             }
 
             \Swoole\Coroutine::sleep(0.2);
@@ -570,6 +602,98 @@ final class AsyncResourceSseServer
     private static function writeSse(Response $response, array $data): bool
     {
         return @$response->write(self::composeSseFrame($data));
+    }
+
+    /**
+     * Write an inert SSE keepalive comment. Per the SSE spec a line that
+     * begins with ":" is a comment — EventSource ignores it entirely, so
+     * no client-side handling is required. Returns false when the socket
+     * is gone; the caller treats that as a closed connection.
+     */
+    private static function writeSseComment(Response $response): bool
+    {
+        return @$response->write(":\n\n");
+    }
+
+    /**
+     * Pure heartbeat decision: should the loop emit a keepalive comment,
+     * given the current time, the last outbound-write time, and the
+     * configured interval? Extracted so the cadence is unit-testable
+     * without a Swoole Response / coroutine runtime. A non-positive
+     * interval disables the heartbeat.
+     */
+    private static function shouldSendHeartbeat(int $now, int $lastWriteAt, int $intervalSeconds): bool
+    {
+        if ($intervalSeconds <= 0) {
+            return false;
+        }
+
+        return ($now - $lastWriteAt) >= $intervalSeconds;
+    }
+
+    /**
+     * Pure helper: JSON-encode a session queue into the wire payloads the
+     * Redis durability path pushes — preserving order and silently
+     * dropping any entry that is not an array or cannot be encoded.
+     * Extracted so the close/requeue encoding is unit-testable without a
+     * Redis pool or Swoole runtime.
+     *
+     * @param list<mixed> $queue
+     * @return list<string>
+     */
+    private static function encodeSessionQueueForRedis(array $queue): array
+    {
+        $encoded = [];
+        foreach ($queue as $data) {
+            if (!is_array($data)) {
+                continue;
+            }
+            $payload = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            if (is_string($payload)) {
+                $encoded[] = $payload;
+            }
+        }
+
+        return $encoded;
+    }
+
+    /**
+     * Durability hook: push undelivered in-memory payloads onto the
+     * existing Redis session queue so a reconnecting subscriber (possibly
+     * on another worker) drains them via drainRedisQueueForSession().
+     * Mirrors the enqueue path in deliver(). No-op without a Redis pool —
+     * in the single-server / in-memory fallback the payloads are dropped,
+     * matching the pre-existing best-effort guarantee.
+     *
+     * @param list<mixed> $payloads
+     */
+    private static function requeueToRedis(string $sessionId, array $payloads): void
+    {
+        $encoded = self::encodeSessionQueueForRedis($payloads);
+        if ($encoded === []) {
+            return;
+        }
+
+        $pool = self::getRedisPool();
+        if ($pool === null) {
+            return;
+        }
+
+        try {
+            $pool->withConnection(static function ($redis) use ($sessionId, $encoded): void {
+                /** @var Client $redis */
+                $queueKey = self::redisSessionQueueKey($sessionId);
+                $redis->rpush($queueKey, $encoded);
+                $redis->expire($queueKey, self::REDIS_SESSION_QUEUE_TTL_SECONDS);
+            });
+        } catch (\Throwable $e) {
+            \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'Redis SSE durability requeue failed', [
+                'session_id' => $sessionId,
+                'count' => count($encoded),
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**
@@ -1039,6 +1163,14 @@ final class AsyncResourceSseServer
         self::removeSessionWorkerMapping($sessionId);
         self::unregisterAuthenticatedSession($sessionId);
         self::releaseIpConnection($sessionId, $response);
+        // Durability: any payloads still queued for this connection (the
+        // socket closed before the loop drained them) are flushed to the
+        // Redis session queue so a reconnecting subscriber drains them via
+        // drainRedisQueueForSession(). No-op when the queue is empty (the
+        // normal drain / clean-close case) or when Redis is unavailable.
+        if (isset(self::$queues[$sessionId]) && self::$queues[$sessionId] !== []) {
+            self::requeueToRedis($sessionId, self::$queues[$sessionId]);
+        }
         unset(self::$sessions[$sessionId], self::$queues[$sessionId], self::$demoProducers[$sessionId], self::$sessionCoroutines[$sessionId]);
         @$response->end();
     }

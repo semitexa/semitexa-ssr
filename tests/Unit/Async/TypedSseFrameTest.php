@@ -14,9 +14,13 @@ use Semitexa\Ssr\Application\Service\UiEvent\UiPatchMessage;
 /**
  * Wire-format tests for the `_type` chokepoint introduced in Phase 2 of
  * the SSE KISS typed-message work. The chokepoint lives in
- * `AsyncResourceSseServer::composeSseFrame()` (private static, reached
- * via Reflection — same pattern as the existing
- * `AsyncResourceSseServerTest::session_coroutine_cancellation_…` test).
+ * `AsyncResourceSseServer::buildFrame()` (private static, reached via
+ * Reflection — same pattern as the existing
+ * `AsyncResourceSseServerTest::session_coroutine_cancellation_…` test),
+ * which resolves/validates the event name on the SSR consumer boundary and
+ * returns a portable `Semitexa\Core\Server\SseFrame`; the mechanical
+ * byte composition is then rendered by `SseFrame::toWire()` in core. This
+ * test exercises the combined path so the wire output stays byte-identical.
  */
 final class TypedSseFrameTest extends TestCase
 {
@@ -25,11 +29,11 @@ final class TypedSseFrameTest extends TestCase
      */
     private static function compose(array $data): string
     {
-        $method = new \ReflectionMethod(AsyncResourceSseServer::class, 'composeSseFrame');
+        $method = new \ReflectionMethod(AsyncResourceSseServer::class, 'buildFrame');
         $method->setAccessible(true);
         $frame = $method->invoke(null, $data);
-        self::assertIsString($frame);
-        return $frame;
+        self::assertInstanceOf(\Semitexa\Core\Server\SseFrame::class, $frame);
+        return $frame->toWire();
     }
 
     #[Test]

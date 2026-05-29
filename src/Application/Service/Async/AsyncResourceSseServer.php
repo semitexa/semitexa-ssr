@@ -9,6 +9,8 @@ use Semitexa\Core\Redis\RedisConnectionPool;
 use Semitexa\Core\Session\RedisSessionHandler;
 use Semitexa\Core\Session\SessionHandlerInterface;
 use Semitexa\Core\Session\SwooleTableSessionHandler;
+use Semitexa\Core\Server\SseFrame;
+use Semitexa\Core\Server\SseTransportInterface;
 use Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Predis\Client;
@@ -113,6 +115,15 @@ final class AsyncResourceSseServer
     private static ?\Swoole\Table $pendingDeliverTable = null;
     private static ?RedisConnectionPool $redisPool = null;
     private static ?DeferredBlockOrchestrator $deferredBlockOrchestrator = null;
+
+    /**
+     * Swoole-free SSE write port (core contract). The Swoole adapter binds
+     * lazily as a soft runtime dependency, mirroring how the rest of the
+     * Swoole runtime adapters are wired. Held here so the byte-writing path
+     * goes through the {@see SseTransportInterface} contract rather than
+     * touching `Swoole\Http\Response::write()` directly.
+     */
+    private static ?SseTransportInterface $transport = null;
 
     public static function handle(Request $request, Response $response): bool
     {
@@ -601,7 +612,7 @@ final class AsyncResourceSseServer
 
     private static function writeSse(Response $response, array $data): bool
     {
-        return @$response->write(self::composeSseFrame($data));
+        return self::transport()->writeFrame($response, self::buildFrame($data));
     }
 
     /**
@@ -612,7 +623,17 @@ final class AsyncResourceSseServer
      */
     private static function writeSseComment(Response $response): bool
     {
-        return @$response->write(":\n\n");
+        return self::transport()->writeComment($response);
+    }
+
+    /**
+     * The SSE write port. Binds the Swoole adapter lazily as a soft runtime
+     * dependency (mirroring the other Swoole runtime adapters); the transport
+     * is stateless, so a single shared instance is sufficient per worker.
+     */
+    private static function transport(): SseTransportInterface
+    {
+        return self::$transport ??= new SwooleSseTransport();
     }
 
     /**
@@ -697,10 +718,15 @@ final class AsyncResourceSseServer
     }
 
     /**
-     * Compose the SSE wire frame for one payload.
+     * Build the SSE wire frame for one payload as a portable {@see SseFrame}.
      *
      * This is the single chokepoint where the canonical `_type` field is
-     * resolved into an SSE `event:` line. Behaviour:
+     * resolved (and allow-list-validated) into an SSE `event:` line. The
+     * SSR/UI-domain enforcement stays here, on this consumer's own boundary,
+     * BEFORE the frame is handed to the transport; the resulting `SseFrame`
+     * carries an already-resolved event name and `core` renders it
+     * mechanically (no allow-list, only CR/LF hygiene) in {@see SseFrame::toWire()}.
+     * Behaviour of the resolution step (unchanged):
      *
      *   - `_type` absent → byte-identical to the pre-Phase-2 wire shape:
      *     the existing `event` field (if any, e.g. demo producer's
@@ -719,38 +745,20 @@ final class AsyncResourceSseServer
      *
      * CR/LF injection on the `event:` line is prevented twice — first by
      * the allow-list (typed `_type` only emits values from a closed
-     * enum), then by the existing `str_replace` on the legacy `event`
-     * field. Defence in depth.
+     * enum), then by the `str_replace` on the rendered `event` line.
+     * Defence in depth.
      *
      * @param array<array-key, mixed> $data
      */
-    private static function composeSseFrame(array $data): string
+    private static function buildFrame(array $data): SseFrame
     {
         [$resolvedEventName, $data] = self::resolveSseEventName($data);
 
-        $line = '';
-        if (isset($data['id'])) {
-            $safeId = str_replace(["\r", "\n"], '', (string) $data['id']);
-            $line .= 'id: ' . $safeId . "\n";
-        }
-        if ($resolvedEventName !== null && $resolvedEventName !== '') {
-            $safeEvent = str_replace(["\r", "\n"], '', $resolvedEventName);
-            $line .= 'event: ' . $safeEvent . "\n";
-        }
-        try {
-            $json = json_encode(
-                $data,
-                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR,
-            );
-        } catch (\JsonException $e) {
-            \Semitexa\Core\Log\StaticLoggerBridge::warning('ssr', 'sse_payload_json_encode_failed', [
-                'exception' => $e::class,
-                'message'   => $e->getMessage(),
-            ]);
-            $json = '{}';
-        }
-        $line .= 'data: ' . $json . "\n\n";
-        return $line;
+        return SseFrame::fromResolved(
+            isset($data['id']) ? (string) $data['id'] : null,
+            $resolvedEventName,
+            $data,
+        );
     }
 
     /**

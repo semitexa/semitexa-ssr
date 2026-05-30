@@ -1650,6 +1650,47 @@ final class AsyncResourceSseServer
         return new SwooleTableSessionHandler();
     }
 
+    /**
+     * Publish a DATA-LESS scope-invalidation signal on the SSE Redis bus
+     * (Track R · P3 — the cross-instance push origin). The channel name
+     * (`ui.invalidate.{tenant}.{scopeKey}`) carries the full routing key;
+     * the message body is intentionally empty — the subscriber (R3) re-runs
+     * the recipient's own chain, it does not consume row data here.
+     *
+     * Reuses the existing size-1 SSE pool deliberately: a PUBLISH is a
+     * non-blocking request/reply command, so — unlike the subscriber's
+     * blocking `pubSubLoop`, which MUST own a dedicated connection — it is
+     * safe to borrow the shared pooled connection (design §C.3). No-op
+     * without a Redis pool (single-server / in-memory mode): cross-instance
+     * fan-out has no non-Redis path, and a dropped signal is repaired by the
+     * next mutation's signal (idempotent / lossy-tolerant, design §C.3).
+     */
+    public static function publishScopeInvalidation(string $channel): void
+    {
+        $channel = trim($channel);
+        if ($channel === '') {
+            return;
+        }
+
+        $pool = self::getRedisPool();
+        if ($pool === null) {
+            return;
+        }
+
+        try {
+            $pool->withConnection(static function ($redis) use ($channel): void {
+                /** @var Client $redis */
+                $redis->publish($channel, '');
+            });
+        } catch (\Throwable $e) {
+            \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'Redis SSE scope-invalidation publish failed', [
+                'channel' => $channel,
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+            ]);
+        }
+    }
+
     private static function getRedisPool(): ?RedisConnectionPool
     {
         if (self::$redisPool instanceof RedisConnectionPool) {

@@ -1095,38 +1095,64 @@ final class AsyncResourceSseServer
     }
 
     /**
+     * Fan-out to every active session of one user.
+     *
+     * @internal FENCED FAIL-CLOSED until Track R. This non-owner-request-scoped
+     *           writer does zero content-vs-recipient authorization (it merely
+     *           loops owner-scoped {@see self::deliver()} over a recipient list),
+     *           so private content could ride it to non-entitled sessions. It is
+     *           latent (zero callers); the throw fires BEFORE any deliver()/socket
+     *           write so no frame can leak even partially. Track R replaces this
+     *           throw with the per-recipient entitlement-gated implementation
+     *           preserved below. Do NOT wire a caller before then.
+     *
      * @param array<string, mixed> $data
      */
     public static function deliverToUser(string $userId, array $data): int
     {
-        $userId = trim($userId);
-        if ($userId === '') {
-            return 0;
-        }
+        throw FanOutNotYetGatedException::forFanOut(__METHOD__);
 
-        $sessionIds = self::getAuthenticatedUserSessionIds($userId);
-        $delivered = 0;
-        foreach ($sessionIds as $sessionId) {
-            self::deliver($sessionId, $data);
-            $delivered++;
-        }
-
-        return $delivered;
+        // Track R restores the entitlement-gated form of the original body:
+        //
+        //     $userId = trim($userId);
+        //     if ($userId === '') {
+        //         return 0;
+        //     }
+        //     $sessionIds = self::getAuthenticatedUserSessionIds($userId);
+        //     $delivered = 0;
+        //     foreach ($sessionIds as $sessionId) {
+        //         // Track R: per-recipient entitlement check on ($sessionId, $data) here.
+        //         self::deliver($sessionId, $data);
+        //         $delivered++;
+        //     }
+        //     return $delivered;
     }
 
     /**
+     * System-wide fan-out to every authenticated session.
+     *
+     * @internal FENCED FAIL-CLOSED until Track R. System-wide broadcast with zero
+     *           content-vs-recipient authorization; latent (zero callers). The
+     *           throw fires BEFORE any deliver()/socket write so no frame can leak.
+     *           Track R replaces this throw with the per-recipient entitlement-gated
+     *           implementation preserved below. Do NOT wire a caller before then.
+     *
      * @param array<string, mixed> $data
      */
     public static function deliverToAuthenticatedUsers(array $data): int
     {
-        $sessionIds = self::getAllAuthenticatedSessionIds();
-        $delivered = 0;
-        foreach ($sessionIds as $sessionId) {
-            self::deliver($sessionId, $data);
-            $delivered++;
-        }
+        throw FanOutNotYetGatedException::forFanOut(__METHOD__);
 
-        return $delivered;
+        // Track R restores the entitlement-gated form of the original body:
+        //
+        //     $sessionIds = self::getAllAuthenticatedSessionIds();
+        //     $delivered = 0;
+        //     foreach ($sessionIds as $sessionId) {
+        //         // Track R: per-recipient entitlement check on ($sessionId, $data) here.
+        //         self::deliver($sessionId, $data);
+        //         $delivered++;
+        //     }
+        //     return $delivered;
     }
 
     private static function getCurrentWorkerId(): int

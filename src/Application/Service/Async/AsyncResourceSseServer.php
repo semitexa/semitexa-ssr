@@ -134,12 +134,11 @@ final class AsyncResourceSseServer
             $path = parse_url($uri, PHP_URL_PATH) ?: '/';
         }
 
-        if ($path === '/__semitexa_sse' || $path === '/sse') {
-            self::handleSse($request, $response);
-            return true;
-        }
-
-        if ($path === '/__semitexa_kiss') {
+        // /sse and /__semitexa_kiss are the two routed, live held-open streams.
+        // (A third, historical reserved-path intercept was removed here — it was
+        // an unreachable dead branch: nothing routed it and its only JS client
+        // was orphaned.)
+        if ($path === '/sse' || $path === '/__semitexa_kiss') {
             self::handleSse($request, $response);
             return true;
         }

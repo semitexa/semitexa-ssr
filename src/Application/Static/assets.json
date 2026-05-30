@@ -11,11 +11,6 @@
         "js/component-runtime.js": {
             "priority": 15,
             "attributes": { "defer": true }
-        },
-        "js/async-resource-manager.js": {
-            "scope": "global",
-            "priority": 20,
-            "attributes": { "defer": true }
         }
     }
 }

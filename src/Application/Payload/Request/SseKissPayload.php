@@ -10,8 +10,8 @@ use Semitexa\Core\Attribute\TransportType;
 use Semitexa\Core\Http\Response\ResourceResponse;
 
 // The live deferred-SSR stream: client opens it with EventSource and the server
-// holds a text/event-stream open via AsyncResourceSseServer::handleSse — the same
-// code path as /sse, so it declares the identical BearerSession gate model. It
+// holds a text/event-stream open via AsyncResourceSseServer::handleSse — the
+// single shared SSE code path — so it declares the BearerSession gate model. It
 // previously omitted transport: Sse (a coverage hole the reformulated boot guard
 // now closes — see assertSseGateCoherence).
 #[AsPublicPayload(

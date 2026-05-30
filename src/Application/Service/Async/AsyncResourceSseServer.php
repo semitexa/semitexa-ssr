@@ -134,11 +134,11 @@ final class AsyncResourceSseServer
             $path = parse_url($uri, PHP_URL_PATH) ?: '/';
         }
 
-        // /sse and /__semitexa_kiss are the two routed, live held-open streams.
-        // (A third, historical reserved-path intercept was removed here — it was
-        // an unreachable dead branch: nothing routed it and its only JS client
-        // was orphaned.)
-        if ($path === '/sse' || $path === '/__semitexa_kiss') {
+        // /__semitexa_kiss is the single routed, live held-open stream.
+        // (Two historical reserved-path intercepts were removed here — both were
+        // dead/redundant branches retired once all SSE unified on kiss: an
+        // unreachable orphaned-client route, and a byte-identical duplicate alias.)
+        if ($path === '/__semitexa_kiss') {
             self::handleSse($request, $response);
             return true;
         }
@@ -163,7 +163,7 @@ final class AsyncResourceSseServer
         //     delivery then sends done/close (canUsePersistentDeferredSse() keeps
         //     the persistent live loop auth-gated), so we let guests through the
         //     gate and rely on the delivery-complete close.
-        //  3. bare /sse with no deferred_request_id is a long-lived stream →
+        //  3. a bare kiss stream with no deferred_request_id is long-lived →
         //     auth required, unless SSE_PUBLIC_ANONYMOUS is opt-in.
         $authenticated = self::hasAuthenticatedSession($request);
         $anonymousAllowed = filter_var((string) (\getenv('SSE_PUBLIC_ANONYMOUS') ?: ''), FILTER_VALIDATE_BOOLEAN);

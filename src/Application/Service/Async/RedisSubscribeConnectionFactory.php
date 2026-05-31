@@ -69,6 +69,13 @@ final class RedisSubscribeConnectionFactory
             'scheme' => $this->config['scheme'],
             'host' => $this->config['host'],
             'port' => $this->config['port'],
+            // Track R · Gap C — a parked blocking SUBSCRIBE must NEVER idle-timeout.
+            // Without this, Predis inherits PHP's default_socket_timeout (~60s) and
+            // the dedicated pubSubLoop read throws ConnectionException ("Error while
+            // reading line from the server") after ~60s of no invalidations, killing
+            // the subscriber loop. -1 = block indefinitely (the correct lifetime for
+            // a subscriber connection, which is meant to be parked).
+            'read_write_timeout' => -1,
         ];
 
         if ($this->config['password'] !== '') {

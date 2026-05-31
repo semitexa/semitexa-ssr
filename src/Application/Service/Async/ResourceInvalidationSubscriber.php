@@ -45,6 +45,15 @@ final class ResourceInvalidationSubscriber
     public const CTRL_KEY = '__ctrl';
     public const CTRL_RERUN = 'rerun';
 
+    /**
+     * Track R · Gap C — backoff between reconnect attempts after a dropped
+     * subscribe connection (Redis restart / network blip), so a hard-down Redis
+     * cannot spin a tight reconnect loop. Idle no longer drops the connection
+     * (read_write_timeout: -1 in {@see RedisSubscribeConnectionFactory}); this
+     * covers the remaining real-failure case.
+     */
+    private const RECONNECT_BACKOFF_SECONDS = 1.0;
+
     public function __construct(
         private readonly SubscriberIndexInterface $index,
         private readonly SubscriptionTable $subscriptions,
@@ -71,32 +80,47 @@ final class ResourceInvalidationSubscriber
             return;
         }
 
-        $channels = $this->desiredChannels();
-        if ($channels === []) {
-            return; // no local subscribers → nothing to subscribe to (C2).
-        }
+        // Track R · Gap C — the loop SELF-HEALS. Before, a single dropped connection
+        // (idle read-timeout, Redis restart, network blip) logged + returned, and the
+        // dead loop was only ever relaunched on the NEXT connect's channel-diff — so a
+        // drop while idle-but-subscribed left the worker permanently deaf to
+        // invalidations. Now the blocking subscribe is wrapped in a reconnect loop: it
+        // returns ONLY when there are no local subscribers left (graceful teardown);
+        // any connection failure logs, backs off, re-reads the desired channels, and
+        // re-subscribes. (read_write_timeout: -1 means idle no longer drops it at all,
+        // so this path is reached only on a genuine connection failure.)
+        while (true) {
+            $channels = $this->desiredChannels();
+            if ($channels === []) {
+                return; // no local subscribers → nothing to subscribe to (C2).
+            }
 
-        $connection = $this->connectionFactory->create(); // DEDICATED — never the pool.
+            $connection = $this->connectionFactory->create(); // DEDICATED — never the pool.
 
-        try {
-            /** @var \Predis\PubSub\Consumer $pubsub */
-            $pubsub = $connection->pubSubLoop(['subscribe' => $channels]);
-            foreach ($pubsub as $message) {
-                if (($message->kind ?? null) === 'message') {
-                    $this->handleMessage((string) $message->channel);
+            try {
+                /** @var \Predis\PubSub\Consumer $pubsub */
+                $pubsub = $connection->pubSubLoop(['subscribe' => $channels]);
+                foreach ($pubsub as $message) {
+                    if (($message->kind ?? null) === 'message') {
+                        $this->handleMessage((string) $message->channel);
+                    }
+                }
+            } catch (\Throwable $e) {
+                StaticLoggerBridge::error('ssr', 'Resource-invalidation subscribe loop failed; reconnecting', [
+                    'exception' => $e::class,
+                    'message' => $e->getMessage(),
+                ]);
+            } finally {
+                try {
+                    $connection->disconnect();
+                } catch (\Throwable) {
+                    // Best-effort close of the dedicated connection.
                 }
             }
-        } catch (\Throwable $e) {
-            StaticLoggerBridge::error('ssr', 'Resource-invalidation subscribe loop failed', [
-                'exception' => $e::class,
-                'message' => $e->getMessage(),
-            ]);
-        } finally {
-            try {
-                $connection->disconnect();
-            } catch (\Throwable) {
-                // Best-effort close of the dedicated connection.
-            }
+
+            // Back off before re-subscribing so a hard-down Redis can't spin a tight
+            // loop. desiredChannels() is re-evaluated at the top of the next iteration.
+            \Swoole\Coroutine::sleep(self::RECONNECT_BACKOFF_SECONDS);
         }
     }
 

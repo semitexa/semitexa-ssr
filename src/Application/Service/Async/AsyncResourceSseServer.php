@@ -119,6 +119,22 @@ final class AsyncResourceSseServer
     private static ?DeferredBlockOrchestrator $deferredBlockOrchestrator = null;
 
     /**
+     * Track R · R8a — the set of request paths served by the SSE intercept,
+     * keyed for O(1) membership (`path => true`).
+     *
+     * Populated per worker by {@see WireSseServedPathsListener} from every
+     * discovered route whose `transport` is {@see TransportType::Sse} — so the
+     * serve dispatch in {@see handle()} keys on the route's declared transport,
+     * not on a hardcoded path. `/__semitexa_kiss` is itself a `transport: Sse`
+     * route ({@see \Semitexa\Ssr\Application\Payload\Request\SseKissPayload}), so
+     * it lands in this set and continues to be served by the same generalized
+     * path — no kiss-specific branch survives.
+     *
+     * @var array<string, true>
+     */
+    private static array $sseServedPaths = [];
+
+    /**
      * Swoole-free SSE write port (core contract). The Swoole adapter binds
      * lazily as a soft runtime dependency, mirroring how the rest of the
      * Swoole runtime adapters are wired. Held here so the byte-writing path
@@ -167,16 +183,34 @@ final class AsyncResourceSseServer
             $path = parse_url($uri, PHP_URL_PATH) ?: '/';
         }
 
-        // /__semitexa_kiss is the single routed, live held-open stream.
+        // Track R · R8a — serve any route that DECLARES transport: Sse, not a
+        // hardcoded path. The served-path set is built from the discovered
+        // routes' transport (see {@see $sseServedPaths} / WireSseServedPathsListener),
+        // so /__semitexa_kiss continues to be served via the same generalized
+        // dispatch (it declares transport: Sse) while an own-route SSE endpoint
+        // declaring transport: Sse is served on equal footing — no path branch.
         // (Two historical reserved-path intercepts were removed here — both were
         // dead/redundant branches retired once all SSE unified on kiss: an
         // unreachable orphaned-client route, and a byte-identical duplicate alias.)
-        if ($path === '/__semitexa_kiss') {
+        if (self::shouldServeAsSse($path)) {
             self::handleSse($request, $response);
             return true;
         }
 
         return false;
+    }
+
+    /**
+     * Track R · R8a — does the resolved route for $path declare transport: Sse?
+     *
+     * Membership in {@see $sseServedPaths} is equivalent to `transport === Sse`:
+     * the set is populated exclusively from routes whose declared transport is
+     * {@see TransportType::Sse}. A non-Sse route's path is absent, so it is NOT
+     * served as a stream (the dispatch is correct, not over-broad).
+     */
+    private static function shouldServeAsSse(string $path): bool
+    {
+        return isset(self::$sseServedPaths[$path]);
     }
 
     private static function handleSse(Request $request, Response $response): void
@@ -1157,6 +1191,28 @@ final class AsyncResourceSseServer
     public static function setServer(\Swoole\Http\Server $server): void
     {
         self::$httpServer = $server;
+    }
+
+    /**
+     * Track R · R8a — register the paths served by the SSE intercept.
+     *
+     * Called once per worker by {@see WireSseServedPathsListener} with every
+     * discovered `transport: Sse` route path. Stored as a `path => true` map so
+     * {@see shouldServeAsSse()} is an O(1) lookup. Replaces (verbatim values are
+     * supplied, not derived here): the listener owns the transport filter, this
+     * setter owns nothing but the index shape.
+     *
+     * @param list<string> $paths
+     */
+    public static function setSseServedPaths(array $paths): void
+    {
+        $index = [];
+        foreach ($paths as $path) {
+            if (is_string($path) && $path !== '') {
+                $index[$path] = true;
+            }
+        }
+        self::$sseServedPaths = $index;
     }
 
     public static function setTables(

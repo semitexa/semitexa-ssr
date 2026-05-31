@@ -474,6 +474,34 @@ final class AsyncResourceSseServerTest extends TestCase
     }
 
     #[Test]
+    public function serve_dispatch_keys_on_registered_transport_sse_paths_not_a_hardcoded_path(): void
+    {
+        // Track R · R8a — the serve intercept dispatches on the route's declared
+        // transport (the registered Sse-served-path set), not on '/__semitexa_kiss'.
+        // KISS stays served because it declares transport: Sse and so lands in the
+        // set alongside an own-route, non-kiss Sse path; a non-Sse path is absent.
+        AsyncResourceSseServer::setSseServedPaths([
+            '/__semitexa_kiss',
+            '/ui-playground/admin/leads/grid-stream',
+        ]);
+
+        self::assertTrue($this->shouldServeAsSse('/__semitexa_kiss'), 'kiss is still served via the generalized transport set');
+        self::assertTrue($this->shouldServeAsSse('/ui-playground/admin/leads/grid-stream'), 'a non-kiss transport: Sse route is served on equal footing');
+        self::assertFalse($this->shouldServeAsSse('/ui-playground/admin/leads/grid-data'), 'a non-Sse route on the same shape is NOT served as SSE');
+        self::assertFalse($this->shouldServeAsSse('/'), 'an unrelated HTTP path is not served as SSE');
+    }
+
+    #[Test]
+    public function serve_dispatch_set_is_empty_until_populated(): void
+    {
+        // No transport: Sse routes registered → nothing is served by the intercept
+        // (the dispatch is data-driven, with no hidden hardcoded kiss fallback).
+        AsyncResourceSseServer::setSseServedPaths([]);
+
+        self::assertFalse($this->shouldServeAsSse('/__semitexa_kiss'));
+    }
+
+    #[Test]
     #[DataProvider('heartbeatDecisionProvider')]
     public function heartbeat_fires_only_after_the_idle_interval_elapses(
         int $now,
@@ -612,6 +640,14 @@ final class AsyncResourceSseServerTest extends TestCase
         $method->setAccessible(true);
 
         return (bool) $method->invoke(null, $rawSessionId);
+    }
+
+    private function shouldServeAsSse(string $path): bool
+    {
+        $method = new \ReflectionMethod(AsyncResourceSseServer::class, 'shouldServeAsSse');
+        $method->setAccessible(true);
+
+        return (bool) $method->invoke(null, $path);
     }
 
     private function shouldSendHeartbeat(int $now, int $lastWriteAt, int $intervalSeconds): bool

@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service\Async;
 
 use Semitexa\Core\Environment;
+use Semitexa\Core\HttpResponse;
+use Semitexa\Core\Pipeline\ReRun\ReRunnerInterface;
 use Semitexa\Core\Redis\RedisConnectionPool;
 use Semitexa\Core\Session\RedisSessionHandler;
 use Semitexa\Core\Session\SessionHandlerInterface;
@@ -124,6 +126,37 @@ final class AsyncResourceSseServer
      * touching `Swoole\Http\Response::write()` directly.
      */
     private static ?SseTransportInterface $transport = null;
+
+    /**
+     * Track R · R4 — the loop branch's worker-static collaborators.
+     *
+     * The re-run unit is core (R2's {@see ReRunnerInterface}); the loop body
+     * stays here in ssr, bridged to it by this worker-static reference (design
+     * §B.3 "loop body stays in ssr, re-run unit is core, bridged by a
+     * worker-static closure"). The coalescer (R3) is the cross-worker
+     * idempotency table whose pending mark R4 CLEARS after handling a control,
+     * re-arming the next mutation's signal.
+     *
+     * Both are null until the live binding is wired (R8 / the dispatcher-wiring
+     * brick). While null a `{__ctrl:rerun}` is a SAFE no-op — dropped without a
+     * re-run and without ever reaching the socket — so R4 is inert until lit up,
+     * keeping {@see handleControlFrame()} plain-constructable (no DI binding,
+     * mirroring R1/R3/R5).
+     */
+    private static ?ReRunnerInterface $reRunner = null;
+    private static ?RerunCoalescer $rerunCoalescer = null;
+
+    /**
+     * {@see handleControlFrame()} outcomes. A control marker is a SIGNAL, never
+     * bytes for the wire (§C.4): NOT_CONTROL → the caller writes the ordinary
+     * data frame as before; HANDLED_CONTINUE → the control was consumed (re-run
+     * frame written, or a safe no-op), the drain continues; HANDLED_CLOSE → the
+     * re-run TERMINATEd (lost access) or the fresh-frame write failed, the stream
+     * must close.
+     */
+    private const CTRL_NOT_CONTROL = 0;
+    private const CTRL_HANDLED_CONTINUE = 1;
+    private const CTRL_HANDLED_CLOSE = 2;
 
     public static function handle(Request $request, Response $response): bool
     {
@@ -373,6 +406,20 @@ final class AsyncResourceSseServer
 
             while (isset(self::$queues[$sessionId]) && self::$queues[$sessionId] !== []) {
                 $data = array_shift(self::$queues[$sessionId]);
+
+                // Track R · R4 — catch a control marker before it can be written
+                // as a data frame (same-worker path: X==W, the control landed on
+                // this worker's in-memory queue).
+                $ctrl = self::handleControlFrame($sessionId, $response, $data);
+                if ($ctrl === self::CTRL_HANDLED_CLOSE) {
+                    $closed = true;
+                    break;
+                }
+                if ($ctrl === self::CTRL_HANDLED_CONTINUE) {
+                    $lastWriteAt = time();
+                    continue;
+                }
+
                 if (!self::writeSse($response, $data)) {
                     // Durability: the socket died mid-send. Requeue this
                     // in-flight payload (already shifted off the queue) to
@@ -396,7 +443,28 @@ final class AsyncResourceSseServer
                 foreach (self::$deliverTable as $deliverKey => $row) {
                     if ((int) $row['worker_id'] === $currentWorkerId && trim((string) $row['session_id']) === $sessionId) {
                         $data = json_decode((string) $row['payload'], true);
-                        if (is_array($data) && self::writeSse($response, $data)) {
+                        if (!is_array($data)) {
+                            continue;
+                        }
+
+                        // Track R · R4 — catch a control marker on the cross-worker
+                        // Swoole-table fallback (no-Redis path). The owning worker
+                        // W self-selects via the worker_id match above, so the
+                        // tier-2 context resolves locally here.
+                        $ctrl = self::handleControlFrame($sessionId, $response, $data);
+                        if ($ctrl === self::CTRL_HANDLED_CLOSE) {
+                            $toDel[] = $deliverKey;
+                            $closed = true;
+                            break;
+                        }
+                        if ($ctrl === self::CTRL_HANDLED_CONTINUE) {
+                            $toDel[] = $deliverKey;
+                            $deliverCount++;
+                            $lastWriteAt = time();
+                            continue;
+                        }
+
+                        if (self::writeSse($response, $data)) {
                             $toDel[] = $deliverKey;
                             $deliverCount++;
                             $lastWriteAt = time();
@@ -580,6 +648,19 @@ final class AsyncResourceSseServer
 
             $data = json_decode((string) $raw, true);
             if (!is_array($data)) {
+                continue;
+            }
+
+            // Track R · R4 — catch a control marker on the session-addressed Redis
+            // queue: the canonical X→W seam (§C.4). A non-owner worker X RPUSHed
+            // the `{__ctrl:rerun}` here; the OWNING worker W drains it on its tick
+            // and resolves its worker-local tier-2 context. A miss (drained on a
+            // worker without the tier-2 record) is the safe no-op edge.
+            $ctrl = self::handleControlFrame($sessionId, $response, $data);
+            if ($ctrl === self::CTRL_HANDLED_CLOSE) {
+                return true;
+            }
+            if ($ctrl === self::CTRL_HANDLED_CONTINUE) {
                 continue;
             }
 
@@ -1092,6 +1173,171 @@ final class AsyncResourceSseServer
     public static function setDeferredBlockOrchestrator(?DeferredBlockOrchestrator $orchestrator): void
     {
         self::$deferredBlockOrchestrator = $orchestrator;
+    }
+
+    /**
+     * Track R · R4 — wire the core re-run unit (R2) the loop branch calls when it
+     * catches a `{__ctrl:rerun}` control. Live binding is the dispatcher-wiring
+     * brick / R8; until then it stays null and a control is a safe no-op.
+     */
+    public static function setReRunner(?ReRunnerInterface $reRunner): void
+    {
+        self::$reRunner = $reRunner;
+    }
+
+    /**
+     * Track R · R4 — wire the cross-worker re-run coalescer (R3) whose pending
+     * mark the loop branch CLEARS after handling a control, re-arming the next
+     * mutation's signal (the bounded-coalescing window). The shared table is
+     * created pre-fork by R5's {@see CreateTrackRTablesListener}.
+     */
+    public static function setRerunCoalescer(?RerunCoalescer $coalescer): void
+    {
+        self::$rerunCoalescer = $coalescer;
+    }
+
+    /**
+     * Track R · R4 — the loop branch that catches a `{__ctrl:rerun}` control
+     * before it can be written to the client and turns it into a full-chain
+     * re-run, closing the push→re-run cycle.
+     *
+     * A control marker is a SIGNAL, never a data frame (§C.4): it carries
+     * `{__ctrl:'rerun', streaming_id, scope_key}` and no row data. On such a
+     * marker this:
+     *   1. resolves the worker-local {@see ReRunContext} by `streaming_id`
+     *      (R1 tier-2, {@see SubscriptionDtoRegistry});
+     *   2. re-runs the full handler chain auth-first via R2's {@see ReRunnerInterface};
+     *   3. on a fresh frame → writes it to this stream; on TERMINATE → returns
+     *      HANDLED_CLOSE after emitting a close frame and NO data frame (the
+     *      lost-access path, §B.3);
+     *   4. clears the coalescer mark (R3's {@see RerunCoalescer::clearPending()})
+     *      after EITHER outcome, so the next mutation's signal re-arms.
+     *
+     * CROSS-WORKER CORRECTNESS (§C3, the decisive edge): the control rides the
+     * session-addressed queue, so the OWNING worker drains it and finds its
+     * tier-2 context locally. If a control is drained where no tier-2 record
+     * exists — a non-owner worker drained it, or the stream was already torn
+     * down — the re-run is a SAFE no-op: no crash, no re-run, no frame. (The
+     * tier-2 registry is worker-local; a miss there is exactly that edge.)
+     *
+     * @param mixed                $response the opaque transport handle (Swoole\Http\Response)
+     * @param array<string, mixed> $data
+     * @return int one of the CTRL_* outcomes
+     */
+    private static function handleControlFrame(string $sessionId, mixed $response, array $data): int
+    {
+        if (($data['__ctrl'] ?? null) !== 'rerun') {
+            return self::CTRL_NOT_CONTROL;
+        }
+
+        $streamingId = trim((string) ($data['streaming_id'] ?? ''));
+        if ($streamingId === '') {
+            // Malformed control — nothing to resolve. Consume it (never written).
+            return self::CTRL_HANDLED_CONTINUE;
+        }
+
+        // Tier-2 resolve (R1, worker-local). A miss = this worker does not own
+        // the stream (a non-owner drained the control) or the stream was torn
+        // down: a missing context is nothing to re-run. Clear the mark + drop.
+        // No crash, no re-run, no frame — the decisive cross-worker edge (§C3).
+        $context = SubscriptionDtoRegistry::get($streamingId);
+        if ($context === null) {
+            self::clearRerunPending($streamingId);
+            return self::CTRL_HANDLED_CONTINUE;
+        }
+
+        // The re-run unit is wired live by R8 / the dispatcher brick. Until then
+        // a control is a safe no-op: clear the mark, drop, never touch the socket.
+        if (self::$reRunner === null) {
+            self::clearRerunPending($streamingId);
+            return self::CTRL_HANDLED_CONTINUE;
+        }
+
+        try {
+            $result = self::$reRunner->reRun($context);
+        } catch (\Throwable $e) {
+            // A re-run failure must neither leak data nor kill the stream — log,
+            // clear the mark, and keep the stream alive for the next signal.
+            \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'track_r_rerun_failed', [
+                'streaming_id' => $streamingId,
+                'session_id' => $sessionId,
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+            ]);
+            self::clearRerunPending($streamingId);
+            return self::CTRL_HANDLED_CONTINUE;
+        }
+
+        // Clear the coalescer mark after handling (either outcome) so a later
+        // mutation's signal can enqueue a fresh re-run — the bounded-coalescing
+        // window (R3 sets the mark; R4 clears it). Idempotent with onDisconnect.
+        self::clearRerunPending($streamingId);
+
+        if ($result->isTerminated()) {
+            // Lost-access path (§B.3): the subject no longer has access. Emit a
+            // close frame, NO data frame, and signal the loop to end the stream.
+            self::writeControlClose($response, $result->getReason() ?? 'unauthorized');
+            return self::CTRL_HANDLED_CLOSE;
+        }
+
+        $frame = $result->getFrame();
+        if ($frame === null) {
+            // Defensive: a non-terminated result with no frame — nothing to
+            // write. (R2 never produces this; treat as a benign no-op.)
+            return self::CTRL_HANDLED_CONTINUE;
+        }
+
+        // Write the freshly re-queried frame. The re-run re-queried the data
+        // under the recipient's CURRENT authorization, so this is fresh, not
+        // the stale cached value (the §C4 delete edge: a re-run over a now-absent
+        // resource yields the handler's empty/"gone" frame, written as-is — no
+        // crash, no stale data).
+        if (!self::transport()->writeFrame($response, self::buildFrame(self::reRunFrameData($frame)))) {
+            // Socket died writing the fresh frame — close the stream.
+            return self::CTRL_HANDLED_CLOSE;
+        }
+
+        return self::CTRL_HANDLED_CONTINUE;
+    }
+
+    /**
+     * Clear the per-stream coalescer pending mark, if the coalescer is wired.
+     * No-op until R8 wires {@see setRerunCoalescer()}.
+     */
+    private static function clearRerunPending(string $streamingId): void
+    {
+        self::$rerunCoalescer?->clearPending($streamingId);
+    }
+
+    /**
+     * Emit the close frame for a TERMINATEd re-run (lost access). A close frame,
+     * never a data frame — the §B.3 guarantee that no data leaks to a
+     * de-authorized subject. Goes straight through the transport (mirroring
+     * {@see writeSse()}) so the branch stays Swoole-free and unit-testable.
+     */
+    private static function writeControlClose(mixed $response, string $reason): bool
+    {
+        return self::transport()->writeFrame($response, self::buildFrame([
+            'event' => 'close',
+            'reason' => $reason,
+            'close' => true,
+        ]));
+    }
+
+    /**
+     * Map a re-run {@see HttpResponse} into the SSE wire-frame array
+     * {@see buildFrame()} consumes. The handler composes a JSON body; decode it
+     * so the frame envelope (incl. any `_type`) round-trips through the existing
+     * event-name resolution. A non-JSON/non-array body is wrapped so a frame is
+     * still emitted rather than dropped.
+     *
+     * @return array<array-key, mixed>
+     */
+    private static function reRunFrameData(HttpResponse $frame): array
+    {
+        $decoded = json_decode($frame->getContent(), true);
+
+        return is_array($decoded) ? $decoded : ['data' => $frame->getContent()];
     }
 
     /**

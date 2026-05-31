@@ -6,6 +6,7 @@ namespace Semitexa\Ssr\Application\Service\Async;
 
 use Semitexa\Core\Environment;
 use Semitexa\Core\HttpResponse;
+use Semitexa\Core\Pipeline\ReRun\ReRunContext;
 use Semitexa\Core\Pipeline\ReRun\ReRunnerInterface;
 use Semitexa\Core\Redis\RedisConnectionPool;
 use Semitexa\Core\Session\RedisSessionHandler;
@@ -15,6 +16,7 @@ use Semitexa\Core\Server\SseFrame;
 use Semitexa\Core\Server\SseTransportInterface;
 use Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
+use Semitexa\Ssr\Domain\Model\SubscriptionRecord;
 use Predis\Client;
 use Swoole\Http\Request;
 use Swoole\Http\Response;
@@ -161,6 +163,36 @@ final class AsyncResourceSseServer
      */
     private static ?ReRunnerInterface $reRunner = null;
     private static ?RerunCoalescer $rerunCoalescer = null;
+
+    /**
+     * Track R · R8c (C2) — the per-worker connect coordinator (R5) that the
+     * held-open resource stream ({@see serveResourceStream()}) drives on
+     * connect/disconnect to populate / reap the three-tier subscription store and
+     * subscribe-on-first / unsubscribe-on-last. Wired live by
+     * {@see \Semitexa\Ssr\Application\Service\Server\Lifecycle\WireTrackRConsumerListener}.
+     * Null until wired (and on the kiss path, which has no resource subscription) —
+     * a null coordinator makes the consumer-half a safe no-op.
+     */
+    private static ?ConnectCoordinator $connectCoordinator = null;
+
+    /**
+     * Track R · R8c — re-run reentrancy depth, per coroutine.
+     *
+     * {@see handleControlFrame()} re-runs the FULL handler chain
+     * ({@see ReRunnerInterface::reRun()} → `RouteExecutor::reExecute()`), which
+     * re-invokes the SAME own-route handler. That handler must produce the fresh
+     * frame BODY (JSON) and must NOT grab the live socket and enter a second
+     * held-open stream (which would break the fd it is already streaming on, or
+     * recurse). The handler asks {@see isReRunInProgress()} to take its JSON branch
+     * on a re-run tick. The depth is COROUTINE-LOCAL ({@see Coroutine::getContext()})
+     * because a re-run may yield on I/O to another session's connect coroutine —
+     * a per-worker static would cross-contaminate; only the re-running coroutine
+     * itself must read the flag. A static fallback covers the CLI/test (no-coroutine)
+     * path. @var int
+     */
+    private static int $reRunDepthFallback = 0;
+
+    private const RERUN_SCOPE_CONTEXT_KEY = '__semitexa_track_r_rerun_depth';
 
     /**
      * {@see handleControlFrame()} outcomes. A control marker is a SIGNAL, never
@@ -418,6 +450,31 @@ final class AsyncResourceSseServer
             );
         }
 
+        self::runHeldOpenLoop($sessionId, $request, $response, $authenticatedUserId);
+
+        self::closeSession($sessionId, $response);
+    }
+
+    /**
+     * The held-open servicing loop — the single drain loop that keeps an SSE fd
+     * open and delivers subsequent frames (queue → cross-worker deliver-table →
+     * Redis queue), catches the R4 `{__ctrl:rerun}` control on each path, applies
+     * the connection-age cap, and emits the idle keepalive.
+     *
+     * Extracted from {@see handleSse()} so a non-kiss own-route stream
+     * ({@see serveResourceStream()}, the Track R · R8c held-open grid) is serviced
+     * by the EXACT same loop — including R4's re-run branch — rather than a parallel
+     * copy. Kiss is byte-unchanged: {@see handleSse()} still computes the same
+     * pre-loop state and calls this with it. The loop does NOT close the session;
+     * the caller owns {@see closeSession()} (so a caller can run teardown hooks
+     * around it).
+     */
+    private static function runHeldOpenLoop(
+        string $sessionId,
+        Request $request,
+        Response $response,
+        string $authenticatedUserId,
+    ): void {
         $closed = false;
         $lastAuthTouchAt = time();
         $connectionStartedAt = time();
@@ -538,8 +595,136 @@ final class AsyncResourceSseServer
 
             \Swoole\Coroutine::sleep(0.2);
         }
+    }
 
-        self::closeSession($sessionId, $response);
+    /**
+     * Track R · R8c (C1/C2) — serve a Protected own-route resource stream as a
+     * HELD-OPEN SSE stream serviced by the same drain loop kiss uses.
+     *
+     * This is the seam R8a/R8b left inert: the grid endpoint declares
+     * `transport: Sse` (so its path is in {@see $sseServedPaths}) but R8b served it
+     * as a ONE-SHOT frame. Here the OWN handler (it has already flowed the normal
+     * Protected pipeline — hydration + the Subject gate — so authorization is DONE
+     * upstream and this method does NO auth of its own) hands the live socket to
+     * this method, which:
+     *
+     *   1. applies the per-IP / global connection caps (same bound as kiss);
+     *   2. registers the session + worker-table row (so cross-worker
+     *      {@see deliver()} of a `{__ctrl:rerun}` control reaches THIS fd);
+     *   3. writes the INITIAL frame ({@see writeSse()} → the typed-`_type`
+     *      chokepoint, so it is byte-identical to a re-run frame);
+     *   4. launches the consumer-half: R5 {@see ConnectCoordinator::onConnect()}
+     *      populates tier-1 (cross-worker row) + tier-2 (worker-local
+     *      {@see ReRunContext}) and drives R3's subscribe-on-first;
+     *   5. enters {@see runHeldOpenLoop()} — the SAME loop as kiss, where R4's
+     *      {@see handleControlFrame()} catches a `{__ctrl:rerun}` and writes a
+     *      fresh re-queried frame on THIS held-open fd (live update, not reconnect);
+     *   6. on teardown (disconnect / age cap / socket death), R5
+     *      {@see ConnectCoordinator::onDisconnect()} reaps every tier (no zombie),
+     *      then {@see closeSession()} ends the fd.
+     *
+     * `$record` + `$context` are the consumer-half inputs the owning handler builds
+     * (they share `streaming_id`, the linkage R4 follows from a cross-worker control
+     * back to the worker-local re-run state). When either is null, or no coordinator
+     * is wired, the stream still holds open and is serviced — it just has no live
+     * re-run source (the safe degenerate used by the held-open transport test).
+     *
+     * @param array<array-key, mixed> $initialFrameData the first frame's payload
+     *                                                   (already carries its `_type`).
+     */
+    public static function serveResourceStream(
+        Request $request,
+        Response $response,
+        string $sessionId,
+        array $initialFrameData,
+        ?SubscriptionRecord $record = null,
+        ?ReRunContext $context = null,
+    ): void {
+        $sessionId = trim($sessionId);
+        if ($sessionId === '') {
+            $sessionId = uniqid('sse_', true);
+        }
+
+        // Per-IP + global connection caps (same bound as the kiss admit path) —
+        // a held-open resource stream consumes a worker coroutine + fd just like
+        // kiss, so it is accounted the same way.
+        $clientIp = self::resolveClientIp($request);
+        $maxPerIp = self::envInt('SSE_MAX_CONN_PER_IP', self::DEFAULT_MAX_CONN_PER_IP);
+        $maxGlobal = self::envInt('SSE_MAX_CONN_GLOBAL', self::DEFAULT_MAX_CONN_GLOBAL);
+
+        if (array_sum(self::$ipConnections) >= $maxGlobal) {
+            self::rejectTooManyRequests($response, 'SSE connection cap reached for this worker.');
+            return;
+        }
+        if ($clientIp !== '' && ((self::$ipConnections[$clientIp] ?? 0) >= $maxPerIp)) {
+            self::rejectTooManyRequests($response, 'SSE connection cap reached for your IP.');
+            return;
+        }
+        if ($clientIp !== '') {
+            self::$ipConnections[$clientIp] = (self::$ipConnections[$clientIp] ?? 0) + 1;
+            self::$sessionIps[self::sessionConnectionKey($sessionId, $response)] = $clientIp;
+        }
+
+        $response->status(200);
+        $response->header('Content-Type', 'text/event-stream');
+        $response->header('Cache-Control', 'no-cache');
+        $response->header('Connection', 'keep-alive');
+        $response->header('X-Accel-Buffering', 'no');
+
+        self::$sessions[$sessionId] = [
+            'response' => $response,
+            'connected_at' => time(),
+        ];
+        if (!isset(self::$queues[$sessionId])) {
+            self::$queues[$sessionId] = [];
+        }
+        if (self::$sessionWorkerTable !== null && self::$httpServer !== null) {
+            self::$sessionWorkerTable->set(
+                self::sessionTableKey($sessionId),
+                ['worker_id' => self::getCurrentWorkerId()],
+            );
+        }
+        self::touchActiveSession($sessionId);
+
+        // The initial rows frame, immediately — through the typed chokepoint so it
+        // matches the re-run frame shape byte-for-byte.
+        self::writeSse($response, $initialFrameData);
+
+        // Consumer-half launch (R5 · first production caller). Populates both tiers
+        // and drives R3 subscribe-on-first; the tier-2 ReRunContext is keyed by
+        // streaming_id, the key R4 resolves a cross-worker control back to.
+        $coordinator = self::$connectCoordinator;
+        $streamingId = $record?->streamingId ?? $sessionId;
+        if ($coordinator !== null && $record !== null && $context !== null) {
+            try {
+                $coordinator->onConnect($record, $context);
+            } catch (\Throwable $e) {
+                \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'track_r_onconnect_failed', [
+                    'streaming_id' => $streamingId,
+                    'session_id' => $sessionId,
+                    'exception' => $e::class,
+                    'message' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        try {
+            self::runHeldOpenLoop($sessionId, $request, $response, '');
+        } finally {
+            if ($coordinator !== null && $record !== null && $context !== null) {
+                try {
+                    $coordinator->onDisconnect($streamingId);
+                } catch (\Throwable $e) {
+                    \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'track_r_ondisconnect_failed', [
+                        'streaming_id' => $streamingId,
+                        'session_id' => $sessionId,
+                        'exception' => $e::class,
+                        'message' => $e->getMessage(),
+                    ]);
+                }
+            }
+            self::closeSession($sessionId, $response);
+        }
     }
 
     private static function triggerDeferredBlocks(
@@ -1253,6 +1438,65 @@ final class AsyncResourceSseServer
     }
 
     /**
+     * Track R · R8c (C2) — wire the per-worker connect coordinator (R5) the
+     * held-open resource stream drives. Set live by
+     * {@see \Semitexa\Ssr\Application\Service\Server\Lifecycle\WireTrackRConsumerListener}.
+     */
+    public static function setConnectCoordinator(?ConnectCoordinator $coordinator): void
+    {
+        self::$connectCoordinator = $coordinator;
+    }
+
+    /**
+     * Track R · R8c — is the current coroutine inside a re-run tick?
+     *
+     * True only while {@see handleControlFrame()} is re-running the chain on THIS
+     * coroutine. An own-route held-open handler consults this to take its JSON-body
+     * branch on a re-run (the loop frames the body) instead of grabbing the live
+     * socket and entering a second held-open stream.
+     */
+    public static function isReRunInProgress(): bool
+    {
+        if (self::currentCid() >= 0) {
+            $ctx = \Swoole\Coroutine::getContext();
+            if ($ctx !== null) {
+                return ((int) ($ctx[self::RERUN_SCOPE_CONTEXT_KEY] ?? 0)) > 0;
+            }
+        }
+
+        return self::$reRunDepthFallback > 0;
+    }
+
+    private static function beginReRunScope(): void
+    {
+        if (self::currentCid() >= 0) {
+            $ctx = \Swoole\Coroutine::getContext();
+            if ($ctx !== null) {
+                $ctx[self::RERUN_SCOPE_CONTEXT_KEY] = ((int) ($ctx[self::RERUN_SCOPE_CONTEXT_KEY] ?? 0)) + 1;
+                return;
+            }
+        }
+
+        self::$reRunDepthFallback++;
+    }
+
+    private static function endReRunScope(): void
+    {
+        if (self::currentCid() >= 0) {
+            $ctx = \Swoole\Coroutine::getContext();
+            if ($ctx !== null) {
+                $depth = ((int) ($ctx[self::RERUN_SCOPE_CONTEXT_KEY] ?? 0)) - 1;
+                $ctx[self::RERUN_SCOPE_CONTEXT_KEY] = $depth > 0 ? $depth : 0;
+                return;
+            }
+        }
+
+        if (self::$reRunDepthFallback > 0) {
+            self::$reRunDepthFallback--;
+        }
+    }
+
+    /**
      * Track R · R4 — the loop branch that catches a `{__ctrl:rerun}` control
      * before it can be written to the client and turns it into a full-chain
      * re-run, closing the push→re-run cycle.
@@ -1310,7 +1554,15 @@ final class AsyncResourceSseServer
         }
 
         try {
-            $result = self::$reRunner->reRun($context);
+            // Mark this coroutine as re-running so the re-invoked own-route handler
+            // produces a JSON body (the loop frames it) instead of grabbing the live
+            // socket and opening a second held-open stream on the same fd.
+            self::beginReRunScope();
+            try {
+                $result = self::$reRunner->reRun($context);
+            } finally {
+                self::endReRunScope();
+            }
         } catch (\Throwable $e) {
             // A re-run failure must neither leak data nor kill the stream — log,
             // clear the mark, and keep the stream alive for the next signal.

@@ -20,6 +20,8 @@ final class UiSseEventTypeTest extends TestCase
         yield 'ui.patch'          => ['ui.patch'];
         yield 'ui.componentState' => ['ui.componentState'];
         yield 'ui.error'          => ['ui.error'];
+        yield 'ui.grid.data'      => ['ui.grid.data'];
+        yield 'ui.grid.error'     => ['ui.grid.error'];
     }
 
     #[Test]
@@ -51,10 +53,10 @@ final class UiSseEventTypeTest extends TestCase
     }
 
     #[Test]
-    public function allowed_values_lists_exactly_the_four_documented_types(): void
+    public function allowed_values_lists_exactly_the_documented_types(): void
     {
         self::assertSame(
-            ['ssr.fragment', 'ui.patch', 'ui.componentState', 'ui.error'],
+            ['ssr.fragment', 'ui.patch', 'ui.componentState', 'ui.error', 'ui.grid.data', 'ui.grid.error'],
             UiSseEventType::allowedValues(),
         );
     }

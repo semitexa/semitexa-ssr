@@ -24,6 +24,17 @@ enum UiSseEventType: string
     case UiComponentState  = 'ui.componentState';
     case UiError           = 'ui.error';
 
+    // Track R · R8c — the held-open resource-grid stream's typed frames. A grid
+    // data/error frame is a first-class UI SSE event, so it travels the same
+    // typed-`_type` chokepoint as every other framework message: the INITIAL
+    // rows frame written on connect AND every R4-driven fresh frame on re-run go
+    // through {@see \Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::buildFrame()},
+    // producing a byte-identical `event: ui.grid.data` line for both. Promoting
+    // these to the allow-list (rather than a raw `event` string) keeps the rule
+    // intact — no client-controlled string can ever become the event name.
+    case UiGridData        = 'ui.grid.data';
+    case UiGridError       = 'ui.grid.error';
+
     public static function isAllowed(string $type): bool
     {
         return self::tryFrom($type) !== null;

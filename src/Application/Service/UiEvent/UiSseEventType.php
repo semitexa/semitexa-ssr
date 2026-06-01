@@ -35,6 +35,18 @@ enum UiSseEventType: string
     case UiGridData        = 'ui.grid.data';
     case UiGridError       = 'ui.grid.error';
 
+    // Stream Lifecycle · Axis 1(b) — the server-authoritative stream id, handed
+    // to the client as a dedicated FIRST SSE event on connect (one line BEFORE
+    // the initial `ui.grid.data` frame). It rides its OWN one-shot channel
+    // precisely so the data-frame shape never changes: the byte-identical
+    // initial-connect / re-run `ui.grid.data` invariant is preserved because the
+    // id is NOT a field on the data frame. Payload: `{"stream_id":"sse_<32hex>"}`.
+    // A Phase-3 client adopts the id via `addEventListener('ui.stream.id', …)`;
+    // today's client simply ignores the unknown event (back-compat). Promoting it
+    // to this allow-list keeps the rule intact — no client-controlled string can
+    // ever become the event name.
+    case UiStreamId        = 'ui.stream.id';
+
     public static function isAllowed(string $type): bool
     {
         return self::tryFrom($type) !== null;

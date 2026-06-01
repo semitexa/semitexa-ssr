@@ -33,6 +33,23 @@ final class AsyncResourceSseServer
     public const SAFE_BEARER_SESSION_ID_PATTERN = '/\Asse_[a-f0-9]{32}\z/';
 
     /**
+     * Stream Lifecycle · Axis 1(b) — the single server-side source of new stream
+     * ids. Mints a server-authoritative id of the SAME safe shape every store
+     * already keys on (`sse_<32hex>`, 128 bits of CSPRNG entropy), so it satisfies
+     * {@see self::SAFE_BEARER_SESSION_ID_PATTERN}, the {@see SubscriptionTable}
+     * key discipline, and the anti-injection table-key validator with no other
+     * change. The server owns id generation: the held-open resource stream mints
+     * here at connect ({@see serveResourceStream()}) and announces it as the first
+     * `ui.stream.id` SSE event so a Phase-3 client can adopt it. Lives in `ssr`
+     * (not `core`) because the id is meaningful only to the SSE serving path that
+     * keys, delivers, and reaps by it.
+     */
+    public static function mintStreamId(): string
+    {
+        return 'sse_' . bin2hex(random_bytes(16));
+    }
+
+    /**
      * Short-lived KISS transport: flush queued frames + close. Default for
      * public/guest pages that opt into the canonical subscriber channel —
      * bounds worker coroutine / FD pressure by not holding the connection
@@ -647,6 +664,22 @@ final class AsyncResourceSseServer
      *
      * @param array<array-key, mixed> $initialFrameData the first frame's payload
      *                                                   (already carries its `_type`).
+     * @param string $serverStreamId Stream Lifecycle · Axis 1(b) Phase 2 — the
+     *        server-authoritative id to ANNOUNCE as the first `ui.stream.id` SSE
+     *        event (for forward adoption by a Phase-3 client). This is a SEPARATE
+     *        coordinate from `$sessionId`, the ADDRESSING key the stream is keyed
+     *        on. The transition rule (back-compat):
+     *          - if the caller resolved `$sessionId` from a shape-valid CLIENT id,
+     *            THAT remains the addressing key this phase, and `$serverStreamId`
+     *            is the distinct server-minted id emitted for adoption (today's
+     *            client ignores it, so it is inert until Phase 3);
+     *          - if the client sent no id, the caller passes the server-minted id
+     *            as BOTH `$sessionId` and `$serverStreamId`, so announced == key.
+     *        Either way the announced id never becomes a SECOND live addressing
+     *        coordinate this phase: in the only case a client actually adopts it
+     *        (no client id sent), it already EQUALS the key. When empty (a caller
+     *        that did not opt in), the addressing key is announced as a sane
+     *        default. No client/data-frame change — the id rides its own event.
      */
     public static function serveResourceStream(
         Request $request,
@@ -655,10 +688,11 @@ final class AsyncResourceSseServer
         array $initialFrameData,
         ?SubscriptionRecord $record = null,
         ?ReRunContext $context = null,
+        string $serverStreamId = '',
     ): void {
         $sessionId = trim($sessionId);
         if ($sessionId === '') {
-            $sessionId = uniqid('sse_', true);
+            $sessionId = self::mintStreamId();
         }
 
         // Per-IP + global connection caps (same bound as the kiss admit path) —
@@ -701,6 +735,20 @@ final class AsyncResourceSseServer
             );
         }
         self::touchActiveSession($sessionId);
+
+        // Stream Lifecycle · Axis 1(b) Phase 2 — the server-authoritative stream
+        // id as a DEDICATED first SSE event, written one line BEFORE the initial
+        // data frame. It travels its own one-shot `ui.stream.id` channel (NOT a
+        // field on the data frame) precisely so the data frame below stays
+        // byte-identical to every re-run frame — the synchrony-pin invariant. A
+        // Phase-3 client adopts it; today's client ignores the unknown event
+        // (back-compat). Announce the server-minted id when supplied, else fall
+        // back to the addressing key so every resource stream still announces one.
+        $announcedStreamId = trim($serverStreamId) !== '' ? trim($serverStreamId) : $sessionId;
+        self::writeSse($response, [
+            '_type' => \Semitexa\Ssr\Application\Service\UiEvent\UiSseEventType::UiStreamId->value,
+            'stream_id' => $announcedStreamId,
+        ]);
 
         // The initial rows frame, immediately — through the typed chokepoint so it
         // matches the re-run frame shape byte-for-byte.

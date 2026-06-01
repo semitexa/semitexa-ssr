@@ -17,13 +17,17 @@ use Swoole\Table;
  * on while the stream itself is pinned to its owning worker W.
  *
  * THE TIER-SEPARATION INVARIANT (the security boundary, design §C.6): the schema
- * declares ONLY string columns. There is no DTO column, no object column. A live
+ * declares ONLY string columns plus a single INT metadata column ({@see
+ * self::CONNECTED_AT_COLUMN}). There is no DTO column, no object column. A live
  * identity-bearing object (the cached Payload DTO / re-run state) **cannot** be
  * expressed in this table by construction — it lives exclusively in the
  * worker-static {@see SubscriptionDtoRegistry}. This is the decisive structural
  * reason the cross-worker tier cannot leak identity: a serialized row literally
  * cannot carry a live subject. The `tenant_blob` column carries the serialized
- * tenant context (opaque to this store), NOT a live tenant object.
+ * tenant context (opaque to this store), NOT a live tenant object. `connected_at`
+ * is a bare epoch integer (a connect timestamp), not identity and not an object —
+ * it is the staleness basis for the crashed-worker orphan sweep ({@see
+ * self::reapStaleConnections()}), so the invariant is unaffected.
  *
  * Single-writer discipline (design §C.6): a subscription's row is written only
  * by its owning worker W (on connect / close) and read by X's subscriber, so no
@@ -37,9 +41,18 @@ use Swoole\Table;
 final class SubscriptionTable
 {
     /**
-     * The complete schema: column name => byte size. ALL columns are
+     * Connect-time epoch column. The ONLY non-string column — a bare
+     * {@see Table::TYPE_INT} stamped at {@see self::insert()} and read by the
+     * crashed-worker orphan sweep ({@see self::reapStaleConnections()}). It holds
+     * no identity and no object, so the tier-separation invariant still holds.
+     */
+    private const CONNECTED_AT_COLUMN = 'connected_at';
+
+    /**
+     * The string schema: column name => byte size. Every column here is
      * {@see Table::TYPE_STRING}. The absence of any object/DTO column is the
-     * structural proof of the tier-separation invariant.
+     * structural proof of the tier-separation invariant (the lone INT column,
+     * {@see self::CONNECTED_AT_COLUMN}, carries a timestamp, never a subject).
      *
      * @var array<string, int>
      */
@@ -70,6 +83,8 @@ final class SubscriptionTable
         foreach (self::COLUMNS as $name => $size) {
             $table->column($name, Table::TYPE_STRING, $size);
         }
+        // The lone INT column — connect epoch, the staleness basis for the sweep.
+        $table->column(self::CONNECTED_AT_COLUMN, Table::TYPE_INT);
         $table->create();
 
         return new self($table);
@@ -83,7 +98,7 @@ final class SubscriptionTable
      */
     public static function schemaColumns(): array
     {
-        return array_keys(self::COLUMNS);
+        return [...array_keys(self::COLUMNS), self::CONNECTED_AT_COLUMN];
     }
 
     /**
@@ -99,6 +114,9 @@ final class SubscriptionTable
             'tenant_id' => $record->tenantId,
             'scope_keys' => $this->encodeScopeKeys($record->scopeKeys),
             'tenant_blob' => $record->tenantBlob,
+            // Connect epoch — re-stamped on a same-id reconnect (a fresh connection),
+            // which is correct: the staleness clock restarts with the new stream.
+            self::CONNECTED_AT_COLUMN => time(),
         ]);
     }
 
@@ -120,6 +138,62 @@ final class SubscriptionTable
     public function remove(string $streamingId): void
     {
         $this->table->del($this->key($streamingId));
+    }
+
+    /**
+     * Crashed-worker orphan sweep (Stream Lifecycle · Axis 2, Phase 1 — the one
+     * residual leak, design §5). Evict every row whose `connected_at` is older
+     * than `$maxAgeSeconds` before `$now`, returning the evicted `streaming_id`s.
+     *
+     * The held-open loop force-closes a healthy stream at its own
+     * `SSE_MAX_CONNECTION_AGE_SECONDS` cap and reaps it in its `finally`
+     * ({@see AsyncResourceSseServer}), so `$maxAgeSeconds` is that cap PLUS a grace
+     * margin — a row older than cap+grace therefore CANNOT be a live stream; it is
+     * necessarily a tier-1 row orphaned by a worker that hard-crashed before its
+     * `finally` could run. This is age-based ONLY: there is deliberately NO
+     * pid/liveness probe, because Swoole restarts a crashed worker under the SAME
+     * `worker_id`, so a liveness check could false-positive on a row now legitimately
+     * owned by the restarted worker (design §5.3). Age + grace is the robust,
+     * zero-false-positive criterion — a live stream within the window is never
+     * touched.
+     *
+     * A row with no positive timestamp (`connected_at <= 0`) is left ALONE: we
+     * cannot prove it is an orphan, and the contract is to never reap a possibly-live
+     * stream. Deletes are collected first, then applied, mirroring
+     * {@see \Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry::gc()}
+     * (no del during the table iteration).
+     *
+     * @return list<string> the evicted streaming_ids, so the caller can reap any
+     *                      directly-coupled cross-worker state (the coalescer
+     *                      pending mark) the dead worker's `onDisconnect` never cleared
+     */
+    public function reapStaleConnections(int $maxAgeSeconds, int $now): array
+    {
+        /** @var array<string, string> $stale key => streaming_id */
+        $stale = [];
+        foreach ($this->table as $key => $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $connectedAt = (int) ($row[self::CONNECTED_AT_COLUMN] ?? 0);
+            if ($connectedAt <= 0) {
+                continue; // un-aged row — never reap (cannot prove orphan)
+            }
+            if (($now - $connectedAt) <= $maxAgeSeconds) {
+                continue; // within the age+grace window — possibly live, never reap
+            }
+            $stale[(string) $key] = (string) ($row['streaming_id'] ?? '');
+        }
+
+        $evicted = [];
+        foreach ($stale as $key => $streamingId) {
+            $this->table->del($key);
+            if ($streamingId !== '') {
+                $evicted[] = $streamingId;
+            }
+        }
+
+        return $evicted;
     }
 
     public function count(): int

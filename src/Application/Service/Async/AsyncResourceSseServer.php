@@ -497,7 +497,7 @@ final class AsyncResourceSseServer
         // Seed the heartbeat clock from the `connected` frame written just
         // above; refreshed on every successful outbound write below.
         $lastWriteAt = time();
-        $maxAgeSeconds = self::envInt('SSE_MAX_CONNECTION_AGE_SECONDS', self::DEFAULT_MAX_CONNECTION_AGE_SECONDS);
+        $maxAgeSeconds = self::maxConnectionAgeSeconds();
         while (!$closed && isset(self::$sessions[$sessionId])) {
             // Hard connection-age cap — bounds hanging-connection attacks.
             if ($maxAgeSeconds > 0 && (time() - $connectionStartedAt) >= $maxAgeSeconds) {
@@ -1951,6 +1951,20 @@ final class AsyncResourceSseServer
         $ip = trim((string) ($server['remote_addr'] ?? ''));
 
         return $ip !== '' ? strtolower($ip) : '';
+    }
+
+    /**
+     * The resolved hard connection-age cap (`SSE_MAX_CONNECTION_AGE_SECONDS`,
+     * default {@see self::DEFAULT_MAX_CONNECTION_AGE_SECONDS}; `0` disables the
+     * loop's own cap). The held-open loop reads this to force-close + reap a stream
+     * at the cap; the crashed-worker orphan sweeper
+     * ({@see \Semitexa\Ssr\Application\Service\Server\Lifecycle\ReapStaleSubscriptionsListener})
+     * derives its cap+grace staleness threshold from the SAME value, so there is
+     * one source of truth for the cap.
+     */
+    public static function maxConnectionAgeSeconds(): int
+    {
+        return self::envInt('SSE_MAX_CONNECTION_AGE_SECONDS', self::DEFAULT_MAX_CONNECTION_AGE_SECONDS);
     }
 
     private static function envInt(string $key, int $default): int

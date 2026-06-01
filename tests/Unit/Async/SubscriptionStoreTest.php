@@ -135,7 +135,9 @@ final class SubscriptionStoreTest extends TestCase
         // column, so an identity-bearing object cannot enter this tier at all.
         $columns = SubscriptionTable::schemaColumns();
         self::assertSame(
-            ['streaming_id', 'session_id', 'tenant_id', 'scope_keys', 'tenant_blob'],
+            // `connected_at` is a bare epoch INT (the orphan-sweep staleness basis),
+            // not identity and not an object — the invariant is unaffected.
+            ['streaming_id', 'session_id', 'tenant_id', 'scope_keys', 'tenant_blob', 'connected_at'],
             $columns,
         );
         foreach ($columns as $column) {

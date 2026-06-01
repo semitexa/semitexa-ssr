@@ -10,6 +10,7 @@ use Semitexa\Core\Server\Lifecycle\ServerLifecycleListenerInterface;
 use Semitexa\Core\Server\Lifecycle\ServerLifecyclePhase;
 use Semitexa\Ssr\Application\Service\Async\RerunCoalescer;
 use Semitexa\Ssr\Application\Service\Async\SubscriptionTable;
+use Semitexa\Ssr\Application\Service\Async\ViewChangeCoalescer;
 use Swoole\Table;
 
 /**
@@ -62,6 +63,8 @@ final class CreateTrackRTablesListener implements ServerLifecycleListenerInterfa
         return new TrackRSharedTables(
             subscriptions: SubscriptionTable::create($maxRows),
             coalescer: RerunCoalescer::create($maxRows),
+            // Phase 2 — same upper bound (at most one pending view-change per stream).
+            viewChangeCoalescer: ViewChangeCoalescer::create($maxRows),
         );
     }
 }

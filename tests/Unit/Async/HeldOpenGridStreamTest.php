@@ -224,7 +224,7 @@ final class HeldOpenGridStreamTest extends TestCase
             public int $calls = 0;
             /** @param mixed $observed */
             public function __construct(public mixed &$observed) {}
-            public function reRun(ReRunContext $context): ReRunResult
+            public function reRun(ReRunContext $context, array $filterOverride = []): ReRunResult
             {
                 $this->calls++;
                 // The own-route handler asks exactly this question; it MUST be true
@@ -341,7 +341,7 @@ final class HeldOpenGridStreamTest extends TestCase
     {
         return new class implements ReRunnerInterface {
             public int $calls = 0;
-            public function reRun(ReRunContext $context): ReRunResult
+            public function reRun(ReRunContext $context, array $filterOverride = []): ReRunResult
             {
                 $this->calls++;
 
@@ -360,7 +360,7 @@ final class HeldOpenGridStreamTest extends TestCase
         return new class($reason) implements ReRunnerInterface {
             public int $calls = 0;
             public function __construct(private readonly string $reason) {}
-            public function reRun(ReRunContext $context): ReRunResult
+            public function reRun(ReRunContext $context, array $filterOverride = []): ReRunResult
             {
                 $this->calls++;
 

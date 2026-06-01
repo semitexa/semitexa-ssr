@@ -80,10 +80,17 @@ final class WireTrackRConsumerListener implements ServerLifecycleListenerInterfa
             return;
         }
 
+        // Intended Grid Model · Phase 2 — wire the view-change coalescer BEFORE the
+        // Redis gate. A view-change command is intra-instance (the browser POSTs to
+        // THIS deployment; the control rides the session-addressed queue, which falls
+        // back to the Swoole deliver-table when Redis is absent), so the view-change
+        // intake must work even single-server with no cross-instance bus.
+        AsyncResourceSseServer::setViewChangeCoalescer($tables->viewChangeCoalescer);
+
         $connectionFactory = RedisSubscribeConnectionFactory::fromEnvironment();
         if ($connectionFactory === null) {
             StaticLoggerBridge::debug('ssr', 'track_r_consumer_unwired', [
-                'reason' => 'no Redis configured — no cross-instance invalidation bus',
+                'reason' => 'no Redis configured — no cross-instance invalidation bus (view-change still wired)',
             ]);
             return;
         }

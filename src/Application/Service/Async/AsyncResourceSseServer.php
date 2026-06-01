@@ -165,6 +165,17 @@ final class AsyncResourceSseServer
     private static ?RerunCoalescer $rerunCoalescer = null;
 
     /**
+     * Track R · Intended Grid Model · Phase 2 (C2) — the view-change coalescer.
+     *
+     * The cross-worker "latest view wins, collapse pending" table for a
+     * `{__ctrl:viewchange}` command (distinct from {@see $rerunCoalescer} so a
+     * mutation re-run and a view-change re-run never suppress each other). Wired
+     * alongside the rerun coalescer; null until then — while null a view-change is
+     * carried inline in the control payload as a best-effort, uncoalesced fallback.
+     */
+    private static ?ViewChangeCoalescer $viewChangeCoalescer = null;
+
+    /**
      * Track R · R8c (C2) — the per-worker connect coordinator (R5) that the
      * held-open resource stream ({@see serveResourceStream()}) drives on
      * connect/disconnect to populate / reap the three-tier subscription store and
@@ -205,6 +216,11 @@ final class AsyncResourceSseServer
     private const CTRL_NOT_CONTROL = 0;
     private const CTRL_HANDLED_CONTINUE = 1;
     private const CTRL_HANDLED_CLOSE = 2;
+
+    /** The control kind key + the recognised control kinds on a session queue. */
+    private const CTRL_KEY = '__ctrl';
+    private const CTRL_RERUN = 'rerun';
+    private const CTRL_VIEWCHANGE = 'viewchange';
 
     public static function handle(Request $request, Response $response): bool
     {
@@ -1438,6 +1454,74 @@ final class AsyncResourceSseServer
     }
 
     /**
+     * Track R · Intended Grid Model · Phase 2 (C2) — wire the cross-worker
+     * view-change coalescer the command intake ({@see submitViewChange()}) and the
+     * loop branch ({@see handleControlFrame()}) share. The shared table is created
+     * pre-fork by R5's {@see \Semitexa\Ssr\Application\Service\Server\Lifecycle\CreateTrackRTablesListener}.
+     */
+    public static function setViewChangeCoalescer(?ViewChangeCoalescer $coalescer): void
+    {
+        self::$viewChangeCoalescer = $coalescer;
+    }
+
+    /**
+     * Track R · Intended Grid Model · Phase 2 (C2) — the inbound view-change
+     * command intake (the browser PRODUCER side).
+     *
+     * A view-change command (page / limit / sort / filter change) arrives as a
+     * SEPARATE request and enqueues a `{__ctrl:viewchange}` control onto the held
+     * stream's session-addressed queue — the SAME X→W queue a mutation `{__ctrl:rerun}`
+     * rides ({@see deliver()}), reaching the owning worker which re-runs and pushes a
+     * fresh frame on the OPEN fd. This NEVER returns rows; the caller (the app's
+     * command endpoint) returns only an ack.
+     *
+     * Coalescing (R3 discipline, latest-view-wins): the coalescer stores the latest
+     * params and admits only the 0→1 enqueue, so a rapid burst collapses to one
+     * re-run that re-queries the FINAL view. Without a wired coalescer (e.g. before
+     * boot wiring) the params ride inline in the control as a best-effort,
+     * uncoalesced fallback.
+     *
+     * @param array<string, mixed> $params the new view params (filter-only is
+     *        enforced downstream by the re-run's marker-gated override — see
+     *        {@see \Semitexa\Core\Pipeline\ReRun\LiveFilterParamOverride})
+     * @return bool whether the command was accepted onto the queue (false only when
+     *        the session id is missing/malformed — never a delivery guarantee)
+     */
+    public static function submitViewChange(string $sessionId, array $params): bool
+    {
+        $sessionId = trim($sessionId);
+        if ($sessionId === '' || preg_match(self::SAFE_BEARER_SESSION_ID_PATTERN, $sessionId) !== 1) {
+            return false;
+        }
+
+        // streaming_id == session_id for the held-open own-route stream (one stream
+        // per connection), so the command — which only knows the session id — can
+        // address the tier-2 re-run state directly.
+        if (self::$viewChangeCoalescer === null) {
+            // Fallback: no coalescer wired — carry params inline, uncoalesced.
+            self::deliver($sessionId, [
+                self::CTRL_KEY => self::CTRL_VIEWCHANGE,
+                'streaming_id' => $sessionId,
+                'params' => $params,
+            ]);
+
+            return true;
+        }
+
+        // Store the latest view + gate the enqueue. Only the 0→1 command enqueues a
+        // (param-less) control; the owner reads the LATEST params from the coalescer
+        // when it drains, so a coalesced burst re-queries the final view.
+        if (self::$viewChangeCoalescer->submit($sessionId, $params)) {
+            self::deliver($sessionId, [
+                self::CTRL_KEY => self::CTRL_VIEWCHANGE,
+                'streaming_id' => $sessionId,
+            ]);
+        }
+
+        return true;
+    }
+
+    /**
      * Track R · R8c (C2) — wire the per-worker connect coordinator (R5) the
      * held-open resource stream drives. Set live by
      * {@see \Semitexa\Ssr\Application\Service\Server\Lifecycle\WireTrackRConsumerListener}.
@@ -1526,10 +1610,34 @@ final class AsyncResourceSseServer
      */
     private static function handleControlFrame(string $sessionId, mixed $response, array $data): int
     {
-        if (($data['__ctrl'] ?? null) !== 'rerun') {
-            return self::CTRL_NOT_CONTROL;
+        $kind = $data[self::CTRL_KEY] ?? null;
+
+        // A mutation-driven re-run (R4): re-run the cached DTO verbatim (no override).
+        if ($kind === self::CTRL_RERUN) {
+            return self::handleReRunControl($sessionId, $response, $data);
         }
 
+        // A view-change command (Phase 2): re-run with a FILTER-ONLY param override
+        // (the new page / limit / sort / filter), pushing the fresh frame on the
+        // SAME open fd. The override is applied marker-gated in core's reExecute —
+        // identity is never overridable here (the R2 anti-poisoning invariant).
+        if ($kind === self::CTRL_VIEWCHANGE) {
+            return self::handleViewChangeControl($sessionId, $response, $data);
+        }
+
+        return self::CTRL_NOT_CONTROL;
+    }
+
+    /**
+     * Track R · R4 — the `{__ctrl:rerun}` branch (mutation-driven re-run). Resolves
+     * the worker-local re-run state and re-runs the cached DTO verbatim ({@see
+     * dispatchReRun()} with an empty override), then clears the R3 coalescer mark so
+     * the next mutation's signal re-arms. Unchanged in behaviour from before Phase 2.
+     *
+     * @param array<string, mixed> $data
+     */
+    private static function handleReRunControl(string $sessionId, mixed $response, array $data): int
+    {
         $streamingId = trim((string) ($data['streaming_id'] ?? ''));
         if ($streamingId === '') {
             // Malformed control — nothing to resolve. Consume it (never written).
@@ -1540,46 +1648,104 @@ final class AsyncResourceSseServer
         // the stream (a non-owner drained the control) or the stream was torn
         // down: a missing context is nothing to re-run. Clear the mark + drop.
         // No crash, no re-run, no frame — the decisive cross-worker edge (§C3).
+        // The re-run unit is wired live by R8; until then a control is a safe no-op.
         $context = SubscriptionDtoRegistry::get($streamingId);
-        if ($context === null) {
+        if ($context === null || self::$reRunner === null) {
             self::clearRerunPending($streamingId);
             return self::CTRL_HANDLED_CONTINUE;
         }
 
-        // The re-run unit is wired live by R8 / the dispatcher brick. Until then
-        // a control is a safe no-op: clear the mark, drop, never touch the socket.
-        if (self::$reRunner === null) {
-            self::clearRerunPending($streamingId);
-            return self::CTRL_HANDLED_CONTINUE;
-        }
-
-        try {
-            // Mark this coroutine as re-running so the re-invoked own-route handler
-            // produces a JSON body (the loop frames it) instead of grabbing the live
-            // socket and opening a second held-open stream on the same fd.
-            self::beginReRunScope();
-            try {
-                $result = self::$reRunner->reRun($context);
-            } finally {
-                self::endReRunScope();
-            }
-        } catch (\Throwable $e) {
-            // A re-run failure must neither leak data nor kill the stream — log,
-            // clear the mark, and keep the stream alive for the next signal.
-            \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'track_r_rerun_failed', [
-                'streaming_id' => $streamingId,
-                'session_id' => $sessionId,
-                'exception' => $e::class,
-                'message' => $e->getMessage(),
-            ]);
-            self::clearRerunPending($streamingId);
-            return self::CTRL_HANDLED_CONTINUE;
-        }
+        $outcome = self::dispatchReRun($streamingId, $sessionId, $response, $context, []);
 
         // Clear the coalescer mark after handling (either outcome) so a later
         // mutation's signal can enqueue a fresh re-run — the bounded-coalescing
         // window (R3 sets the mark; R4 clears it). Idempotent with onDisconnect.
         self::clearRerunPending($streamingId);
+
+        return $outcome;
+    }
+
+    /**
+     * Track R · Intended Grid Model · Phase 2 — the `{__ctrl:viewchange}` branch.
+     *
+     * Reads the LATEST view params (last-write-wins, from the view-change coalescer;
+     * the inline `params` is the no-coalescer fallback), resolves the worker-local
+     * re-run state, and re-runs with that param override — pushing a fresh frame for
+     * the new view on the SAME open fd. The override is applied FILTER-ONLY and
+     * marker-gated in core ({@see \Semitexa\Core\Pipeline\ReRun\LiveFilterParamOverride}),
+     * so a param targeting a non-`#[LiveFilterParam]` field (e.g. `sessionId` or any
+     * identity-bearing field) is structurally IGNORED and identity still resolves
+     * from the live session — the same anti-poisoning guarantee as the mutation path.
+     *
+     * Same safe-no-op edges as the re-run branch: a tier-2 miss (non-owner drained /
+     * torn down) or an unwired re-runner consumes the control without a re-run.
+     * {@see ViewChangeCoalescer::consume()} already cleared the pending mark, so the
+     * next burst re-arms.
+     *
+     * @param array<string, mixed> $data
+     */
+    private static function handleViewChangeControl(string $sessionId, mixed $response, array $data): int
+    {
+        $streamingId = trim((string) ($data['streaming_id'] ?? ''));
+        if ($streamingId === '') {
+            return self::CTRL_HANDLED_CONTINUE;
+        }
+
+        // Latest-view params: the coalescer is the source of truth when wired (it
+        // also clears the pending mark here, re-arming the next burst); the inline
+        // payload params are the uncoalesced fallback when it is not.
+        $override = self::$viewChangeCoalescer?->consume($streamingId);
+        if ($override === null) {
+            $inline = $data['params'] ?? null;
+            $override = is_array($inline) ? $inline : [];
+        }
+
+        $context = SubscriptionDtoRegistry::get($streamingId);
+        if ($context === null || self::$reRunner === null) {
+            // Non-owner drained / stream torn down / re-runner unwired — safe no-op.
+            return self::CTRL_HANDLED_CONTINUE;
+        }
+
+        return self::dispatchReRun($streamingId, $sessionId, $response, $context, $override);
+    }
+
+    /**
+     * The shared re-run + frame-write tail for BOTH control kinds (R4 mutation and
+     * Phase-2 view-change). Marks the coroutine as re-running (so the re-invoked
+     * own-route handler produces a JSON body the loop frames, instead of grabbing
+     * the live socket), runs the chain auth-first via R2 with the given override,
+     * and writes the fresh frame on the open fd — or a close frame on TERMINATE
+     * (lost access, §B.3). Coalescer pending bookkeeping is the caller's concern.
+     *
+     * @param array<string, mixed> $filterOverride empty for a mutation re-run; the
+     *        new view params for a view-change (applied filter-only in core)
+     */
+    private static function dispatchReRun(
+        string $streamingId,
+        string $sessionId,
+        mixed $response,
+        ReRunContext $context,
+        array $filterOverride,
+    ): int {
+        try {
+            self::beginReRunScope();
+            try {
+                $result = self::$reRunner->reRun($context, $filterOverride);
+            } finally {
+                self::endReRunScope();
+            }
+        } catch (\Throwable $e) {
+            // A re-run failure must neither leak data nor kill the stream — log and
+            // keep the stream alive for the next signal.
+            \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'track_r_rerun_failed', [
+                'streaming_id' => $streamingId,
+                'session_id' => $sessionId,
+                'override' => $filterOverride === [] ? 'none' : array_keys($filterOverride),
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+            ]);
+            return self::CTRL_HANDLED_CONTINUE;
+        }
 
         if ($result->isTerminated()) {
             // Lost-access path (§B.3): the subject no longer has access. Emit a
@@ -1596,10 +1762,10 @@ final class AsyncResourceSseServer
         }
 
         // Write the freshly re-queried frame. The re-run re-queried the data
-        // under the recipient's CURRENT authorization, so this is fresh, not
-        // the stale cached value (the §C4 delete edge: a re-run over a now-absent
-        // resource yields the handler's empty/"gone" frame, written as-is — no
-        // crash, no stale data).
+        // under the recipient's CURRENT authorization (and, for a view-change, the
+        // new view), so this is fresh, not the stale cached value (the §C4 delete
+        // edge: a re-run over a now-absent resource yields the handler's
+        // empty/"gone" frame, written as-is — no crash, no stale data).
         if (!self::transport()->writeFrame($response, self::buildFrame(self::reRunFrameData($frame)))) {
             // Socket died writing the fresh frame — close the stream.
             return self::CTRL_HANDLED_CLOSE;

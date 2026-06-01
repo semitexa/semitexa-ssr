@@ -361,7 +361,7 @@ final class ControlFrameReRunTest extends TestCase
         return new class implements ReRunnerInterface {
             public int $calls = 0;
 
-            public function reRun(ReRunContext $context): ReRunResult
+            public function reRun(ReRunContext $context, array $filterOverride = []): ReRunResult
             {
                 $this->calls++;
 
@@ -378,7 +378,7 @@ final class ControlFrameReRunTest extends TestCase
 
             public function __construct(private readonly string $reason) {}
 
-            public function reRun(ReRunContext $context): ReRunResult
+            public function reRun(ReRunContext $context, array $filterOverride = []): ReRunResult
             {
                 $this->calls++;
 
@@ -393,7 +393,7 @@ final class ControlFrameReRunTest extends TestCase
         return new class implements ReRunnerInterface {
             public int $calls = 0;
 
-            public function reRun(ReRunContext $context): ReRunResult
+            public function reRun(ReRunContext $context, array $filterOverride = []): ReRunResult
             {
                 $this->calls++;
 

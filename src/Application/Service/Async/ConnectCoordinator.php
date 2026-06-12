@@ -56,6 +56,7 @@ final class ConnectCoordinator
         private readonly ResourceInvalidationSubscriber $subscriber,
         private readonly RerunCoalescer $coalescer,
         private readonly ChannelSubscriptionControllerInterface $channels,
+        private readonly ?ViewChangeCoalescer $viewChanges = null,
     ) {}
 
     /**
@@ -117,6 +118,11 @@ final class ConnectCoordinator
         // re-run was coalesced (pending) would otherwise leak a counter row; clearing
         // it both reaps the row and frees a later stream's signal to enqueue afresh.
         $this->coalescer->clearPending($streamingId);
+
+        // Same discipline for a pending view-change: streaming ids are minted
+        // random and never reused, so a row left by a disconnect-before-drain
+        // would leak in the shared table for the worker's whole life.
+        $this->viewChanges?->consume($streamingId);
 
         // Unsubscribe-on-last: the row is now gone, so desiredChannels() no longer
         // includes this scope's channel WHEN it was the last subscriber; the diff

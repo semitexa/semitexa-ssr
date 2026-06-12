@@ -112,6 +112,7 @@ final class WireTrackRConsumerListener implements ServerLifecycleListenerInterfa
             $subscriber,
             $tables->coalescer,
             new LivePubSubChannelController($subscriber),
+            $tables->viewChangeCoalescer,
         );
 
         // R2 re-runner — the auth-first full-chain re-run unit. Built like the

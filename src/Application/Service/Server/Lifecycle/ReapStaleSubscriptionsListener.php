@@ -12,6 +12,7 @@ use Semitexa\Core\Server\Lifecycle\ServerLifecyclePhase;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
 use Semitexa\Ssr\Application\Service\Async\RerunCoalescer;
 use Semitexa\Ssr\Application\Service\Async\SubscriptionTable;
+use Semitexa\Ssr\Application\Service\Async\ViewChangeCoalescer;
 use Swoole\Table;
 use Swoole\Timer;
 
@@ -98,12 +99,13 @@ final class ReapStaleSubscriptionsListener implements ServerLifecycleListenerInt
 
         $subscriptions = $tables->subscriptions;
         $coalescer = $tables->coalescer;
+        $viewChanges = $tables->viewChangeCoalescer;
         $maxAgeSeconds = self::staleThresholdSeconds();
 
         self::$timerId = Timer::tick(
             self::SWEEP_INTERVAL_SECONDS * 1000,
-            static function () use ($subscriptions, $coalescer, $maxAgeSeconds): void {
-                self::sweep($subscriptions, $coalescer, $maxAgeSeconds, time());
+            static function () use ($subscriptions, $coalescer, $viewChanges, $maxAgeSeconds): void {
+                self::sweep($subscriptions, $coalescer, $maxAgeSeconds, time(), $viewChanges);
             },
         );
 
@@ -125,11 +127,16 @@ final class ReapStaleSubscriptionsListener implements ServerLifecycleListenerInt
         RerunCoalescer $coalescer,
         int $maxAgeSeconds,
         int $now,
+        ?ViewChangeCoalescer $viewChanges = null,
     ): int {
         $evicted = $subscriptions->reapStaleConnections($maxAgeSeconds, $now);
 
         foreach ($evicted as $streamingId) {
             $coalescer->clearPending($streamingId);
+            // A pending view-change row is the same crash-orphaned coupling:
+            // its streaming id is never reused, so an unswept row leaks for
+            // the table's whole life.
+            $viewChanges?->consume($streamingId);
         }
 
         if ($evicted !== []) {

@@ -8,6 +8,8 @@ use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Attribute\WatchScopes;
 use Semitexa\Core\Discovery\AttributeDiscovery;
 use Semitexa\Core\Discovery\RouteRegistry;
+use Semitexa\Core\Exception\AccessDeniedException;
+use Semitexa\Core\Exception\AuthenticationException;
 use Semitexa\Core\Exception\DomainException;
 use Semitexa\Core\Http\PayloadMetadataReflector;
 use Semitexa\Core\Pipeline\ReRun\ReRunContext;
@@ -155,6 +157,13 @@ abstract class AbstractSseCollectionFeedHandler
      * cursor) becomes the ExceptionMapper-shaped error body — the SAME
      * `{error, message, context}` document a pull-mode 400 carries.
      *
+     * Auth-shaped exceptions are NOT collection deviations and always
+     * propagate: on initial connect they reach the ExceptionMapper (401/403,
+     * no held-open stream is ever minted for a denied caller); on a re-run
+     * tick they reach {@see \Semitexa\Core\Pipeline\RouteExecutor::reExecute()},
+     * which TERMINATEs the stream (close frame, full teardown) — the same
+     * lost-access guarantee the route-level subject gate provides.
+     *
      * @return array{0: array<string, mixed>, 1: bool} [envelope, success]
      */
     private function resolveEnvelope(
@@ -166,6 +175,8 @@ abstract class AbstractSseCollectionFeedHandler
             $decoded = json_decode($built->getContent(), true);
 
             return [is_array($decoded) ? $decoded : [], true];
+        } catch (AuthenticationException|AccessDeniedException $e) {
+            throw $e;
         } catch (DomainException $e) {
             return [[
                 'error'   => $e->getErrorCode(),

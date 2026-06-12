@@ -30,8 +30,8 @@ use Semitexa\Tenancy\Context\TenantContext;
  * It publishes the IDENTICAL channel/message the ORM auto-publish does — same
  * {@see ResourceInvalidationPublisher::channelFor()} naming, same
  * {@see TenantContext} resolution, same {@see ScopeInvalidationBusInterface}
- * transport — so a held-open grid stream that declares
- * `#[GridFeed(liveOn: ['<scope>'])]` re-runs and shows the new row live whether
+ * transport — so a held-open collection stream whose feed payload declares
+ * `#[WatchScopes('<scope>')]` re-runs and shows the new row live whether
  * the write came through the ORM or a raw query. The two producers are
  * indistinguishable to the subscriber (R3) by construction.
  *

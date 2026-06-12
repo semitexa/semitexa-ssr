@@ -22,18 +22,19 @@ use Semitexa\Ssr\Domain\Contract\ChannelSubscriptionControllerInterface;
  * desired set itself, "subscribe-on-first" reduces to "launch the loop once a scope
  * exists", and the loop then watches the whole desired set.
  *
- * SINGLE-LOOP MODEL (honest limitation, logged — never a silent cap): one worker
- * runs ONE subscribe loop, and it snapshots {@see ResourceInvalidationSubscriber::desiredChannels()}
- * at launch. For the R8c leads grid there is exactly ONE watched scope
- * (`ui_playground_leads`), so the loop subscribed at first-connect serves every
- * grid subscription on this worker for its life — reconnects resolve to the same
- * channel. Adding a SECOND distinct scope while the loop is already running would
- * need the live `Predis\PubSub\Consumer` handle to be mutated mid-iteration (or the
- * loop re-launched); that is intentionally deferred — it is logged here the moment
- * it is hit so it can never pass unnoticed. Likewise unsubscribe-on-last is a no-op
- * on the running loop: when the last subscriber leaves, the desired set empties and
- * any stray message resolves to zero local subscribers (a benign no-op via R1's
- * tenant+scope filter); the loop is reaped on worker recycle.
+ * SINGLE-LOOP MODEL: one worker runs ONE subscribe loop, which snapshots
+ * {@see ResourceInvalidationSubscriber::desiredChannels()} at each (re)launch.
+ * One Way Phase 4 retired the formerly-deferred multi-scope limitation: when a
+ * SECOND distinct scope appears while the loop is already running (two live
+ * feeds on one worker — e.g. a pings stream joining a leads stream), this
+ * controller detects the uncovered channel ({@see ResourceInvalidationSubscriber::isSubscribedTo()})
+ * and INTERRUPTS the blocked loop ({@see ResourceInvalidationSubscriber::interrupt()});
+ * the loop's Gap C self-heal then resubscribes with the full desired set within
+ * one turn, no backoff. Unsubscribe-on-last stays a no-op on the running loop:
+ * when the last subscriber leaves, the desired set empties and any stray message
+ * resolves to zero local subscribers (a benign no-op via R1's tenant+scope
+ * filter); the stale subscription is corrected at the next interrupt/reconnect
+ * or reaped on worker recycle.
  *
  * The loop runs inside a Swoole coroutine; outside one (CLI / unit test) launching
  * is a no-op (the blocking subscribe has no meaning there — tests drive
@@ -48,15 +49,31 @@ final class LivePubSubChannelController implements ChannelSubscriptionController
     ) {}
 
     /**
-     * Subscribe-on-first: ensure the worker's subscribe loop is alive. The loop
-     * itself watches the store's full desired set, so the specific channel list is
-     * informational here — used only to flag the deferred multi-scope case.
+     * Subscribe-on-first: ensure the worker's subscribe loop is alive, and —
+     * One Way Phase 4 — that its live subscription COVERS the requested
+     * channels. The loop snapshots the desired set at launch; when a NEW
+     * distinct scope appears afterwards (a second live feed on this worker,
+     * e.g. a pings stream joining a leads stream), the blocked loop is
+     * interrupted ({@see ResourceInvalidationSubscriber::interrupt()}) so its
+     * Gap C self-heal resubscribes with the full desired set within one turn.
+     * This retires the former single-loop "deferred multi-scope" limitation,
+     * under which the second scope stayed silently deaf for the worker's life.
      *
      * @param list<string> $channels
      */
     public function subscribe(array $channels): void
     {
         if ($channels === []) {
+            return;
+        }
+
+        if ($this->loopRunning && !$this->subscriber->isSubscribedTo($channels)) {
+            StaticLoggerBridge::debug('ssr', 'track_r_channel_resubscribe', [
+                'channels' => $channels,
+                'note' => 'new distinct scope after launch — interrupting the subscribe loop into a full resubscribe',
+            ]);
+            $this->subscriber->interrupt();
+
             return;
         }
 

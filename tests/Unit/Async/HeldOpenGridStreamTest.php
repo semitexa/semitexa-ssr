@@ -115,7 +115,7 @@ final class HeldOpenGridStreamTest extends TestCase
         self::assertSame(1, $rerunner->calls, 're-ran on the owning worker');
         self::assertCount(1, $transport->frames);
         self::assertSame($fd, $transport->streams[0], 'the fresh frame went to the SAME held-open fd (not a reconnect)');
-        self::assertStringContainsString('event: ui.grid.data', $transport->frames[0]->toWire());
+        self::assertStringContainsString('event: ui.collection.data', $transport->frames[0]->toWire());
         self::assertStringContainsString('"value":1', $transport->frames[0]->toWire());
 
         // A SECOND independent mutation on the SAME connection. R4 cleared the
@@ -346,7 +346,7 @@ final class HeldOpenGridStreamTest extends TestCase
                 $this->calls++;
 
                 return ReRunResult::frame(HttpResponse::json([
-                    '_type' => 'ui.grid.data',
+                    '_type' => 'ui.collection.data',
                     'ok' => true,
                     'rows' => [['id' => 1]],
                     'value' => $this->calls,
@@ -427,9 +427,9 @@ final class HeldOpenGridStreamTest extends TestCase
         return new ReRunContext(
             cachedDto: new \stdClass(),
             route: new DiscoveredRoute(
-                path: '/ui-playground/admin/leads/grid-stream',
+                path: '/ui-playground/admin/leads/feed',
                 methods: ['GET'],
-                name: 'leads.grid.stream',
+                name: 'leads.collection.feed',
                 requestClass: \stdClass::class,
                 responseClass: \stdClass::class,
                 handlers: [],
@@ -439,7 +439,7 @@ final class HeldOpenGridStreamTest extends TestCase
                 consumes: null,
                 module: 'ui-playground',
             ),
-            requestSnapshot: ['method' => 'GET', 'uri' => '/ui-playground/admin/leads/grid-stream', 'cookies' => ['sid' => $sessionId]],
+            requestSnapshot: ['method' => 'GET', 'uri' => '/ui-playground/admin/leads/feed', 'cookies' => ['sid' => $sessionId]],
             sessionId: $sessionId,
             subjectRef: '',
         );

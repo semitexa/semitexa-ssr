@@ -20,9 +20,9 @@ final class UiSseEventTypeTest extends TestCase
         yield 'ui.patch'          => ['ui.patch'];
         yield 'ui.componentState' => ['ui.componentState'];
         yield 'ui.error'          => ['ui.error'];
-        yield 'ui.grid.data'      => ['ui.grid.data'];
-        yield 'ui.grid.error'     => ['ui.grid.error'];
         yield 'ui.stream.id'      => ['ui.stream.id'];
+        yield 'ui.collection.data'  => ['ui.collection.data'];
+        yield 'ui.collection.error' => ['ui.collection.error'];
     }
 
     #[Test]
@@ -39,6 +39,8 @@ final class UiSseEventTypeTest extends TestCase
     {
         yield 'empty'                       => [''];
         yield 'unrelated'                   => ['foo.bar'];
+        yield 'deleted_v1_grid_data'        => ['ui.grid.data'];
+        yield 'deleted_v1_grid_error'       => ['ui.grid.error'];
         yield 'newline_injection_attempt'   => ["ui.patch\nevent: spoof"];
         yield 'carriage_return_attempt'     => ["ui.patch\revent: spoof"];
         yield 'case_mismatch'               => ['Ui.Patch'];
@@ -57,7 +59,7 @@ final class UiSseEventTypeTest extends TestCase
     public function allowed_values_lists_exactly_the_documented_types(): void
     {
         self::assertSame(
-            ['ssr.fragment', 'ui.patch', 'ui.componentState', 'ui.error', 'ui.grid.data', 'ui.grid.error', 'ui.stream.id'],
+            ['ssr.fragment', 'ui.patch', 'ui.componentState', 'ui.error', 'ui.stream.id', 'ui.collection.data', 'ui.collection.error'],
             UiSseEventType::allowedValues(),
         );
     }

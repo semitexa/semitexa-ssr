@@ -54,6 +54,22 @@ final class ResourceInvalidationSubscriber
      */
     private const RECONNECT_BACKOFF_SECONDS = 1.0;
 
+    /**
+     * One Way Phase 4 — the live loop's CURRENT subscription snapshot, exposed
+     * so the channel controller can detect when a NEW distinct scope appeared
+     * after launch (the formerly-deferred multi-scope case) and interrupt the
+     * blocked loop into a resubscribe.
+     *
+     * @var list<string>
+     */
+    private array $activeChannels = [];
+
+    /** The live loop's dedicated connection — closed by {@see self::interrupt()}. */
+    private ?\Predis\Client $activeConnection = null;
+
+    /** Set by interrupt(): the next loop turn resubscribes WITHOUT backoff. */
+    private bool $interrupted = false;
+
     public function __construct(
         private readonly SubscriberIndexInterface $index,
         private readonly SubscriptionTable $subscriptions,
@@ -97,6 +113,13 @@ final class ResourceInvalidationSubscriber
 
             $connection = $this->connectionFactory->create(); // DEDICATED — never the pool.
 
+            // Publish the live snapshot BEFORE blocking so the controller's
+            // covers-check ({@see self::isSubscribedTo()}) sees what this loop
+            // turn actually subscribed to.
+            $this->activeChannels = $channels;
+            $this->activeConnection = $connection;
+            $this->interrupted = false;
+
             try {
                 /** @var \Predis\PubSub\Consumer $pubsub */
                 $pubsub = $connection->pubSubLoop(['subscribe' => $channels]);
@@ -106,11 +129,15 @@ final class ResourceInvalidationSubscriber
                     }
                 }
             } catch (\Throwable $e) {
-                StaticLoggerBridge::error('ssr', 'Resource-invalidation subscribe loop failed; reconnecting', [
-                    'exception' => $e::class,
-                    'message' => $e->getMessage(),
-                ]);
+                if (!$this->interrupted) {
+                    StaticLoggerBridge::error('ssr', 'Resource-invalidation subscribe loop failed; reconnecting', [
+                        'exception' => $e::class,
+                        'message' => $e->getMessage(),
+                    ]);
+                }
             } finally {
+                $this->activeConnection = null;
+                $this->activeChannels = [];
                 try {
                     $connection->disconnect();
                 } catch (\Throwable) {
@@ -118,9 +145,62 @@ final class ResourceInvalidationSubscriber
                 }
             }
 
+            // An INTERRUPT (a new distinct scope appeared — see interrupt()) is
+            // not a failure: resubscribe immediately so the first invalidation
+            // on the new scope is not lost to a backoff window.
+            if ($this->interrupted) {
+                $this->interrupted = false;
+                continue;
+            }
+
             // Back off before re-subscribing so a hard-down Redis can't spin a tight
             // loop. desiredChannels() is re-evaluated at the top of the next iteration.
             \Swoole\Coroutine::sleep(self::RECONNECT_BACKOFF_SECONDS);
+        }
+    }
+
+    /**
+     * One Way Phase 4 — does the live loop's CURRENT subscription cover every
+     * requested channel? False when the loop is not running (no snapshot) or a
+     * NEW distinct scope appeared after launch — the controller then calls
+     * {@see self::interrupt()} so the loop resubscribes with the full desired set.
+     *
+     * @param list<string> $channels
+     */
+    public function isSubscribedTo(array $channels): bool
+    {
+        foreach ($channels as $channel) {
+            if (!in_array($channel, $this->activeChannels, true)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * One Way Phase 4 — kick the blocked loop into a resubscribe. Closes the
+     * dedicated connection out from under the blocking `pubSubLoop` read; the
+     * Gap C self-heal catches the resulting failure, skips the backoff (the
+     * `interrupted` flag), re-reads {@see self::desiredChannels()} — which now
+     * includes the new scope — and subscribes the full set. This retires the
+     * single-loop model's deferred multi-scope limitation: a second distinct
+     * live scope on a worker (e.g. a pings feed joining a leads feed) is
+     * picked up within one loop turn instead of never.
+     */
+    public function interrupt(): void
+    {
+        $connection = $this->activeConnection;
+        if ($connection === null) {
+            return;
+        }
+
+        $this->interrupted = true;
+        try {
+            $connection->disconnect();
+        } catch (\Throwable) {
+            // Best-effort: if the close races the loop's own teardown, the
+            // while(true) re-read covers the new scope anyway.
         }
     }
 

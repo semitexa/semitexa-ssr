@@ -1089,8 +1089,16 @@ final class AsyncResourceSseServer
      * BEFORE the frame is handed to the transport; the resulting `SseFrame`
      * carries an already-resolved event name and `core` renders it
      * mechanically (no allow-list, only CR/LF hygiene) in {@see SseFrame::toWire()}.
-     * Behaviour of the resolution step (unchanged):
+     * Behaviour of the resolution step:
      *
+     *   - {@see SsePassthroughEvent::KEY} present (opt-in passthrough mode) →
+     *     emit `event: <value>` for a value in the closed graphql-sse
+     *     vocabulary and STRIP the key so the body renders bare; an
+     *     out-of-vocabulary value is dropped (no `event:` line, key stripped).
+     *     This is the ONLY path that produces an `event:` line without an
+     *     in-body discriminator. No existing frame sets this key, so all
+     *     pre-existing behaviour below is byte-identical (the key is absent and
+     *     this branch is skipped).
      *   - `_type` absent → byte-identical to the pre-Phase-2 wire shape:
      *     the existing `event` field (if any, e.g. demo producer's
      *     `event: notification`) is honoured, and no other change is
@@ -1135,6 +1143,31 @@ final class AsyncResourceSseServer
      */
     private static function resolveSseEventName(array $data): array
     {
+        // Opt-in passthrough mode (evaluated FIRST, independently of the
+        // `_type`/legacy logic below). A frame carrying the canonical
+        // passthrough key emits `event: <value>` for an allowed value and has
+        // the key STRIPPED from the body so the remaining body renders bare —
+        // the only path that yields an `event:` line WITHOUT an in-body
+        // discriminator (required by the graphql-sse `next`/`complete`/`error`
+        // wire shape). No existing caller sets this key, so every existing
+        // frame skips this branch and falls through to the unchanged logic
+        // below byte-identically. An out-of-vocabulary value is treated as
+        // invalid: the key is stripped and no `event:` line is emitted
+        // (mirrors the unknown-`_type` posture — an arbitrary string is never
+        // promoted to an event name).
+        if (array_key_exists(SsePassthroughEvent::KEY, $data)) {
+            $passthroughEvent = $data[SsePassthroughEvent::KEY];
+            unset($data[SsePassthroughEvent::KEY]);
+            if (is_string($passthroughEvent) && SsePassthroughEvent::isAllowed($passthroughEvent)) {
+                return [$passthroughEvent, $data];
+            }
+
+            \Semitexa\Core\Log\StaticLoggerBridge::warning('ssr', 'sse_passthrough_event_dropped', [
+                'event' => is_string($passthroughEvent) ? $passthroughEvent : gettype($passthroughEvent),
+            ]);
+            return [null, $data];
+        }
+
         $rawType = $data['_type'] ?? null;
         if (is_string($rawType) && $rawType !== '') {
             if (\Semitexa\Ssr\Application\Service\UiEvent\UiSseEventType::isAllowed($rawType)) {

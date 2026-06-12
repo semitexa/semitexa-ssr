@@ -24,28 +24,29 @@ enum UiSseEventType: string
     case UiComponentState  = 'ui.componentState';
     case UiError           = 'ui.error';
 
-    // Track R · R8c — the held-open resource-grid stream's typed frames. A grid
-    // data/error frame is a first-class UI SSE event, so it travels the same
-    // typed-`_type` chokepoint as every other framework message: the INITIAL
-    // rows frame written on connect AND every R4-driven fresh frame on re-run go
-    // through {@see \Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::buildFrame()},
-    // producing a byte-identical `event: ui.grid.data` line for both. Promoting
-    // these to the allow-list (rather than a raw `event` string) keeps the rule
-    // intact — no client-controlled string can ever become the event name.
-    case UiGridData        = 'ui.grid.data';
-    case UiGridError       = 'ui.grid.error';
-
     // Stream Lifecycle · Axis 1(b) — the server-authoritative stream id, handed
     // to the client as a dedicated FIRST SSE event on connect (one line BEFORE
-    // the initial `ui.grid.data` frame). It rides its OWN one-shot channel
+    // the initial collection data frame). It rides its OWN one-shot channel
     // precisely so the data-frame shape never changes: the byte-identical
-    // initial-connect / re-run `ui.grid.data` invariant is preserved because the
+    // initial-connect / re-run data-frame invariant is preserved because the
     // id is NOT a field on the data frame. Payload: `{"stream_id":"sse_<32hex>"}`.
-    // A Phase-3 client adopts the id via `addEventListener('ui.stream.id', …)`;
-    // today's client simply ignores the unknown event (back-compat). Promoting it
-    // to this allow-list keeps the rule intact — no client-controlled string can
-    // ever become the event name.
+    // The client adopts the id via `addEventListener('ui.stream.id', …)`.
+    // Promoting it to this allow-list keeps the rule intact — no
+    // client-controlled string can ever become the event name.
     case UiStreamId        = 'ui.stream.id';
+
+    // One Way Pattern · Phase 4 — the canonical-envelope collection stream's
+    // typed frames. A `ui.collection.data` frame carries the canonical
+    // `{data, meta}` collection envelope — the SAME projection the JSON pull
+    // mode returns — so the client renders both transports from one code
+    // path. (The legacy `ui.grid.data`/`ui.grid.error` members that carried
+    // the v1 UiGridDataResponse shape were deleted in the Phase 6 sweep.)
+    // Emitted by AbstractSseCollectionFeedHandler on initial connect,
+    // rehydration, and Track-R-driven re-runs; errors travel as
+    // `ui.collection.error`. Same allow-list rule: no client-controlled
+    // string can ever become the event name.
+    case UiCollectionData  = 'ui.collection.data';
+    case UiCollectionError = 'ui.collection.error';
 
     public static function isAllowed(string $type): bool
     {

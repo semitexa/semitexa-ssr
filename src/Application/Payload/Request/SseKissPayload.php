@@ -15,10 +15,10 @@ use Semitexa\Core\Http\Response\ResourceResponse;
 // previously omitted transport: Sse (a coverage hole the reformulated boot guard
 // now closes — see assertSseGateCoherence).
 #[AsPublicPayload(
-    responseWith: ResourceResponse::class,
     path: '/__semitexa_kiss',
     methods: ['GET'],
     name: 'ssr.kiss',
+    responseWith: ResourceResponse::class,
     transport: TransportType::Sse,
     sseGateModel: SseGateModel::BearerSession,
 )]

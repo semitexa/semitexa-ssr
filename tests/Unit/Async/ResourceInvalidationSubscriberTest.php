@@ -375,4 +375,32 @@ final class ResourceInvalidationSubscriberTest extends TestCase
             self::assertStringNotContainsString('RouteExecutor', $typeName);
         }
     }
+
+    // -----------------------------------------------------------------------
+    // One Way Phase 4 — the multi-scope resubscribe seam (interrupt-on-diff)
+    // -----------------------------------------------------------------------
+
+    #[Test]
+    public function without_a_live_loop_no_channel_is_covered(): void
+    {
+        // No loop turn has published a snapshot → any non-empty request is
+        // uncovered (the controller then interrupts / relaunches), while the
+        // empty request is vacuously covered.
+        [$subscriber] = $this->subscriber();
+
+        self::assertFalse($subscriber->isSubscribedTo(['ui.invalidate.default.ui_playground_pings']));
+        self::assertTrue($subscriber->isSubscribedTo([]));
+    }
+
+    #[Test]
+    public function interrupt_without_a_live_connection_is_a_safe_noop(): void
+    {
+        // Interrupting between loop turns (snapshot cleared) must not throw —
+        // the while(true) re-read covers the new scope on its own.
+        [$subscriber] = $this->subscriber();
+
+        $subscriber->interrupt();
+
+        self::assertFalse($subscriber->isSubscribedTo(['ui.invalidate.default.anything']));
+    }
 }

@@ -229,4 +229,138 @@ final class TypedSseFrameTest extends TestCase
         self::assertStringContainsString("data: {}\n\n", $frame);
         self::assertStringNotContainsString('data: false', $frame);
     }
+
+    // ---------------------------------------------------------------------
+    // Phase 2 (PROMPT 117) Step 2.0 — opt-in passthrough frame.
+    // A frame carrying `_sse_event` (∈ {next, complete, error}) emits the
+    // event line AND strips the key so the body renders bare (graphql-sse
+    // ExecutionResult shape). Absent ⇒ existing logic byte-identical.
+    // ---------------------------------------------------------------------
+
+    #[Test]
+    public function passthrough_next_emits_bare_execution_result_body(): void
+    {
+        $frame = self::compose([
+            '_sse_event' => 'next',
+            'data'       => ['x' => 1],
+            'errors'     => [],
+        ]);
+
+        // Exact wire: event line + bare {data,errors} body, no discriminator key.
+        self::assertSame("event: next\ndata: {\"data\":{\"x\":1},\"errors\":[]}\n\n", $frame);
+        self::assertStringNotContainsString('_sse_event', $frame);
+    }
+
+    #[Test]
+    public function passthrough_accepts_complete_and_error_vocabulary(): void
+    {
+        $complete = self::compose(['_sse_event' => 'complete']);
+        self::assertSame("event: complete\ndata: []\n\n", $complete);
+        self::assertStringNotContainsString('_sse_event', $complete);
+
+        $error = self::compose(['_sse_event' => 'error', 'errors' => [['message' => 'boom']]]);
+        self::assertStringContainsString("event: error\n", $error);
+        self::assertStringContainsString('"errors":[{"message":"boom"}]', $error);
+        self::assertStringNotContainsString('_sse_event', $error);
+    }
+
+    #[Test]
+    public function passthrough_out_of_vocabulary_value_emits_no_event_line_and_strips_key(): void
+    {
+        $frame = self::compose([
+            '_sse_event' => 'bogus',
+            'data'       => ['x' => 1],
+        ]);
+
+        // Invalid value: no event line, key stripped, remaining body preserved.
+        self::assertStringNotContainsString("event: ", $frame);
+        self::assertStringNotContainsString('_sse_event', $frame);
+        self::assertStringNotContainsString('bogus', $frame);
+        self::assertStringContainsString('"data":{"x":1}', $frame);
+    }
+
+    #[Test]
+    public function passthrough_non_string_value_is_stripped_safely(): void
+    {
+        $frame = self::compose([
+            '_sse_event' => ['nested' => 'value'],
+            'note'       => 'still delivered',
+        ]);
+
+        self::assertStringNotContainsString("event: ", $frame);
+        self::assertStringNotContainsString('_sse_event', $frame);
+        self::assertStringContainsString('"note":"still delivered"', $frame);
+    }
+
+    // ---------------------------------------------------------------------
+    // Byte-identical regression — the load-bearing proof that the Step 2.0
+    // branch is purely additive. These frames set neither passthrough key, so
+    // they must render EXACTLY as before the change. Asserted as full-string
+    // equality (not substring) for the three representative frame families.
+    // ---------------------------------------------------------------------
+
+    #[Test]
+    public function regression_collection_data_frame_is_byte_identical(): void
+    {
+        $frame = self::compose([
+            '_type' => 'ui.collection.data',
+            'id'    => 'grid-leads',
+            'data'  => [['name' => 'Ada']],
+            'meta'  => ['pagination' => ['mode' => 'page']],
+        ]);
+
+        self::assertSame(
+            "id: grid-leads\n"
+            . "event: ui.collection.data\n"
+            . "data: {\"_type\":\"ui.collection.data\",\"id\":\"grid-leads\",\"data\":[{\"name\":\"Ada\"}],\"meta\":{\"pagination\":{\"mode\":\"page\"}}}\n\n",
+            $frame,
+        );
+    }
+
+    #[Test]
+    public function deleted_v1_grid_type_no_longer_promotes_to_an_event_line(): void
+    {
+        // `ui.grid.data` left the allow-list in the One Way Phase 6 sweep —
+        // it must now behave exactly like any unknown `_type`: dropped.
+        $frame = self::compose([
+            '_type' => 'ui.grid.data',
+            'rows'  => [['name' => 'Ada']],
+        ]);
+
+        self::assertStringNotContainsString("event: ", $frame);
+        self::assertStringNotContainsString('"_type"', $frame);
+    }
+
+    #[Test]
+    public function regression_legacy_event_frame_is_byte_identical(): void
+    {
+        $frame = self::compose([
+            'id'    => 'demo_attached_abcd',
+            'event' => 'notification',
+            'level' => 'info',
+            'title' => 'Stream attached',
+        ]);
+
+        self::assertSame(
+            "id: demo_attached_abcd\n"
+            . "event: notification\n"
+            . "data: {\"id\":\"demo_attached_abcd\",\"event\":\"notification\",\"level\":\"info\",\"title\":\"Stream attached\"}\n\n",
+            $frame,
+        );
+    }
+
+    #[Test]
+    public function regression_stream_id_announce_frame_is_byte_identical(): void
+    {
+        $frame = self::compose([
+            '_type'     => 'ui.stream.id',
+            'stream_id' => 'sse_0123456789abcdef0123456789abcdef',
+        ]);
+
+        self::assertSame(
+            "event: ui.stream.id\n"
+            . "data: {\"_type\":\"ui.stream.id\",\"stream_id\":\"sse_0123456789abcdef0123456789abcdef\"}\n\n",
+            $frame,
+        );
+    }
 }

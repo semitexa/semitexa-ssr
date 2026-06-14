@@ -5,12 +5,18 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service\Async;
 
 use Semitexa\Core\Environment;
+use Semitexa\Core\HttpResponse;
+use Semitexa\Core\Pipeline\ReRun\ReRunContext;
+use Semitexa\Core\Pipeline\ReRun\ReRunnerInterface;
 use Semitexa\Core\Redis\RedisConnectionPool;
 use Semitexa\Core\Session\RedisSessionHandler;
 use Semitexa\Core\Session\SessionHandlerInterface;
 use Semitexa\Core\Session\SwooleTableSessionHandler;
+use Semitexa\Core\Server\SseFrame;
+use Semitexa\Core\Server\SseTransportInterface;
 use Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
+use Semitexa\Ssr\Domain\Model\SubscriptionRecord;
 use Predis\Client;
 use Swoole\Http\Request;
 use Swoole\Http\Response;
@@ -25,6 +31,23 @@ final class AsyncResourceSseServer
      * bare GET requests only when the supplied session_id matches.
      */
     public const SAFE_BEARER_SESSION_ID_PATTERN = '/\Asse_[a-f0-9]{32}\z/';
+
+    /**
+     * Stream Lifecycle · Axis 1(b) — the single server-side source of new stream
+     * ids. Mints a server-authoritative id of the SAME safe shape every store
+     * already keys on (`sse_<32hex>`, 128 bits of CSPRNG entropy), so it satisfies
+     * {@see self::SAFE_BEARER_SESSION_ID_PATTERN}, the {@see SubscriptionTable}
+     * key discipline, and the anti-injection table-key validator with no other
+     * change. The server owns id generation: the held-open resource stream mints
+     * here at connect ({@see serveResourceStream()}) and announces it as the first
+     * `ui.stream.id` SSE event so a Phase-3 client can adopt it. Lives in `ssr`
+     * (not `core`) because the id is meaningful only to the SSE serving path that
+     * keys, delivers, and reaps by it.
+     */
+    public static function mintStreamId(): string
+    {
+        return 'sse_' . bin2hex(random_bytes(16));
+    }
 
     /**
      * Short-lived KISS transport: flush queued frames + close. Default for
@@ -114,6 +137,108 @@ final class AsyncResourceSseServer
     private static ?RedisConnectionPool $redisPool = null;
     private static ?DeferredBlockOrchestrator $deferredBlockOrchestrator = null;
 
+    /**
+     * Track R · R8a — the set of request paths served by the SSE intercept,
+     * keyed for O(1) membership (`path => true`).
+     *
+     * Populated per worker by {@see WireSseServedPathsListener} from every
+     * discovered route whose `transport` is {@see TransportType::Sse} — so the
+     * serve dispatch in {@see handle()} keys on the route's declared transport,
+     * not on a hardcoded path. `/__semitexa_kiss` is itself a `transport: Sse`
+     * route ({@see \Semitexa\Ssr\Application\Payload\Request\SseKissPayload}), so
+     * it lands in this set and continues to be served by the same generalized
+     * path — no kiss-specific branch survives.
+     *
+     * @var array<string, true>
+     */
+    private static array $sseServedPaths = [];
+
+    /**
+     * Swoole-free SSE write port (core contract). The Swoole adapter binds
+     * lazily as a soft runtime dependency, mirroring how the rest of the
+     * Swoole runtime adapters are wired. Held here so the byte-writing path
+     * goes through the {@see SseTransportInterface} contract rather than
+     * touching `Swoole\Http\Response::write()` directly.
+     */
+    private static ?SseTransportInterface $transport = null;
+
+    /**
+     * Track R · R4 — the loop branch's worker-static collaborators.
+     *
+     * The re-run unit is core (R2's {@see ReRunnerInterface}); the loop body
+     * stays here in ssr, bridged to it by this worker-static reference (design
+     * §B.3 "loop body stays in ssr, re-run unit is core, bridged by a
+     * worker-static closure"). The coalescer (R3) is the cross-worker
+     * idempotency table whose pending mark R4 CLEARS after handling a control,
+     * re-arming the next mutation's signal.
+     *
+     * Both are null until the live binding is wired (R8 / the dispatcher-wiring
+     * brick). While null a `{__ctrl:rerun}` is a SAFE no-op — dropped without a
+     * re-run and without ever reaching the socket — so R4 is inert until lit up,
+     * keeping {@see handleControlFrame()} plain-constructable (no DI binding,
+     * mirroring R1/R3/R5).
+     */
+    private static ?ReRunnerInterface $reRunner = null;
+    private static ?RerunCoalescer $rerunCoalescer = null;
+
+    /**
+     * Track R · Intended Grid Model · Phase 2 (C2) — the view-change coalescer.
+     *
+     * The cross-worker "latest view wins, collapse pending" table for a
+     * `{__ctrl:viewchange}` command (distinct from {@see $rerunCoalescer} so a
+     * mutation re-run and a view-change re-run never suppress each other). Wired
+     * alongside the rerun coalescer; null until then — while null a view-change is
+     * carried inline in the control payload as a best-effort, uncoalesced fallback.
+     */
+    private static ?ViewChangeCoalescer $viewChangeCoalescer = null;
+
+    /**
+     * Track R · R8c (C2) — the per-worker connect coordinator (R5) that the
+     * held-open resource stream ({@see serveResourceStream()}) drives on
+     * connect/disconnect to populate / reap the three-tier subscription store and
+     * subscribe-on-first / unsubscribe-on-last. Wired live by
+     * {@see \Semitexa\Ssr\Application\Service\Server\Lifecycle\WireTrackRConsumerListener}.
+     * Null until wired (and on the kiss path, which has no resource subscription) —
+     * a null coordinator makes the consumer-half a safe no-op.
+     */
+    private static ?ConnectCoordinator $connectCoordinator = null;
+
+    /**
+     * Track R · R8c — re-run reentrancy depth, per coroutine.
+     *
+     * {@see handleControlFrame()} re-runs the FULL handler chain
+     * ({@see ReRunnerInterface::reRun()} → `RouteExecutor::reExecute()`), which
+     * re-invokes the SAME own-route handler. That handler must produce the fresh
+     * frame BODY (JSON) and must NOT grab the live socket and enter a second
+     * held-open stream (which would break the fd it is already streaming on, or
+     * recurse). The handler asks {@see isReRunInProgress()} to take its JSON branch
+     * on a re-run tick. The depth is COROUTINE-LOCAL ({@see Coroutine::getContext()})
+     * because a re-run may yield on I/O to another session's connect coroutine —
+     * a per-worker static would cross-contaminate; only the re-running coroutine
+     * itself must read the flag. A static fallback covers the CLI/test (no-coroutine)
+     * path. @var int
+     */
+    private static int $reRunDepthFallback = 0;
+
+    private const RERUN_SCOPE_CONTEXT_KEY = '__semitexa_track_r_rerun_depth';
+
+    /**
+     * {@see handleControlFrame()} outcomes. A control marker is a SIGNAL, never
+     * bytes for the wire (§C.4): NOT_CONTROL → the caller writes the ordinary
+     * data frame as before; HANDLED_CONTINUE → the control was consumed (re-run
+     * frame written, or a safe no-op), the drain continues; HANDLED_CLOSE → the
+     * re-run TERMINATEd (lost access) or the fresh-frame write failed, the stream
+     * must close.
+     */
+    private const CTRL_NOT_CONTROL = 0;
+    private const CTRL_HANDLED_CONTINUE = 1;
+    private const CTRL_HANDLED_CLOSE = 2;
+
+    /** The control kind key + the recognised control kinds on a session queue. */
+    private const CTRL_KEY = '__ctrl';
+    private const CTRL_RERUN = 'rerun';
+    private const CTRL_VIEWCHANGE = 'viewchange';
+
     public static function handle(Request $request, Response $response): bool
     {
         $server = is_array($request->server) ? $request->server : [];
@@ -123,17 +248,34 @@ final class AsyncResourceSseServer
             $path = parse_url($uri, PHP_URL_PATH) ?: '/';
         }
 
-        if ($path === '/__semitexa_sse' || $path === '/sse') {
-            self::handleSse($request, $response);
-            return true;
-        }
-
-        if ($path === '/__semitexa_kiss') {
+        // Track R · R8a — serve any route that DECLARES transport: Sse, not a
+        // hardcoded path. The served-path set is built from the discovered
+        // routes' transport (see {@see $sseServedPaths} / WireSseServedPathsListener),
+        // so /__semitexa_kiss continues to be served via the same generalized
+        // dispatch (it declares transport: Sse) while an own-route SSE endpoint
+        // declaring transport: Sse is served on equal footing — no path branch.
+        // (Two historical reserved-path intercepts were removed here — both were
+        // dead/redundant branches retired once all SSE unified on kiss: an
+        // unreachable orphaned-client route, and a byte-identical duplicate alias.)
+        if (self::shouldServeAsSse($path)) {
             self::handleSse($request, $response);
             return true;
         }
 
         return false;
+    }
+
+    /**
+     * Track R · R8a — does the resolved route for $path declare transport: Sse?
+     *
+     * Membership in {@see $sseServedPaths} is equivalent to `transport === Sse`:
+     * the set is populated exclusively from routes whose declared transport is
+     * {@see TransportType::Sse}. A non-Sse route's path is absent, so it is NOT
+     * served as a stream (the dispatch is correct, not over-broad).
+     */
+    private static function shouldServeAsSse(string $path): bool
+    {
+        return isset(self::$sseServedPaths[$path]);
     }
 
     private static function handleSse(Request $request, Response $response): void
@@ -153,7 +295,7 @@ final class AsyncResourceSseServer
         //     delivery then sends done/close (canUsePersistentDeferredSse() keeps
         //     the persistent live loop auth-gated), so we let guests through the
         //     gate and rely on the delivery-complete close.
-        //  3. bare /sse with no deferred_request_id is a long-lived stream →
+        //  3. a bare kiss stream with no deferred_request_id is long-lived →
         //     auth required, unless SSE_PUBLIC_ANONYMOUS is opt-in.
         $authenticated = self::hasAuthenticatedSession($request);
         $anonymousAllowed = filter_var((string) (\getenv('SSE_PUBLIC_ANONYMOUS') ?: ''), FILTER_VALIDATE_BOOLEAN);
@@ -341,13 +483,38 @@ final class AsyncResourceSseServer
             );
         }
 
+        self::runHeldOpenLoop($sessionId, $request, $response, $authenticatedUserId);
+
+        self::closeSession($sessionId, $response);
+    }
+
+    /**
+     * The held-open servicing loop — the single drain loop that keeps an SSE fd
+     * open and delivers subsequent frames (queue → cross-worker deliver-table →
+     * Redis queue), catches the R4 `{__ctrl:rerun}` control on each path, applies
+     * the connection-age cap, and emits the idle keepalive.
+     *
+     * Extracted from {@see handleSse()} so a non-kiss own-route stream
+     * ({@see serveResourceStream()}, the Track R · R8c held-open grid) is serviced
+     * by the EXACT same loop — including R4's re-run branch — rather than a parallel
+     * copy. Kiss is byte-unchanged: {@see handleSse()} still computes the same
+     * pre-loop state and calls this with it. The loop does NOT close the session;
+     * the caller owns {@see closeSession()} (so a caller can run teardown hooks
+     * around it).
+     */
+    private static function runHeldOpenLoop(
+        string $sessionId,
+        Request $request,
+        Response $response,
+        string $authenticatedUserId,
+    ): void {
         $closed = false;
         $lastAuthTouchAt = time();
         $connectionStartedAt = time();
         // Seed the heartbeat clock from the `connected` frame written just
         // above; refreshed on every successful outbound write below.
         $lastWriteAt = time();
-        $maxAgeSeconds = self::envInt('SSE_MAX_CONNECTION_AGE_SECONDS', self::DEFAULT_MAX_CONNECTION_AGE_SECONDS);
+        $maxAgeSeconds = self::maxConnectionAgeSeconds();
         while (!$closed && isset(self::$sessions[$sessionId])) {
             // Hard connection-age cap — bounds hanging-connection attacks.
             if ($maxAgeSeconds > 0 && (time() - $connectionStartedAt) >= $maxAgeSeconds) {
@@ -363,6 +530,20 @@ final class AsyncResourceSseServer
 
             while (isset(self::$queues[$sessionId]) && self::$queues[$sessionId] !== []) {
                 $data = array_shift(self::$queues[$sessionId]);
+
+                // Track R · R4 — catch a control marker before it can be written
+                // as a data frame (same-worker path: X==W, the control landed on
+                // this worker's in-memory queue).
+                $ctrl = self::handleControlFrame($sessionId, $response, $data);
+                if ($ctrl === self::CTRL_HANDLED_CLOSE) {
+                    $closed = true;
+                    break;
+                }
+                if ($ctrl === self::CTRL_HANDLED_CONTINUE) {
+                    $lastWriteAt = time();
+                    continue;
+                }
+
                 if (!self::writeSse($response, $data)) {
                     // Durability: the socket died mid-send. Requeue this
                     // in-flight payload (already shifted off the queue) to
@@ -386,7 +567,28 @@ final class AsyncResourceSseServer
                 foreach (self::$deliverTable as $deliverKey => $row) {
                     if ((int) $row['worker_id'] === $currentWorkerId && trim((string) $row['session_id']) === $sessionId) {
                         $data = json_decode((string) $row['payload'], true);
-                        if (is_array($data) && self::writeSse($response, $data)) {
+                        if (!is_array($data)) {
+                            continue;
+                        }
+
+                        // Track R · R4 — catch a control marker on the cross-worker
+                        // Swoole-table fallback (no-Redis path). The owning worker
+                        // W self-selects via the worker_id match above, so the
+                        // tier-2 context resolves locally here.
+                        $ctrl = self::handleControlFrame($sessionId, $response, $data);
+                        if ($ctrl === self::CTRL_HANDLED_CLOSE) {
+                            $toDel[] = $deliverKey;
+                            $closed = true;
+                            break;
+                        }
+                        if ($ctrl === self::CTRL_HANDLED_CONTINUE) {
+                            $toDel[] = $deliverKey;
+                            $deliverCount++;
+                            $lastWriteAt = time();
+                            continue;
+                        }
+
+                        if (self::writeSse($response, $data)) {
                             $toDel[] = $deliverKey;
                             $deliverCount++;
                             $lastWriteAt = time();
@@ -426,8 +628,167 @@ final class AsyncResourceSseServer
 
             \Swoole\Coroutine::sleep(0.2);
         }
+    }
 
-        self::closeSession($sessionId, $response);
+    /**
+     * Track R · R8c (C1/C2) — serve a Protected own-route resource stream as a
+     * HELD-OPEN SSE stream serviced by the same drain loop kiss uses.
+     *
+     * This is the seam R8a/R8b left inert: the grid endpoint declares
+     * `transport: Sse` (so its path is in {@see $sseServedPaths}) but R8b served it
+     * as a ONE-SHOT frame. Here the OWN handler (it has already flowed the normal
+     * Protected pipeline — hydration + the Subject gate — so authorization is DONE
+     * upstream and this method does NO auth of its own) hands the live socket to
+     * this method, which:
+     *
+     *   1. applies the per-IP / global connection caps (same bound as kiss);
+     *   2. registers the session + worker-table row (so cross-worker
+     *      {@see deliver()} of a `{__ctrl:rerun}` control reaches THIS fd);
+     *   3. writes the INITIAL frame ({@see writeSse()} → the typed-`_type`
+     *      chokepoint, so it is byte-identical to a re-run frame);
+     *   4. launches the consumer-half: R5 {@see ConnectCoordinator::onConnect()}
+     *      populates tier-1 (cross-worker row) + tier-2 (worker-local
+     *      {@see ReRunContext}) and drives R3's subscribe-on-first;
+     *   5. enters {@see runHeldOpenLoop()} — the SAME loop as kiss, where R4's
+     *      {@see handleControlFrame()} catches a `{__ctrl:rerun}` and writes a
+     *      fresh re-queried frame on THIS held-open fd (live update, not reconnect);
+     *   6. on teardown (disconnect / age cap / socket death), R5
+     *      {@see ConnectCoordinator::onDisconnect()} reaps every tier (no zombie),
+     *      then {@see closeSession()} ends the fd.
+     *
+     * `$record` + `$context` are the consumer-half inputs the owning handler builds
+     * (they share `streaming_id`, the linkage R4 follows from a cross-worker control
+     * back to the worker-local re-run state). When either is null, or no coordinator
+     * is wired, the stream still holds open and is serviced — it just has no live
+     * re-run source (the safe degenerate used by the held-open transport test).
+     *
+     * @param array<array-key, mixed> $initialFrameData the first frame's payload
+     *                                                   (already carries its `_type`).
+     * @param string $serverStreamId Stream Lifecycle · Axis 1(b) Phase 2 — the
+     *        server-authoritative id to ANNOUNCE as the first `ui.stream.id` SSE
+     *        event (for forward adoption by a Phase-3 client). This is a SEPARATE
+     *        coordinate from `$sessionId`, the ADDRESSING key the stream is keyed
+     *        on. The transition rule (back-compat):
+     *          - if the caller resolved `$sessionId` from a shape-valid CLIENT id,
+     *            THAT remains the addressing key this phase, and `$serverStreamId`
+     *            is the distinct server-minted id emitted for adoption (today's
+     *            client ignores it, so it is inert until Phase 3);
+     *          - if the client sent no id, the caller passes the server-minted id
+     *            as BOTH `$sessionId` and `$serverStreamId`, so announced == key.
+     *        Either way the announced id never becomes a SECOND live addressing
+     *        coordinate this phase: in the only case a client actually adopts it
+     *        (no client id sent), it already EQUALS the key. When empty (a caller
+     *        that did not opt in), the addressing key is announced as a sane
+     *        default. No client/data-frame change — the id rides its own event.
+     */
+    public static function serveResourceStream(
+        Request $request,
+        Response $response,
+        string $sessionId,
+        array $initialFrameData,
+        ?SubscriptionRecord $record = null,
+        ?ReRunContext $context = null,
+        string $serverStreamId = '',
+    ): void {
+        $sessionId = trim($sessionId);
+        if ($sessionId === '') {
+            $sessionId = self::mintStreamId();
+        }
+
+        // Per-IP + global connection caps (same bound as the kiss admit path) —
+        // a held-open resource stream consumes a worker coroutine + fd just like
+        // kiss, so it is accounted the same way.
+        $clientIp = self::resolveClientIp($request);
+        $maxPerIp = self::envInt('SSE_MAX_CONN_PER_IP', self::DEFAULT_MAX_CONN_PER_IP);
+        $maxGlobal = self::envInt('SSE_MAX_CONN_GLOBAL', self::DEFAULT_MAX_CONN_GLOBAL);
+
+        if (array_sum(self::$ipConnections) >= $maxGlobal) {
+            self::rejectTooManyRequests($response, 'SSE connection cap reached for this worker.');
+            return;
+        }
+        if ($clientIp !== '' && ((self::$ipConnections[$clientIp] ?? 0) >= $maxPerIp)) {
+            self::rejectTooManyRequests($response, 'SSE connection cap reached for your IP.');
+            return;
+        }
+        if ($clientIp !== '') {
+            self::$ipConnections[$clientIp] = (self::$ipConnections[$clientIp] ?? 0) + 1;
+            self::$sessionIps[self::sessionConnectionKey($sessionId, $response)] = $clientIp;
+        }
+
+        $response->status(200);
+        $response->header('Content-Type', 'text/event-stream');
+        $response->header('Cache-Control', 'no-cache');
+        $response->header('Connection', 'keep-alive');
+        $response->header('X-Accel-Buffering', 'no');
+
+        self::$sessions[$sessionId] = [
+            'response' => $response,
+            'connected_at' => time(),
+        ];
+        if (!isset(self::$queues[$sessionId])) {
+            self::$queues[$sessionId] = [];
+        }
+        if (self::$sessionWorkerTable !== null && self::$httpServer !== null) {
+            self::$sessionWorkerTable->set(
+                self::sessionTableKey($sessionId),
+                ['worker_id' => self::getCurrentWorkerId()],
+            );
+        }
+        self::touchActiveSession($sessionId);
+
+        // Stream Lifecycle · Axis 1(b) Phase 2 — the server-authoritative stream
+        // id as a DEDICATED first SSE event, written one line BEFORE the initial
+        // data frame. It travels its own one-shot `ui.stream.id` channel (NOT a
+        // field on the data frame) precisely so the data frame below stays
+        // byte-identical to every re-run frame — the synchrony-pin invariant. A
+        // Phase-3 client adopts it; today's client ignores the unknown event
+        // (back-compat). Announce the server-minted id when supplied, else fall
+        // back to the addressing key so every resource stream still announces one.
+        $announcedStreamId = trim($serverStreamId) !== '' ? trim($serverStreamId) : $sessionId;
+        self::writeSse($response, [
+            '_type' => \Semitexa\Ssr\Application\Service\UiEvent\UiSseEventType::UiStreamId->value,
+            'stream_id' => $announcedStreamId,
+        ]);
+
+        // The initial rows frame, immediately — through the typed chokepoint so it
+        // matches the re-run frame shape byte-for-byte.
+        self::writeSse($response, $initialFrameData);
+
+        // Consumer-half launch (R5 · first production caller). Populates both tiers
+        // and drives R3 subscribe-on-first; the tier-2 ReRunContext is keyed by
+        // streaming_id, the key R4 resolves a cross-worker control back to.
+        $coordinator = self::$connectCoordinator;
+        $streamingId = $record?->streamingId ?? $sessionId;
+        if ($coordinator !== null && $record !== null && $context !== null) {
+            try {
+                $coordinator->onConnect($record, $context);
+            } catch (\Throwable $e) {
+                \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'track_r_onconnect_failed', [
+                    'streaming_id' => $streamingId,
+                    'session_id' => $sessionId,
+                    'exception' => $e::class,
+                    'message' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        try {
+            self::runHeldOpenLoop($sessionId, $request, $response, '');
+        } finally {
+            if ($coordinator !== null && $record !== null && $context !== null) {
+                try {
+                    $coordinator->onDisconnect($streamingId);
+                } catch (\Throwable $e) {
+                    \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'track_r_ondisconnect_failed', [
+                        'streaming_id' => $streamingId,
+                        'session_id' => $sessionId,
+                        'exception' => $e::class,
+                        'message' => $e->getMessage(),
+                    ]);
+                }
+            }
+            self::closeSession($sessionId, $response);
+        }
     }
 
     private static function triggerDeferredBlocks(
@@ -573,6 +934,19 @@ final class AsyncResourceSseServer
                 continue;
             }
 
+            // Track R · R4 — catch a control marker on the session-addressed Redis
+            // queue: the canonical X→W seam (§C.4). A non-owner worker X RPUSHed
+            // the `{__ctrl:rerun}` here; the OWNING worker W drains it on its tick
+            // and resolves its worker-local tier-2 context. A miss (drained on a
+            // worker without the tier-2 record) is the safe no-op edge.
+            $ctrl = self::handleControlFrame($sessionId, $response, $data);
+            if ($ctrl === self::CTRL_HANDLED_CLOSE) {
+                return true;
+            }
+            if ($ctrl === self::CTRL_HANDLED_CONTINUE) {
+                continue;
+            }
+
             if (!self::writeSse($response, $data)) {
                 try {
                     $pool->withConnection(static function ($redis) use ($sessionId, $raw): void {
@@ -601,7 +975,7 @@ final class AsyncResourceSseServer
 
     private static function writeSse(Response $response, array $data): bool
     {
-        return @$response->write(self::composeSseFrame($data));
+        return self::transport()->writeFrame($response, self::buildFrame($data));
     }
 
     /**
@@ -612,7 +986,17 @@ final class AsyncResourceSseServer
      */
     private static function writeSseComment(Response $response): bool
     {
-        return @$response->write(":\n\n");
+        return self::transport()->writeComment($response);
+    }
+
+    /**
+     * The SSE write port. Binds the Swoole adapter lazily as a soft runtime
+     * dependency (mirroring the other Swoole runtime adapters); the transport
+     * is stateless, so a single shared instance is sufficient per worker.
+     */
+    private static function transport(): SseTransportInterface
+    {
+        return self::$transport ??= new SwooleSseTransport();
     }
 
     /**
@@ -697,11 +1081,24 @@ final class AsyncResourceSseServer
     }
 
     /**
-     * Compose the SSE wire frame for one payload.
+     * Build the SSE wire frame for one payload as a portable {@see SseFrame}.
      *
      * This is the single chokepoint where the canonical `_type` field is
-     * resolved into an SSE `event:` line. Behaviour:
+     * resolved (and allow-list-validated) into an SSE `event:` line. The
+     * SSR/UI-domain enforcement stays here, on this consumer's own boundary,
+     * BEFORE the frame is handed to the transport; the resulting `SseFrame`
+     * carries an already-resolved event name and `core` renders it
+     * mechanically (no allow-list, only CR/LF hygiene) in {@see SseFrame::toWire()}.
+     * Behaviour of the resolution step:
      *
+     *   - {@see SsePassthroughEvent::KEY} present (opt-in passthrough mode) →
+     *     emit `event: <value>` for a value in the closed graphql-sse
+     *     vocabulary and STRIP the key so the body renders bare; an
+     *     out-of-vocabulary value is dropped (no `event:` line, key stripped).
+     *     This is the ONLY path that produces an `event:` line without an
+     *     in-body discriminator. No existing frame sets this key, so all
+     *     pre-existing behaviour below is byte-identical (the key is absent and
+     *     this branch is skipped).
      *   - `_type` absent → byte-identical to the pre-Phase-2 wire shape:
      *     the existing `event` field (if any, e.g. demo producer's
      *     `event: notification`) is honoured, and no other change is
@@ -719,38 +1116,20 @@ final class AsyncResourceSseServer
      *
      * CR/LF injection on the `event:` line is prevented twice — first by
      * the allow-list (typed `_type` only emits values from a closed
-     * enum), then by the existing `str_replace` on the legacy `event`
-     * field. Defence in depth.
+     * enum), then by the `str_replace` on the rendered `event` line.
+     * Defence in depth.
      *
      * @param array<array-key, mixed> $data
      */
-    private static function composeSseFrame(array $data): string
+    private static function buildFrame(array $data): SseFrame
     {
         [$resolvedEventName, $data] = self::resolveSseEventName($data);
 
-        $line = '';
-        if (isset($data['id'])) {
-            $safeId = str_replace(["\r", "\n"], '', (string) $data['id']);
-            $line .= 'id: ' . $safeId . "\n";
-        }
-        if ($resolvedEventName !== null && $resolvedEventName !== '') {
-            $safeEvent = str_replace(["\r", "\n"], '', $resolvedEventName);
-            $line .= 'event: ' . $safeEvent . "\n";
-        }
-        try {
-            $json = json_encode(
-                $data,
-                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR,
-            );
-        } catch (\JsonException $e) {
-            \Semitexa\Core\Log\StaticLoggerBridge::warning('ssr', 'sse_payload_json_encode_failed', [
-                'exception' => $e::class,
-                'message'   => $e->getMessage(),
-            ]);
-            $json = '{}';
-        }
-        $line .= 'data: ' . $json . "\n\n";
-        return $line;
+        return SseFrame::fromResolved(
+            isset($data['id']) ? (string) $data['id'] : null,
+            $resolvedEventName,
+            $data,
+        );
     }
 
     /**
@@ -764,6 +1143,31 @@ final class AsyncResourceSseServer
      */
     private static function resolveSseEventName(array $data): array
     {
+        // Opt-in passthrough mode (evaluated FIRST, independently of the
+        // `_type`/legacy logic below). A frame carrying the canonical
+        // passthrough key emits `event: <value>` for an allowed value and has
+        // the key STRIPPED from the body so the remaining body renders bare —
+        // the only path that yields an `event:` line WITHOUT an in-body
+        // discriminator (required by the graphql-sse `next`/`complete`/`error`
+        // wire shape). No existing caller sets this key, so every existing
+        // frame skips this branch and falls through to the unchanged logic
+        // below byte-identically. An out-of-vocabulary value is treated as
+        // invalid: the key is stripped and no `event:` line is emitted
+        // (mirrors the unknown-`_type` posture — an arbitrary string is never
+        // promoted to an event name).
+        if (array_key_exists(SsePassthroughEvent::KEY, $data)) {
+            $passthroughEvent = $data[SsePassthroughEvent::KEY];
+            unset($data[SsePassthroughEvent::KEY]);
+            if (is_string($passthroughEvent) && SsePassthroughEvent::isAllowed($passthroughEvent)) {
+                return [$passthroughEvent, $data];
+            }
+
+            \Semitexa\Core\Log\StaticLoggerBridge::warning('ssr', 'sse_passthrough_event_dropped', [
+                'event' => is_string($passthroughEvent) ? $passthroughEvent : gettype($passthroughEvent),
+            ]);
+            return [null, $data];
+        }
+
         $rawType = $data['_type'] ?? null;
         if (is_string($rawType) && $rawType !== '') {
             if (\Semitexa\Ssr\Application\Service\UiEvent\UiSseEventType::isAllowed($rawType)) {
@@ -1071,6 +1475,28 @@ final class AsyncResourceSseServer
         self::$httpServer = $server;
     }
 
+    /**
+     * Track R · R8a — register the paths served by the SSE intercept.
+     *
+     * Called once per worker by {@see WireSseServedPathsListener} with every
+     * discovered `transport: Sse` route path. Stored as a `path => true` map so
+     * {@see shouldServeAsSse()} is an O(1) lookup. Replaces (verbatim values are
+     * supplied, not derived here): the listener owns the transport filter, this
+     * setter owns nothing but the index shape.
+     *
+     * @param list<string> $paths
+     */
+    public static function setSseServedPaths(array $paths): void
+    {
+        $index = [];
+        foreach ($paths as $path) {
+            if (is_string($path) && $path !== '') {
+                $index[$path] = true;
+            }
+        }
+        self::$sseServedPaths = $index;
+    }
+
     public static function setTables(
         \Swoole\Table $sessionWorkerTable,
         \Swoole\Table $deliverTable,
@@ -1088,38 +1514,446 @@ final class AsyncResourceSseServer
     }
 
     /**
+     * Track R · R4 — wire the core re-run unit (R2) the loop branch calls when it
+     * catches a `{__ctrl:rerun}` control. Live binding is the dispatcher-wiring
+     * brick / R8; until then it stays null and a control is a safe no-op.
+     */
+    public static function setReRunner(?ReRunnerInterface $reRunner): void
+    {
+        self::$reRunner = $reRunner;
+    }
+
+    /**
+     * Track R · R4 — wire the cross-worker re-run coalescer (R3) whose pending
+     * mark the loop branch CLEARS after handling a control, re-arming the next
+     * mutation's signal (the bounded-coalescing window). The shared table is
+     * created pre-fork by R5's {@see CreateTrackRTablesListener}.
+     */
+    public static function setRerunCoalescer(?RerunCoalescer $coalescer): void
+    {
+        self::$rerunCoalescer = $coalescer;
+    }
+
+    /**
+     * Track R · Intended Grid Model · Phase 2 (C2) — wire the cross-worker
+     * view-change coalescer the command intake ({@see submitViewChange()}) and the
+     * loop branch ({@see handleControlFrame()}) share. The shared table is created
+     * pre-fork by R5's {@see \Semitexa\Ssr\Application\Service\Server\Lifecycle\CreateTrackRTablesListener}.
+     */
+    public static function setViewChangeCoalescer(?ViewChangeCoalescer $coalescer): void
+    {
+        self::$viewChangeCoalescer = $coalescer;
+    }
+
+    /**
+     * Track R · Intended Grid Model · Phase 2 (C2) — the inbound view-change
+     * command intake (the browser PRODUCER side).
+     *
+     * A view-change command (page / limit / sort / filter change) arrives as a
+     * SEPARATE request and enqueues a `{__ctrl:viewchange}` control onto the held
+     * stream's session-addressed queue — the SAME X→W queue a mutation `{__ctrl:rerun}`
+     * rides ({@see deliver()}), reaching the owning worker which re-runs and pushes a
+     * fresh frame on the OPEN fd. This NEVER returns rows; the caller (the app's
+     * command endpoint) returns only an ack.
+     *
+     * Coalescing (R3 discipline, latest-view-wins): the coalescer stores the latest
+     * params and admits only the 0→1 enqueue, so a rapid burst collapses to one
+     * re-run that re-queries the FINAL view. Without a wired coalescer (e.g. before
+     * boot wiring) the params ride inline in the control as a best-effort,
+     * uncoalesced fallback.
+     *
+     * @param array<string, mixed> $params the new view params (filter-only is
+     *        enforced downstream by the re-run's marker-gated override — see
+     *        {@see \Semitexa\Core\Pipeline\ReRun\LiveFilterParamOverride})
+     * @return bool whether the command was accepted onto the queue (false only when
+     *        the session id is missing/malformed — never a delivery guarantee)
+     */
+    public static function submitViewChange(string $sessionId, array $params): bool
+    {
+        $sessionId = trim($sessionId);
+        if ($sessionId === '' || preg_match(self::SAFE_BEARER_SESSION_ID_PATTERN, $sessionId) !== 1) {
+            return false;
+        }
+
+        // streaming_id == session_id for the held-open own-route stream (one stream
+        // per connection), so the command — which only knows the session id — can
+        // address the tier-2 re-run state directly.
+        if (self::$viewChangeCoalescer === null) {
+            // Fallback: no coalescer wired — carry params inline, uncoalesced.
+            self::deliver($sessionId, [
+                self::CTRL_KEY => self::CTRL_VIEWCHANGE,
+                'streaming_id' => $sessionId,
+                'params' => $params,
+            ]);
+
+            return true;
+        }
+
+        // Store the latest view + gate the enqueue. Only the 0→1 command enqueues a
+        // (param-less) control; the owner reads the LATEST params from the coalescer
+        // when it drains, so a coalesced burst re-queries the final view.
+        if (self::$viewChangeCoalescer->submit($sessionId, $params)) {
+            self::deliver($sessionId, [
+                self::CTRL_KEY => self::CTRL_VIEWCHANGE,
+                'streaming_id' => $sessionId,
+            ]);
+        }
+
+        return true;
+    }
+
+    /**
+     * Track R · R8c (C2) — wire the per-worker connect coordinator (R5) the
+     * held-open resource stream drives. Set live by
+     * {@see \Semitexa\Ssr\Application\Service\Server\Lifecycle\WireTrackRConsumerListener}.
+     */
+    public static function setConnectCoordinator(?ConnectCoordinator $coordinator): void
+    {
+        self::$connectCoordinator = $coordinator;
+    }
+
+    /**
+     * Track R · R8c — is the current coroutine inside a re-run tick?
+     *
+     * True only while {@see handleControlFrame()} is re-running the chain on THIS
+     * coroutine. An own-route held-open handler consults this to take its JSON-body
+     * branch on a re-run (the loop frames the body) instead of grabbing the live
+     * socket and entering a second held-open stream.
+     */
+    public static function isReRunInProgress(): bool
+    {
+        if (self::currentCid() >= 0) {
+            $ctx = \Swoole\Coroutine::getContext();
+            if ($ctx !== null) {
+                return ((int) ($ctx[self::RERUN_SCOPE_CONTEXT_KEY] ?? 0)) > 0;
+            }
+        }
+
+        return self::$reRunDepthFallback > 0;
+    }
+
+    private static function beginReRunScope(): void
+    {
+        if (self::currentCid() >= 0) {
+            $ctx = \Swoole\Coroutine::getContext();
+            if ($ctx !== null) {
+                $ctx[self::RERUN_SCOPE_CONTEXT_KEY] = ((int) ($ctx[self::RERUN_SCOPE_CONTEXT_KEY] ?? 0)) + 1;
+                return;
+            }
+        }
+
+        self::$reRunDepthFallback++;
+    }
+
+    private static function endReRunScope(): void
+    {
+        if (self::currentCid() >= 0) {
+            $ctx = \Swoole\Coroutine::getContext();
+            if ($ctx !== null) {
+                $depth = ((int) ($ctx[self::RERUN_SCOPE_CONTEXT_KEY] ?? 0)) - 1;
+                $ctx[self::RERUN_SCOPE_CONTEXT_KEY] = $depth > 0 ? $depth : 0;
+                return;
+            }
+        }
+
+        if (self::$reRunDepthFallback > 0) {
+            self::$reRunDepthFallback--;
+        }
+    }
+
+    /**
+     * Track R · R4 — the loop branch that catches a `{__ctrl:rerun}` control
+     * before it can be written to the client and turns it into a full-chain
+     * re-run, closing the push→re-run cycle.
+     *
+     * A control marker is a SIGNAL, never a data frame (§C.4): it carries
+     * `{__ctrl:'rerun', streaming_id, scope_key}` and no row data. On such a
+     * marker this:
+     *   1. resolves the worker-local {@see ReRunContext} by `streaming_id`
+     *      (R1 tier-2, {@see SubscriptionDtoRegistry});
+     *   2. re-runs the full handler chain auth-first via R2's {@see ReRunnerInterface};
+     *   3. on a fresh frame → writes it to this stream; on TERMINATE → returns
+     *      HANDLED_CLOSE after emitting a close frame and NO data frame (the
+     *      lost-access path, §B.3);
+     *   4. clears the coalescer mark (R3's {@see RerunCoalescer::clearPending()})
+     *      after EITHER outcome, so the next mutation's signal re-arms.
+     *
+     * CROSS-WORKER CORRECTNESS (§C3, the decisive edge): the control rides the
+     * session-addressed queue, so the OWNING worker drains it and finds its
+     * tier-2 context locally. If a control is drained where no tier-2 record
+     * exists — a non-owner worker drained it, or the stream was already torn
+     * down — the re-run is a SAFE no-op: no crash, no re-run, no frame. (The
+     * tier-2 registry is worker-local; a miss there is exactly that edge.)
+     *
+     * @param mixed                $response the opaque transport handle (Swoole\Http\Response)
+     * @param array<string, mixed> $data
+     * @return int one of the CTRL_* outcomes
+     */
+    private static function handleControlFrame(string $sessionId, mixed $response, array $data): int
+    {
+        $kind = $data[self::CTRL_KEY] ?? null;
+
+        // A mutation-driven re-run (R4): re-run the cached DTO verbatim (no override).
+        if ($kind === self::CTRL_RERUN) {
+            return self::handleReRunControl($sessionId, $response, $data);
+        }
+
+        // A view-change command (Phase 2): re-run with a FILTER-ONLY param override
+        // (the new page / limit / sort / filter), pushing the fresh frame on the
+        // SAME open fd. The override is applied marker-gated in core's reExecute —
+        // identity is never overridable here (the R2 anti-poisoning invariant).
+        if ($kind === self::CTRL_VIEWCHANGE) {
+            return self::handleViewChangeControl($sessionId, $response, $data);
+        }
+
+        return self::CTRL_NOT_CONTROL;
+    }
+
+    /**
+     * Track R · R4 — the `{__ctrl:rerun}` branch (mutation-driven re-run). Resolves
+     * the worker-local re-run state and re-runs the cached DTO verbatim ({@see
+     * dispatchReRun()} with an empty override), then clears the R3 coalescer mark so
+     * the next mutation's signal re-arms. Unchanged in behaviour from before Phase 2.
+     *
+     * @param array<string, mixed> $data
+     */
+    private static function handleReRunControl(string $sessionId, mixed $response, array $data): int
+    {
+        $streamingId = trim((string) ($data['streaming_id'] ?? ''));
+        if ($streamingId === '') {
+            // Malformed control — nothing to resolve. Consume it (never written).
+            return self::CTRL_HANDLED_CONTINUE;
+        }
+
+        // Tier-2 resolve (R1, worker-local). A miss = this worker does not own
+        // the stream (a non-owner drained the control) or the stream was torn
+        // down: a missing context is nothing to re-run. Clear the mark + drop.
+        // No crash, no re-run, no frame — the decisive cross-worker edge (§C3).
+        // The re-run unit is wired live by R8; until then a control is a safe no-op.
+        $context = SubscriptionDtoRegistry::get($streamingId);
+        if ($context === null || self::$reRunner === null) {
+            self::clearRerunPending($streamingId);
+            return self::CTRL_HANDLED_CONTINUE;
+        }
+
+        $outcome = self::dispatchReRun($streamingId, $sessionId, $response, $context, []);
+
+        // Clear the coalescer mark after handling (either outcome) so a later
+        // mutation's signal can enqueue a fresh re-run — the bounded-coalescing
+        // window (R3 sets the mark; R4 clears it). Idempotent with onDisconnect.
+        self::clearRerunPending($streamingId);
+
+        return $outcome;
+    }
+
+    /**
+     * Track R · Intended Grid Model · Phase 2 — the `{__ctrl:viewchange}` branch.
+     *
+     * Reads the LATEST view params (last-write-wins, from the view-change coalescer;
+     * the inline `params` is the no-coalescer fallback), resolves the worker-local
+     * re-run state, and re-runs with that param override — pushing a fresh frame for
+     * the new view on the SAME open fd. The override is applied FILTER-ONLY and
+     * marker-gated in core ({@see \Semitexa\Core\Pipeline\ReRun\LiveFilterParamOverride}),
+     * so a param targeting a non-`#[LiveFilterParam]` field (e.g. `sessionId` or any
+     * identity-bearing field) is structurally IGNORED and identity still resolves
+     * from the live session — the same anti-poisoning guarantee as the mutation path.
+     *
+     * Same safe-no-op edges as the re-run branch: a tier-2 miss (non-owner drained /
+     * torn down) or an unwired re-runner consumes the control without a re-run.
+     * {@see ViewChangeCoalescer::consume()} already cleared the pending mark, so the
+     * next burst re-arms.
+     *
+     * @param array<string, mixed> $data
+     */
+    private static function handleViewChangeControl(string $sessionId, mixed $response, array $data): int
+    {
+        $streamingId = trim((string) ($data['streaming_id'] ?? ''));
+        if ($streamingId === '') {
+            return self::CTRL_HANDLED_CONTINUE;
+        }
+
+        // Latest-view params: the coalescer is the source of truth when wired (it
+        // also clears the pending mark here, re-arming the next burst); the inline
+        // payload params are the uncoalesced fallback when it is not.
+        $override = self::$viewChangeCoalescer?->consume($streamingId);
+        if ($override === null) {
+            $inline = $data['params'] ?? null;
+            $override = is_array($inline) ? $inline : [];
+        }
+
+        $context = SubscriptionDtoRegistry::get($streamingId);
+        if ($context === null || self::$reRunner === null) {
+            // Non-owner drained / stream torn down / re-runner unwired — safe no-op.
+            return self::CTRL_HANDLED_CONTINUE;
+        }
+
+        return self::dispatchReRun($streamingId, $sessionId, $response, $context, $override);
+    }
+
+    /**
+     * The shared re-run + frame-write tail for BOTH control kinds (R4 mutation and
+     * Phase-2 view-change). Marks the coroutine as re-running (so the re-invoked
+     * own-route handler produces a JSON body the loop frames, instead of grabbing
+     * the live socket), runs the chain auth-first via R2 with the given override,
+     * and writes the fresh frame on the open fd — or a close frame on TERMINATE
+     * (lost access, §B.3). Coalescer pending bookkeeping is the caller's concern.
+     *
+     * @param array<string, mixed> $filterOverride empty for a mutation re-run; the
+     *        new view params for a view-change (applied filter-only in core)
+     */
+    private static function dispatchReRun(
+        string $streamingId,
+        string $sessionId,
+        mixed $response,
+        ReRunContext $context,
+        array $filterOverride,
+    ): int {
+        try {
+            self::beginReRunScope();
+            try {
+                $result = self::$reRunner->reRun($context, $filterOverride);
+            } finally {
+                self::endReRunScope();
+            }
+        } catch (\Throwable $e) {
+            // A re-run failure must neither leak data nor kill the stream — log and
+            // keep the stream alive for the next signal.
+            \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'track_r_rerun_failed', [
+                'streaming_id' => $streamingId,
+                'session_id' => $sessionId,
+                'override' => $filterOverride === [] ? 'none' : array_keys($filterOverride),
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+            ]);
+            return self::CTRL_HANDLED_CONTINUE;
+        }
+
+        if ($result->isTerminated()) {
+            // Lost-access path (§B.3): the subject no longer has access. Emit a
+            // close frame, NO data frame, and signal the loop to end the stream.
+            self::writeControlClose($response, $result->getReason() ?? 'unauthorized');
+            return self::CTRL_HANDLED_CLOSE;
+        }
+
+        $frame = $result->getFrame();
+        if ($frame === null) {
+            // Defensive: a non-terminated result with no frame — nothing to
+            // write. (R2 never produces this; treat as a benign no-op.)
+            return self::CTRL_HANDLED_CONTINUE;
+        }
+
+        // Write the freshly re-queried frame. The re-run re-queried the data
+        // under the recipient's CURRENT authorization (and, for a view-change, the
+        // new view), so this is fresh, not the stale cached value (the §C4 delete
+        // edge: a re-run over a now-absent resource yields the handler's
+        // empty/"gone" frame, written as-is — no crash, no stale data).
+        if (!self::transport()->writeFrame($response, self::buildFrame(self::reRunFrameData($frame)))) {
+            // Socket died writing the fresh frame — close the stream.
+            return self::CTRL_HANDLED_CLOSE;
+        }
+
+        return self::CTRL_HANDLED_CONTINUE;
+    }
+
+    /**
+     * Clear the per-stream coalescer pending mark, if the coalescer is wired.
+     * No-op until R8 wires {@see setRerunCoalescer()}.
+     */
+    private static function clearRerunPending(string $streamingId): void
+    {
+        self::$rerunCoalescer?->clearPending($streamingId);
+    }
+
+    /**
+     * Emit the close frame for a TERMINATEd re-run (lost access). A close frame,
+     * never a data frame — the §B.3 guarantee that no data leaks to a
+     * de-authorized subject. Goes straight through the transport (mirroring
+     * {@see writeSse()}) so the branch stays Swoole-free and unit-testable.
+     */
+    private static function writeControlClose(mixed $response, string $reason): bool
+    {
+        return self::transport()->writeFrame($response, self::buildFrame([
+            'event' => 'close',
+            'reason' => $reason,
+            'close' => true,
+        ]));
+    }
+
+    /**
+     * Map a re-run {@see HttpResponse} into the SSE wire-frame array
+     * {@see buildFrame()} consumes. The handler composes a JSON body; decode it
+     * so the frame envelope (incl. any `_type`) round-trips through the existing
+     * event-name resolution. A non-JSON/non-array body is wrapped so a frame is
+     * still emitted rather than dropped.
+     *
+     * @return array<array-key, mixed>
+     */
+    private static function reRunFrameData(HttpResponse $frame): array
+    {
+        $decoded = json_decode($frame->getContent(), true);
+
+        return is_array($decoded) ? $decoded : ['data' => $frame->getContent()];
+    }
+
+    /**
+     * Fan-out to every active session of one user.
+     *
+     * @internal FENCED FAIL-CLOSED until Track R. This non-owner-request-scoped
+     *           writer does zero content-vs-recipient authorization (it merely
+     *           loops owner-scoped {@see self::deliver()} over a recipient list),
+     *           so private content could ride it to non-entitled sessions. It is
+     *           latent (zero callers); the throw fires BEFORE any deliver()/socket
+     *           write so no frame can leak even partially. Track R replaces this
+     *           throw with the per-recipient entitlement-gated implementation
+     *           preserved below. Do NOT wire a caller before then.
+     *
      * @param array<string, mixed> $data
      */
     public static function deliverToUser(string $userId, array $data): int
     {
-        $userId = trim($userId);
-        if ($userId === '') {
-            return 0;
-        }
+        throw FanOutNotYetGatedException::forFanOut(__METHOD__);
 
-        $sessionIds = self::getAuthenticatedUserSessionIds($userId);
-        $delivered = 0;
-        foreach ($sessionIds as $sessionId) {
-            self::deliver($sessionId, $data);
-            $delivered++;
-        }
-
-        return $delivered;
+        // Track R restores the entitlement-gated form of the original body:
+        //
+        //     $userId = trim($userId);
+        //     if ($userId === '') {
+        //         return 0;
+        //     }
+        //     $sessionIds = self::getAuthenticatedUserSessionIds($userId);
+        //     $delivered = 0;
+        //     foreach ($sessionIds as $sessionId) {
+        //         // Track R: per-recipient entitlement check on ($sessionId, $data) here.
+        //         self::deliver($sessionId, $data);
+        //         $delivered++;
+        //     }
+        //     return $delivered;
     }
 
     /**
+     * System-wide fan-out to every authenticated session.
+     *
+     * @internal FENCED FAIL-CLOSED until Track R. System-wide broadcast with zero
+     *           content-vs-recipient authorization; latent (zero callers). The
+     *           throw fires BEFORE any deliver()/socket write so no frame can leak.
+     *           Track R replaces this throw with the per-recipient entitlement-gated
+     *           implementation preserved below. Do NOT wire a caller before then.
+     *
      * @param array<string, mixed> $data
      */
     public static function deliverToAuthenticatedUsers(array $data): int
     {
-        $sessionIds = self::getAllAuthenticatedSessionIds();
-        $delivered = 0;
-        foreach ($sessionIds as $sessionId) {
-            self::deliver($sessionId, $data);
-            $delivered++;
-        }
+        throw FanOutNotYetGatedException::forFanOut(__METHOD__);
 
-        return $delivered;
+        // Track R restores the entitlement-gated form of the original body:
+        //
+        //     $sessionIds = self::getAllAuthenticatedSessionIds();
+        //     $delivered = 0;
+        //     foreach ($sessionIds as $sessionId) {
+        //         // Track R: per-recipient entitlement check on ($sessionId, $data) here.
+        //         self::deliver($sessionId, $data);
+        //         $delivered++;
+        //     }
+        //     return $delivered;
     }
 
     private static function getCurrentWorkerId(): int
@@ -1198,6 +2032,20 @@ final class AsyncResourceSseServer
         $ip = trim((string) ($server['remote_addr'] ?? ''));
 
         return $ip !== '' ? strtolower($ip) : '';
+    }
+
+    /**
+     * The resolved hard connection-age cap (`SSE_MAX_CONNECTION_AGE_SECONDS`,
+     * default {@see self::DEFAULT_MAX_CONNECTION_AGE_SECONDS}; `0` disables the
+     * loop's own cap). The held-open loop reads this to force-close + reap a stream
+     * at the cap; the crashed-worker orphan sweeper
+     * ({@see \Semitexa\Ssr\Application\Service\Server\Lifecycle\ReapStaleSubscriptionsListener})
+     * derives its cap+grace staleness threshold from the SAME value, so there is
+     * one source of truth for the cap.
+     */
+    public static function maxConnectionAgeSeconds(): int
+    {
+        return self::envInt('SSE_MAX_CONNECTION_AGE_SECONDS', self::DEFAULT_MAX_CONNECTION_AGE_SECONDS);
     }
 
     private static function envInt(string $key, int $default): int
@@ -1615,6 +2463,47 @@ final class AsyncResourceSseServer
         }
 
         return new SwooleTableSessionHandler();
+    }
+
+    /**
+     * Publish a DATA-LESS scope-invalidation signal on the SSE Redis bus
+     * (Track R · P3 — the cross-instance push origin). The channel name
+     * (`ui.invalidate.{tenant}.{scopeKey}`) carries the full routing key;
+     * the message body is intentionally empty — the subscriber (R3) re-runs
+     * the recipient's own chain, it does not consume row data here.
+     *
+     * Reuses the existing size-1 SSE pool deliberately: a PUBLISH is a
+     * non-blocking request/reply command, so — unlike the subscriber's
+     * blocking `pubSubLoop`, which MUST own a dedicated connection — it is
+     * safe to borrow the shared pooled connection (design §C.3). No-op
+     * without a Redis pool (single-server / in-memory mode): cross-instance
+     * fan-out has no non-Redis path, and a dropped signal is repaired by the
+     * next mutation's signal (idempotent / lossy-tolerant, design §C.3).
+     */
+    public static function publishScopeInvalidation(string $channel): void
+    {
+        $channel = trim($channel);
+        if ($channel === '') {
+            return;
+        }
+
+        $pool = self::getRedisPool();
+        if ($pool === null) {
+            return;
+        }
+
+        try {
+            $pool->withConnection(static function ($redis) use ($channel): void {
+                /** @var Client $redis */
+                $redis->publish($channel, '');
+            });
+        } catch (\Throwable $e) {
+            \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'Redis SSE scope-invalidation publish failed', [
+                'channel' => $channel,
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+            ]);
+        }
     }
 
     private static function getRedisPool(): ?RedisConnectionPool

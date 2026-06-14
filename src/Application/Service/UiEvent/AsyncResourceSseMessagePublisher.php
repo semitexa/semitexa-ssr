@@ -6,6 +6,7 @@ namespace Semitexa\Ssr\Application\Service\UiEvent;
 
 use Semitexa\Core\Attribute\SatisfiesServiceContract;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Async\FanOutNotYetGatedException;
 
 /**
  * Default {@see CanonicalUiMessagePublisherInterface} binding. Forwards
@@ -14,8 +15,10 @@ use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
  *
  * The `_type` field carried by {@see UiSseMessageInterface::toSsePayload()}
  * is consumed by the wire-format chokepoint in {@see AsyncResourceSseServer}
- * (see `composeSseFrame`), which maps it to an SSE `event:` line. The
- * publisher itself does no string concatenation onto the wire.
+ * (see `buildFrame`), which resolves/validates it against the `UiSseEventType`
+ * allow-list and maps it to an SSE `event:` line on a portable
+ * {@see \Semitexa\Core\Server\SseFrame}. The publisher itself does no string
+ * concatenation onto the wire.
  */
 #[SatisfiesServiceContract(of: CanonicalUiMessagePublisherInterface::class)]
 final class AsyncResourceSseMessagePublisher implements CanonicalUiMessagePublisherInterface
@@ -25,8 +28,19 @@ final class AsyncResourceSseMessagePublisher implements CanonicalUiMessagePublis
         AsyncResourceSseServer::deliver($sessionId, $message->toSsePayload());
     }
 
+    /**
+     * @internal FENCED FAIL-CLOSED until Track R. This is the non-owner-request-scoped
+     *           fan-out wrapper; it forwards to the fenced
+     *           {@see AsyncResourceSseServer::deliverToUser()}, which does zero
+     *           content-vs-recipient authorization. Throws BEFORE building/forwarding any
+     *           payload so no frame can leak. Track R restores the real forward once the
+     *           per-recipient entitlement filter exists. Owner-scoped {@see self::publish()}
+     *           is unaffected.
+     */
     public function publishToUser(string $userId, UiSseMessageInterface $message): int
     {
-        return AsyncResourceSseServer::deliverToUser($userId, $message->toSsePayload());
+        throw FanOutNotYetGatedException::forFanOut(__METHOD__);
+
+        // Track R restores: return AsyncResourceSseServer::deliverToUser($userId, $message->toSsePayload());
     }
 }

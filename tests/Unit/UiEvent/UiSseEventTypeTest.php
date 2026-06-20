@@ -59,7 +59,7 @@ final class UiSseEventTypeTest extends TestCase
     public function allowed_values_lists_exactly_the_documented_types(): void
     {
         self::assertSame(
-            ['ssr.fragment', 'ui.patch', 'ui.componentState', 'ui.error', 'ui.stream.id', 'ui.collection.data', 'ui.collection.error'],
+            ['ssr.fragment', 'ui.patch', 'ui.componentState', 'ui.error', 'ui.stream.id', 'ui.collection.data', 'ui.collection.error', 'ui.document.data', 'ui.document.error'],
             UiSseEventType::allowedValues(),
         );
     }

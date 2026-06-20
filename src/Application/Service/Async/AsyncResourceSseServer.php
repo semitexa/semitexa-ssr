@@ -16,6 +16,7 @@ use Semitexa\Core\Server\SseFrame;
 use Semitexa\Core\Server\SseTransportInterface;
 use Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
+use Semitexa\Ssr\Domain\Contract\SubscriptionFactoryInterface;
 use Semitexa\Ssr\Domain\Model\SubscriptionRecord;
 use Predis\Client;
 use Swoole\Http\Request;
@@ -204,6 +205,15 @@ final class AsyncResourceSseServer
     private static ?ConnectCoordinator $connectCoordinator = null;
 
     /**
+     * SSE transport unification · Phase 1 — builds a multiplexed subscription
+     * (record + re-run context) on this worker from a subscribe control, so one
+     * KISS connection can host many subscriptions. Wired by
+     * {@see \Semitexa\Ssr\Application\Service\Server\Lifecycle\WireTrackRConsumerListener};
+     * until then a subscribe control is a safe no-op.
+     */
+    private static ?SubscriptionFactoryInterface $subscriptionFactory = null;
+
+    /**
      * Track R · R8c — re-run reentrancy depth, per coroutine.
      *
      * {@see handleControlFrame()} re-runs the FULL handler chain
@@ -238,6 +248,10 @@ final class AsyncResourceSseServer
     private const CTRL_KEY = '__ctrl';
     private const CTRL_RERUN = 'rerun';
     private const CTRL_VIEWCHANGE = 'viewchange';
+    // SSE transport unification · Phase 1 — attach/detach a feed subscription to
+    // an already-open KISS connection (the multiplex case).
+    private const CTRL_SUBSCRIBE = 'subscribe';
+    private const CTRL_UNSUBSCRIBE = 'unsubscribe';
 
     public static function handle(Request $request, Response $response): bool
     {
@@ -372,6 +386,13 @@ final class AsyncResourceSseServer
         self::$sessions[$sessionId] = [
             'response' => $response,
             'connected_at' => time(),
+            // Capture the tenant THIS connection resolved, in its own coroutine
+            // where TenantContext is authoritative (TenancyPhase ran before route
+            // dispatch). A multiplex subscribe control later scopes its
+            // SubscriptionRecord from this captured value, so the record's channel
+            // scoping never depends on the draining coroutine's ambient tenant.
+            'tenant_id' => self::currentTenantId(),
+            'tenant_blob' => self::currentTenantBlob(),
         ];
 
         $authenticatedUserId = self::resolveAuthenticatedUserId($request);
@@ -724,6 +745,13 @@ final class AsyncResourceSseServer
         self::$sessions[$sessionId] = [
             'response' => $response,
             'connected_at' => time(),
+            // Capture the tenant THIS connection resolved, in its own coroutine
+            // where TenantContext is authoritative (TenancyPhase ran before route
+            // dispatch). A multiplex subscribe control later scopes its
+            // SubscriptionRecord from this captured value, so the record's channel
+            // scoping never depends on the draining coroutine's ambient tenant.
+            'tenant_id' => self::currentTenantId(),
+            'tenant_blob' => self::currentTenantBlob(),
         ];
         if (!isset(self::$queues[$sessionId])) {
             self::$queues[$sessionId] = [];
@@ -751,14 +779,17 @@ final class AsyncResourceSseServer
         ]);
 
         // The initial rows frame, immediately — through the typed chokepoint so it
-        // matches the re-run frame shape byte-for-byte.
-        self::writeSse($response, $initialFrameData);
+        // matches the re-run frame shape byte-for-byte. Stamp the subscription's
+        // streaming_id so a multiplexed connection can demux the frame client-side;
+        // the SAME stamp lands on every re-run frame (see dispatchReRun), so the
+        // synchrony-pin byte-identity between initial and re-run frames holds.
+        $streamingId = $record?->streamingId ?? $sessionId;
+        self::writeSse($response, self::stampSubscriptionId($initialFrameData, $streamingId));
 
         // Consumer-half launch (R5 · first production caller). Populates both tiers
         // and drives R3 subscribe-on-first; the tier-2 ReRunContext is keyed by
         // streaming_id, the key R4 resolves a cross-worker control back to.
         $coordinator = self::$connectCoordinator;
-        $streamingId = $record?->streamingId ?? $sessionId;
         if ($coordinator !== null && $record !== null && $context !== null) {
             try {
                 $coordinator->onConnect($record, $context);
@@ -1524,6 +1555,116 @@ final class AsyncResourceSseServer
     }
 
     /**
+     * SSE transport unification · Phase 1 — wire the subscription factory the
+     * subscribe-control branch uses to attach a feed to a live KISS connection.
+     * Set by {@see \Semitexa\Ssr\Application\Service\Server\Lifecycle\WireTrackRConsumerListener};
+     * unwired, a subscribe control is a safe no-op.
+     */
+    public static function setSubscriptionFactory(?SubscriptionFactoryInterface $factory): void
+    {
+        self::$subscriptionFactory = $factory;
+    }
+
+    /**
+     * The tenant discriminator for THIS coroutine, captured at connect admit and
+     * later handed to {@see SubscriptionFactoryInterface::build()} so a multiplex
+     * record is scoped to the connection's tenant, not the draining coroutine's.
+     * Mirrors {@see \Semitexa\Ssr\Application\Service\Async\PipelineSubscriptionFactory}
+     * and the standalone handler — defensive, '' / 'default' when no tenancy.
+     */
+    private static function currentTenantId(): string
+    {
+        $tenant = self::resolveTenantContext();
+        if (is_object($tenant) && method_exists($tenant, 'getTenantId')) {
+            $id = trim((string) $tenant->getTenantId());
+            if ($id !== '') {
+                return $id;
+            }
+        }
+
+        return 'default';
+    }
+
+    /** The opaque serialized tenant context paired with {@see currentTenantId()}. */
+    private static function currentTenantBlob(): string
+    {
+        $tenant = self::resolveTenantContext();
+        $blob = null;
+        if (is_object($tenant) && method_exists($tenant, 'forSerialization')) {
+            $blob = $tenant->forSerialization();
+        }
+
+        try {
+            return json_encode(is_array($blob) ? $blob : [], JSON_THROW_ON_ERROR);
+        } catch (\JsonException) {
+            return '[]';
+        }
+    }
+
+    private static function resolveTenantContext(): ?object
+    {
+        $ctx = '\Semitexa\Tenancy\Context\TenantContext';
+        if (class_exists($ctx) && method_exists($ctx, 'get')) {
+            $tenant = $ctx::get();
+
+            return is_object($tenant) ? $tenant : null;
+        }
+
+        return null;
+    }
+
+    /**
+     * SSE transport unification · Phase 1 — register one subscription's two tiers
+     * on an ALREADY-OPEN connection (the multiplex attach). The loop-free
+     * counterpart of {@see serveResourceStream()}'s consumer-half launch: it only
+     * runs the R5 {@see ConnectCoordinator::onConnect()} (tier-1 row + tier-2
+     * context + subscribe-on-first). The initial frame is written by the caller
+     * (the subscribe-control branch) onto the same fd. Distinct `streamingId`s on
+     * one `sessionId` coexist natively — the {@see SubscriptionTable} is keyed by
+     * `streamingId`.
+     */
+    public static function attachSubscription(SubscriptionRecord $record, ReRunContext $context): void
+    {
+        $coordinator = self::$connectCoordinator;
+        if ($coordinator === null) {
+            return;
+        }
+        try {
+            $coordinator->onConnect($record, $context);
+        } catch (\Throwable $e) {
+            \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'multiplex_attach_failed', [
+                'streaming_id' => $record->streamingId,
+                'session_id' => $record->sessionId,
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * SSE transport unification · Phase 1 — reap ONE subscription (the unsubscribe
+     * branch / DOM teardown), leaving any siblings on the same connection intact.
+     * Wraps R5 {@see ConnectCoordinator::onDisconnect()} (reap tier-1 + tier-2 +
+     * unsubscribe-on-last for the scope channel).
+     */
+    public static function detachSubscription(string $streamingId): void
+    {
+        $streamingId = trim($streamingId);
+        if ($streamingId === '') {
+            return;
+        }
+        try {
+            self::$connectCoordinator?->onDisconnect($streamingId);
+        } catch (\Throwable $e) {
+            \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'multiplex_detach_failed', [
+                'streaming_id' => $streamingId,
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
      * Track R · R4 — wire the cross-worker re-run coalescer (R3) whose pending
      * mark the loop branch CLEARS after handling a control, re-arming the next
      * mutation's signal (the bounded-coalescing window). The shared table is
@@ -1568,21 +1709,29 @@ final class AsyncResourceSseServer
      * @return bool whether the command was accepted onto the queue (false only when
      *        the session id is missing/malformed — never a delivery guarantee)
      */
-    public static function submitViewChange(string $sessionId, array $params): bool
+    public static function submitViewChange(string $sessionId, array $params, ?string $streamingId = null): bool
     {
         $sessionId = trim($sessionId);
         if ($sessionId === '' || preg_match(self::SAFE_BEARER_SESSION_ID_PATTERN, $sessionId) !== 1) {
             return false;
         }
 
-        // streaming_id == session_id for the held-open own-route stream (one stream
-        // per connection), so the command — which only knows the session id — can
-        // address the tier-2 re-run state directly.
+        // The tier-2 re-run state is keyed by streaming_id. For a standalone
+        // held-open own-route stream streaming_id == session_id (one stream per
+        // connection), so a caller that only knows the session id addresses it
+        // directly (back-compat default). A MULTIPLEXED connection (SSE transport
+        // unification) hosts many subscriptions on one session and MUST name the
+        // target streaming_id explicitly so the view-change re-runs the right one.
+        $streamingId = trim((string) ($streamingId ?? $sessionId));
+        if ($streamingId === '') {
+            $streamingId = $sessionId;
+        }
+
         if (self::$viewChangeCoalescer === null) {
             // Fallback: no coalescer wired — carry params inline, uncoalesced.
             self::deliver($sessionId, [
                 self::CTRL_KEY => self::CTRL_VIEWCHANGE,
-                'streaming_id' => $sessionId,
+                'streaming_id' => $streamingId,
                 'params' => $params,
             ]);
 
@@ -1591,13 +1740,77 @@ final class AsyncResourceSseServer
 
         // Store the latest view + gate the enqueue. Only the 0→1 command enqueues a
         // (param-less) control; the owner reads the LATEST params from the coalescer
-        // when it drains, so a coalesced burst re-queries the final view.
-        if (self::$viewChangeCoalescer->submit($sessionId, $params)) {
+        // when it drains, so a coalesced burst re-queries the final view. Coalescing
+        // is per-streaming_id, so distinct subscriptions on one session never
+        // collide.
+        if (self::$viewChangeCoalescer->submit($streamingId, $params)) {
             self::deliver($sessionId, [
                 self::CTRL_KEY => self::CTRL_VIEWCHANGE,
-                'streaming_id' => $sessionId,
+                'streaming_id' => $streamingId,
             ]);
         }
+
+        return true;
+    }
+
+    /**
+     * SSE transport unification · Phase 1 — submit a SUBSCRIBE command: attach a
+     * feed subscription to the caller's live KISS connection. Mirrors
+     * {@see submitViewChange()} — the auth-bearing request snapshot rides the
+     * control TRANSIENTLY to the fd-owning worker (consumed once, never stored in
+     * the cross-worker index, so the tier-separation security boundary holds), and
+     * that worker builds the subscription locally (so tier-2 lands where the
+     * re-run runs). Returns false only when an id is missing/malformed.
+     *
+     * @param array<string, mixed> $requestSnapshot the auth-bearing request snapshot
+     */
+    public static function submitSubscribe(
+        string $sessionId,
+        string $streamingId,
+        string $routePath,
+        string $routeMethod,
+        array $requestSnapshot,
+    ): bool {
+        $sessionId = trim($sessionId);
+        $streamingId = trim($streamingId);
+        if (
+            $sessionId === '' || preg_match(self::SAFE_BEARER_SESSION_ID_PATTERN, $sessionId) !== 1
+            || $streamingId === '' || preg_match(self::SAFE_BEARER_SESSION_ID_PATTERN, $streamingId) !== 1
+            || $routePath === ''
+        ) {
+            return false;
+        }
+
+        self::deliver($sessionId, [
+            self::CTRL_KEY => self::CTRL_SUBSCRIBE,
+            'streaming_id' => $streamingId,
+            'route_path' => $routePath,
+            'route_method' => $routeMethod !== '' ? $routeMethod : 'GET',
+            'request_snapshot' => $requestSnapshot,
+        ]);
+
+        return true;
+    }
+
+    /**
+     * SSE transport unification · Phase 1 — submit an UNSUBSCRIBE command: detach
+     * one subscription from the caller's KISS connection (siblings survive).
+     */
+    public static function submitUnsubscribe(string $sessionId, string $streamingId): bool
+    {
+        $sessionId = trim($sessionId);
+        $streamingId = trim($streamingId);
+        if (
+            $sessionId === '' || preg_match(self::SAFE_BEARER_SESSION_ID_PATTERN, $sessionId) !== 1
+            || $streamingId === '' || preg_match(self::SAFE_BEARER_SESSION_ID_PATTERN, $streamingId) !== 1
+        ) {
+            return false;
+        }
+
+        self::deliver($sessionId, [
+            self::CTRL_KEY => self::CTRL_UNSUBSCRIBE,
+            'streaming_id' => $streamingId,
+        ]);
 
         return true;
     }
@@ -1706,7 +1919,155 @@ final class AsyncResourceSseServer
             return self::handleViewChangeControl($sessionId, $response, $data);
         }
 
+        // SSE transport unification · Phase 1 — attach/detach a feed subscription
+        // to THIS (the fd-owning) connection. Handled on the owning worker so the
+        // worker-local re-run state lands where the loop will re-run it.
+        if ($kind === self::CTRL_SUBSCRIBE) {
+            return self::handleSubscribeControl($sessionId, $response, $data);
+        }
+        if ($kind === self::CTRL_UNSUBSCRIBE) {
+            return self::handleUnsubscribeControl($data);
+        }
+
         return self::CTRL_NOT_CONTROL;
+    }
+
+    /**
+     * SSE transport unification · Phase 1 — the `{__ctrl:subscribe}` branch: attach
+     * a feed subscription to this live KISS connection and push its initial frame.
+     *
+     * Runs on the fd-owning worker (the control rode the session queue), so the
+     * worker-local tier-2 it registers lands here, where R4 will re-run it. The
+     * sequence reuses the existing engine end-to-end:
+     *   1. {@see SubscriptionFactoryInterface::build()} re-resolves the route,
+     *      re-hydrates the DTO, and builds the record + re-run context locally;
+     *   2. the SAME {@see ReRunnerInterface::reRun()} that drives every tick
+     *      produces the AUTHORIZED initial frame — a caller not authorized for the
+     *      feed TERMINATEs here, so the subscribe is denied and NO record is
+     *      registered (the auth gate is the re-run's, not a second implementation);
+     *   3. on a frame, {@see attachSubscription()} registers both tiers, then the
+     *      frame is written to the fd tagged with its streaming_id (so the client
+     *      demuxes it among the connection's other subscriptions).
+     *
+     * @param array<string, mixed> $data
+     */
+    private static function handleSubscribeControl(string $sessionId, mixed $response, array $data): int
+    {
+        $streamingId = trim((string) ($data['streaming_id'] ?? ''));
+        if ($streamingId === '' || self::$subscriptionFactory === null || self::$reRunner === null) {
+            // Malformed / unwired — consume the control (never a no-op crash).
+            return self::CTRL_HANDLED_CONTINUE;
+        }
+
+        $snapshot = is_array($data['request_snapshot'] ?? null) ? $data['request_snapshot'] : [];
+        // Scope the subscription's record to the tenant THIS KISS connection
+        // resolved at connect time (captured worker-local in handleSse), not the
+        // draining coroutine's ambient tenant — so the record's channel scoping is
+        // correct even if a future async path drains the control off-coroutine.
+        // Absent (no captured state) → null → factory falls back to ambient.
+        $session = self::$sessions[$sessionId] ?? null;
+        $capturedTenantId = is_array($session) && isset($session['tenant_id']) ? (string) $session['tenant_id'] : null;
+        $capturedTenantBlob = is_array($session) && isset($session['tenant_blob']) ? (string) $session['tenant_blob'] : null;
+        $attachment = self::$subscriptionFactory->build(
+            $sessionId,
+            $streamingId,
+            (string) ($data['route_path'] ?? ''),
+            (string) ($data['route_method'] ?? 'GET'),
+            $snapshot,
+            $capturedTenantId,
+            $capturedTenantBlob,
+        );
+        if ($attachment === null) {
+            // The route didn't resolve, so the feed kind is unknown — fall back to
+            // the generic error event.
+            return self::denySubscribe(
+                $response,
+                $streamingId,
+                'subscribe_unresolved',
+                \Semitexa\Ssr\Application\Service\UiEvent\UiSseEventType::UiError->value,
+            );
+        }
+
+        // The authorized initial frame, via the SAME re-run engine every tick uses.
+        // MUST run inside the re-run scope so the re-invoked feed handler takes its
+        // isReRunInProgress() branch and returns the FRAMED envelope (with the
+        // `_type` the SSE chokepoint promotes to the `event:` line) — without the
+        // scope serve() would return the raw `{data, meta}` body (no `_type`), and
+        // the client's typed `ui.*.data` listener would never fire.
+        self::beginReRunScope();
+        try {
+            $result = self::$reRunner->reRun($attachment->context, []);
+        } catch (\Throwable $e) {
+            // A throwing initial re-run (e.g. a transient DB/handler failure while
+            // building the feed) must deny ONLY this subscribe — not escape
+            // handleControlFrame() and tear down the whole KISS drain loop, which
+            // would skip cleanup for the connection's sibling subscriptions.
+            // Mirrors the catch-and-log posture of the normal re-run tick.
+            \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'Multiplex subscribe re-run failed', [
+                'session_id' => $sessionId,
+                'streaming_id' => $streamingId,
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+            ]);
+            return self::denySubscribe($response, $streamingId, 'subscribe_failed', $attachment->errorEventType);
+        } finally {
+            self::endReRunScope();
+        }
+        if ($result->isTerminated() || $result->getFrame() === null) {
+            // Not authorized for this feed (or no frame) — deny, register nothing.
+            return self::denySubscribe($response, $streamingId, 'subscribe_denied', $attachment->errorEventType);
+        }
+
+        // Authorized: register both tiers, THEN push the initial frame.
+        self::attachSubscription($attachment->record, $attachment->context);
+
+        $wrote = self::transport()->writeFrame(
+            $response,
+            self::buildFrame(self::stampSubscriptionId(self::reRunFrameData($result->getFrame()), $streamingId)),
+        );
+        if (!$wrote) {
+            // Socket died writing the first frame — reap the just-registered tier
+            // and close the connection.
+            self::detachSubscription($streamingId);
+            return self::CTRL_HANDLED_CLOSE;
+        }
+
+        return self::CTRL_HANDLED_CONTINUE;
+    }
+
+    /**
+     * Emit a per-subscription denial frame (tagged with streaming_id so the client
+     * fails only that subscribe, not the whole connection) and register nothing.
+     */
+    private static function denySubscribe(mixed $response, string $streamingId, string $reason, string $errorEventType): int
+    {
+        self::transport()->writeFrame($response, self::buildFrame([
+            // Use the SUBSCRIBED feed's error event (collection feeds frame errors
+            // as ui.collection.error, document feeds as ui.document.error). Hard-
+            // coding the document channel left a collection subscriber's
+            // ui.collection.error demux listener hanging on a denial.
+            '_type' => $errorEventType,
+            'streaming_id' => $streamingId,
+            'error' => $reason,
+        ]));
+
+        return self::CTRL_HANDLED_CONTINUE;
+    }
+
+    /**
+     * SSE transport unification · Phase 1 — the `{__ctrl:unsubscribe}` branch: reap
+     * one subscription from this connection (siblings survive).
+     *
+     * @param array<string, mixed> $data
+     */
+    private static function handleUnsubscribeControl(array $data): int
+    {
+        $streamingId = trim((string) ($data['streaming_id'] ?? ''));
+        if ($streamingId !== '') {
+            self::detachSubscription($streamingId);
+        }
+
+        return self::CTRL_HANDLED_CONTINUE;
     }
 
     /**
@@ -1847,7 +2208,7 @@ final class AsyncResourceSseServer
         // new view), so this is fresh, not the stale cached value (the §C4 delete
         // edge: a re-run over a now-absent resource yields the handler's
         // empty/"gone" frame, written as-is — no crash, no stale data).
-        if (!self::transport()->writeFrame($response, self::buildFrame(self::reRunFrameData($frame)))) {
+        if (!self::transport()->writeFrame($response, self::buildFrame(self::stampSubscriptionId(self::reRunFrameData($frame), $streamingId)))) {
             // Socket died writing the fresh frame — close the stream.
             return self::CTRL_HANDLED_CLOSE;
         }
@@ -1893,6 +2254,33 @@ final class AsyncResourceSseServer
         $decoded = json_decode($frame->getContent(), true);
 
         return is_array($decoded) ? $decoded : ['data' => $frame->getContent()];
+    }
+
+    /**
+     * Stamp a data frame with the subscription's streaming_id (SSE transport
+     * unification · Phase 0). One held-open connection may carry MANY
+     * subscriptions (one per grid/form); the client demuxes incoming data
+     * frames by this key to route each to the right component. Stamped
+     * IDENTICALLY on the initial frame and every re-run frame so the
+     * initial-vs-re-run byte-identity (the synchrony-pin) is preserved.
+     *
+     * Additive and inert to single-stream clients (grid/form runtimes that
+     * demux by connection URL ignore the extra field). NOT applied to the
+     * `ui.stream.id` announce or to JSON-degrade pulls (no subscription there).
+     * Blank streaming_id is a no-op.
+     *
+     * @param array<array-key, mixed> $frameData
+     * @return array<array-key, mixed>
+     */
+    private static function stampSubscriptionId(array $frameData, string $streamingId): array
+    {
+        if (trim($streamingId) === '') {
+            return $frameData;
+        }
+
+        $frameData['streaming_id'] = $streamingId;
+
+        return $frameData;
     }
 
     /**
@@ -1993,6 +2381,11 @@ final class AsyncResourceSseServer
         // marks the framework ResourceResponse as alreadySent so the emitter
         // does not also call status/header/end — that double-end pattern
         // SIGSEGV'd Swoole 6.2.1 workers under server-initiated close.
+        // SSE transport unification · Phase 1.5 — reap every multiplex subscription
+        // bound to this session (a KISS connection may host N). The standalone
+        // own-route stream already onDisconnect'd its single streaming_id before
+        // this; for those rows this is a no-op (idempotent).
+        self::$connectCoordinator?->reapSession($sessionId);
         self::cancelSessionCoroutines($sessionId);
         self::removeSessionWorkerMapping($sessionId);
         self::unregisterAuthenticatedSession($sessionId);

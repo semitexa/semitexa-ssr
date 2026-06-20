@@ -131,6 +131,43 @@ final class ConnectCoordinator
     }
 
     /**
+     * SSE transport unification · Phase 1.5 — reap EVERY subscription attached to a
+     * closing connection's session, in one sweep.
+     *
+     * A multiplexed KISS connection holds N subscriptions (distinct streaming_ids,
+     * one shared session_id). The standalone own-route stream reaps its single
+     * streaming_id explicitly on teardown, but the KISS close path has no
+     * per-subscription handle — so when the fd dies, this scans the cross-worker
+     * table for every row bound to that session and runs the full {@see onDisconnect()}
+     * teardown on each, leaving no zombie row that R3 would keep delivering re-run
+     * controls to. Streaming ids are collected first, then disconnected, so the
+     * table is not mutated mid-iteration. Idempotent: a row already reaped (e.g. the
+     * standalone path's explicit onDisconnect) is simply absent.
+     *
+     * @return list<string> the streaming ids reaped (for logging / tests)
+     */
+    public function reapSession(string $sessionId): array
+    {
+        $sessionId = trim($sessionId);
+        if ($sessionId === '') {
+            return [];
+        }
+
+        $streamingIds = [];
+        foreach ($this->subscriptions->all() as $record) {
+            if ($record->sessionId === $sessionId) {
+                $streamingIds[] = $record->streamingId;
+            }
+        }
+
+        foreach ($streamingIds as $streamingId) {
+            $this->onDisconnect($streamingId);
+        }
+
+        return $streamingIds;
+    }
+
+    /**
      * The channels this worker's Pub/Sub loop is currently subscribed to (mirrors
      * the store's desired set after the last reconcile). Exposed for the synthetic
      * proof of subscribe-on-first / unsubscribe-on-last.

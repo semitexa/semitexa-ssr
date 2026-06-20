@@ -22,6 +22,7 @@ use Semitexa\Ssr\Application\Service\Async\RedisSubscribeConnectionFactory;
 use Semitexa\Ssr\Application\Service\Async\ResourceInvalidationSubscriber;
 use Semitexa\Ssr\Application\Service\Async\ScanningSubscriberIndex;
 use Semitexa\Ssr\Application\Service\Async\SseSessionControlDelivery;
+use Semitexa\Ssr\Domain\Contract\SubscriptionFactoryInterface;
 
 /**
  * Track R · R8c (C2) — wire the per-worker CONSUMER-HALF of the live-update
@@ -135,8 +136,20 @@ final class WireTrackRConsumerListener implements ServerLifecycleListenerInterfa
         AsyncResourceSseServer::setRerunCoalescer($tables->coalescer);
         AsyncResourceSseServer::setReRunner($reRunner);
 
+        // SSE transport unification · Phase 1 — the subscribe-control branch's
+        // factory: builds a multiplexed subscription (record + re-run context) on
+        // this worker from a subscribe control, so one KISS connection can host
+        // many subscriptions. Resolved from the container (it injects RouteRegistry
+        // + AttributeDiscovery). Fail-soft: unresolved leaves the branch a no-op.
+        if ($container->has(SubscriptionFactoryInterface::class)) {
+            $factory = $container->get(SubscriptionFactoryInterface::class);
+            if ($factory instanceof SubscriptionFactoryInterface) {
+                AsyncResourceSseServer::setSubscriptionFactory($factory);
+            }
+        }
+
         StaticLoggerBridge::debug('ssr', 'track_r_consumer_wired', [
-            'note' => 'R5 coordinator + R3 subscriber + R2 re-runner live; held-open grid re-run armed',
+            'note' => 'R5 coordinator + R3 subscriber + R2 re-runner + multiplex subscription factory live; held-open grid re-run armed',
         ]);
     }
 }

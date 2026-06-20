@@ -23,6 +23,8 @@ use Semitexa\Ssr\Application\Service\Async\SubscriptionDtoRegistry;
 use Semitexa\Ssr\Application\Service\Async\SubscriptionTable;
 use Semitexa\Ssr\Domain\Contract\ChannelSubscriptionControllerInterface;
 use Semitexa\Ssr\Domain\Contract\SessionControlDeliveryInterface;
+use Semitexa\Ssr\Domain\Contract\SubscriptionFactoryInterface;
+use Semitexa\Ssr\Domain\Model\SubscriptionAttachment;
 use Semitexa\Ssr\Domain\Model\SubscriptionRecord;
 
 /**
@@ -61,7 +63,10 @@ final class ControlFrameReRunTest extends TestCase
         SubscriptionDtoRegistry::clear();
         AsyncResourceSseServer::setReRunner(null);
         AsyncResourceSseServer::setRerunCoalescer(null);
+        AsyncResourceSseServer::setConnectCoordinator(null);
+        AsyncResourceSseServer::setSubscriptionFactory(null);
         $this->setTransport(null);
+        $this->clearServerSessions();
     }
 
     // -----------------------------------------------------------------------
@@ -93,6 +98,28 @@ final class ControlFrameReRunTest extends TestCase
         $this->drain('sess_a', ['__ctrl' => 'rerun', 'streaming_id' => 'str_a']);
         self::assertSame(2, $rerunner->calls);
         self::assertStringContainsString('"value":2', $transport->frames[1]->toWire());
+    }
+
+    // -----------------------------------------------------------------------
+    // VERIFICATION 1b — SSE transport unification · Phase 0: the re-run frame
+    // is stamped with its subscription's streaming_id so a multiplexed
+    // connection (one fd, many subscriptions) can demux it client-side.
+    // -----------------------------------------------------------------------
+
+    #[Test]
+    public function a_rerun_frame_is_stamped_with_its_streaming_id_for_multiplex_demux(): void
+    {
+        [, , $coalescer] = $this->connect('str_a', 'sess_a', ['lead_submission']);
+        AsyncResourceSseServer::setReRunner($this->freshFrameReRunner());
+        AsyncResourceSseServer::setRerunCoalescer($coalescer);
+        $transport = $this->captureTransport();
+        $this->setTransport($transport);
+
+        $this->drain('sess_a', ['__ctrl' => 'rerun', 'streaming_id' => 'str_a']);
+
+        self::assertCount(1, $transport->frames);
+        // The stamp is the subscription key the client routes the frame by.
+        self::assertStringContainsString('"streaming_id":"str_a"', $transport->frames[0]->toWire());
     }
 
     // -----------------------------------------------------------------------
@@ -319,12 +346,242 @@ final class ControlFrameReRunTest extends TestCase
      *
      * @param array<string, mixed> $data
      */
+    // -----------------------------------------------------------------------
+    // VERIFICATION 9 — SSE transport unification · Phase 1: a SUBSCRIBE control
+    // attaches a feed to a LIVE connection (one session → many subscriptions).
+    // -----------------------------------------------------------------------
+
+    #[Test]
+    public function a_subscribe_control_registers_both_tiers_and_writes_a_tagged_initial_frame(): void
+    {
+        $subs = $this->staticCoordinator();
+        $record = new SubscriptionRecord('str_b', 'sess_a', 'default', ['orders'], 'tenant-blob');
+        AsyncResourceSseServer::setSubscriptionFactory($this->fakeFactory($record, $this->reRunContext('sess_a')));
+        AsyncResourceSseServer::setReRunner($this->freshFrameReRunner());
+        $transport = $this->captureTransport();
+        $this->setTransport($transport);
+
+        $outcome = $this->drain('sess_a', [
+            '__ctrl' => 'subscribe',
+            'streaming_id' => 'str_b',
+            'route_path' => '/orders',
+            'route_method' => 'GET',
+            'request_snapshot' => [],
+        ]);
+
+        self::assertSame(self::HANDLED_CONTINUE, $outcome);
+        self::assertTrue($subs->has('str_b'), 'tier-1 cross-worker row registered');
+        self::assertTrue(SubscriptionDtoRegistry::has('str_b'), 'tier-2 re-run context registered on the owning worker');
+        self::assertCount(1, $transport->frames);
+        // The initial frame is tagged so the client demuxes it among the
+        // connection's other subscriptions.
+        self::assertStringContainsString('"streaming_id":"str_b"', $transport->frames[0]->toWire());
+    }
+
+    #[Test]
+    public function two_distinct_subscriptions_coexist_under_one_session(): void
+    {
+        $subs = $this->staticCoordinator();
+        // A first subscription already live on this connection (str_a / sess_a).
+        $this->staticOnConnect('str_a', 'sess_a', ['leads']);
+        AsyncResourceSseServer::setSubscriptionFactory(
+            $this->fakeFactory(new SubscriptionRecord('str_b', 'sess_a', 'default', ['orders'], 'tenant-blob'), $this->reRunContext('sess_a')),
+        );
+        AsyncResourceSseServer::setReRunner($this->freshFrameReRunner());
+        $this->setTransport($this->captureTransport());
+
+        $this->drain('sess_a', [
+            '__ctrl' => 'subscribe', 'streaming_id' => 'str_b',
+            'route_path' => '/orders', 'route_method' => 'GET', 'request_snapshot' => [],
+        ]);
+
+        // Both subscriptions live under ONE session — the multiplex invariant.
+        self::assertTrue($subs->has('str_a'));
+        self::assertTrue($subs->has('str_b'));
+        self::assertSame('sess_a', $subs->get('str_a')?->sessionId);
+        self::assertSame('sess_a', $subs->get('str_b')?->sessionId);
+    }
+
+    #[Test]
+    public function the_subscribe_threads_the_connections_captured_tenant_into_the_factory(): void
+    {
+        $this->staticCoordinator();
+        // A recording factory that captures exactly what the control handler
+        // threads into build() for the tenant scoping.
+        $factory = new class(
+            new SubscriptionRecord('str_b', 'sess_a', 'acme', ['orders'], '{"org":"acme"}'),
+            $this->reRunContext('sess_a'),
+        ) implements SubscriptionFactoryInterface {
+            public ?string $seenTenantId = null;
+            public ?string $seenTenantBlob = null;
+
+            public function __construct(private readonly SubscriptionRecord $record, private readonly ReRunContext $context) {}
+
+            public function build(string $sessionId, string $streamingId, string $routePath, string $routeMethod, array $requestSnapshot, ?string $tenantId = null, ?string $tenantBlob = null): ?SubscriptionAttachment
+            {
+                $this->seenTenantId = $tenantId;
+                $this->seenTenantBlob = $tenantBlob;
+                return new SubscriptionAttachment($this->record, $this->context);
+            }
+        };
+        AsyncResourceSseServer::setSubscriptionFactory($factory);
+        AsyncResourceSseServer::setReRunner($this->freshFrameReRunner());
+        $this->setTransport($this->captureTransport());
+
+        // The KISS connect captured tenant 'acme' at admit, in its own (tenant-
+        // authoritative) coroutine. The subscribe control rides a possibly
+        // different coroutine, so the handler must scope the record from the
+        // captured value — NOT the draining coroutine's ambient tenant.
+        $this->seedSessionTenant('sess_a', 'acme', '{"org":"acme"}');
+
+        $this->drain('sess_a', [
+            '__ctrl' => 'subscribe', 'streaming_id' => 'str_b',
+            'route_path' => '/orders', 'route_method' => 'GET', 'request_snapshot' => [],
+        ]);
+
+        self::assertSame('acme', $factory->seenTenantId, 'the connection-captured tenant id must be threaded into build()');
+        self::assertSame('{"org":"acme"}', $factory->seenTenantBlob, 'the captured tenant blob must be threaded into build()');
+    }
+
+    #[Test]
+    public function a_terminating_subscribe_is_denied_and_registers_no_record(): void
+    {
+        $subs = $this->staticCoordinator();
+        AsyncResourceSseServer::setSubscriptionFactory(
+            $this->fakeFactory(new SubscriptionRecord('str_b', 'sess_a', 'default', ['orders'], 'tenant-blob'), $this->reRunContext('sess_a')),
+        );
+        // The feed's own auth gate denies → TERMINATE on the initial re-run.
+        AsyncResourceSseServer::setReRunner($this->terminatingReRunner('access_revoked'));
+        $transport = $this->captureTransport();
+        $this->setTransport($transport);
+
+        $outcome = $this->drain('sess_a', [
+            '__ctrl' => 'subscribe', 'streaming_id' => 'str_b',
+            'route_path' => '/orders', 'route_method' => 'GET', 'request_snapshot' => [],
+        ]);
+
+        self::assertSame(self::HANDLED_CONTINUE, $outcome);
+        self::assertFalse($subs->has('str_b'), 'denied subscribe registers no tier-1 row');
+        self::assertFalse(SubscriptionDtoRegistry::has('str_b'), 'denied subscribe registers no tier-2 context');
+        self::assertCount(1, $transport->frames);
+        $wire = $transport->frames[0]->toWire();
+        self::assertStringContainsString('subscribe_denied', $wire);
+        self::assertStringNotContainsString('"rows"', $wire, 'no data frame on a denied subscribe');
+    }
+
+    #[Test]
+    public function an_unresolved_route_denies_the_subscribe(): void
+    {
+        $subs = $this->staticCoordinator();
+        // Factory returns null (route not found).
+        AsyncResourceSseServer::setSubscriptionFactory(new class implements SubscriptionFactoryInterface {
+            public function build(string $sessionId, string $streamingId, string $routePath, string $routeMethod, array $requestSnapshot, ?string $tenantId = null, ?string $tenantBlob = null): ?SubscriptionAttachment
+            {
+                return null;
+            }
+        });
+        AsyncResourceSseServer::setReRunner($this->freshFrameReRunner());
+        $transport = $this->captureTransport();
+        $this->setTransport($transport);
+
+        $this->drain('sess_a', [
+            '__ctrl' => 'subscribe', 'streaming_id' => 'str_b',
+            'route_path' => '/nope', 'route_method' => 'GET', 'request_snapshot' => [],
+        ]);
+
+        self::assertFalse($subs->has('str_b'));
+        self::assertStringContainsString('subscribe_unresolved', $transport->frames[0]->toWire());
+    }
+
+    #[Test]
+    public function an_unsubscribe_control_detaches_only_its_subscription(): void
+    {
+        $subs = $this->staticCoordinator();
+        $this->staticOnConnect('str_a', 'sess_a', ['leads']);
+        $this->staticOnConnect('str_b', 'sess_a', ['orders']);
+        $this->setTransport($this->captureTransport());
+
+        $this->drain('sess_a', ['__ctrl' => 'unsubscribe', 'streaming_id' => 'str_b']);
+
+        self::assertFalse($subs->has('str_b'), 'the named subscription is reaped');
+        self::assertFalse(SubscriptionDtoRegistry::has('str_b'));
+        self::assertTrue($subs->has('str_a'), 'the sibling subscription on the same session survives');
+        self::assertTrue(SubscriptionDtoRegistry::has('str_a'));
+    }
+
     private function drain(string $sessionId, array $data): int
     {
         $method = new \ReflectionMethod(AsyncResourceSseServer::class, 'handleControlFrame');
         $method->setAccessible(true);
 
         return (int) $method->invoke(null, $sessionId, null, $data);
+    }
+
+    /**
+     * Wire a REAL R5 coordinator as the STATIC coordinator the multiplex
+     * attach/detach branches drive, returning its tier-1 table for assertions.
+     */
+    private function staticCoordinator(): SubscriptionTable
+    {
+        $subs = SubscriptionTable::create(64);
+        $coalescer = RerunCoalescer::create(64);
+        $subscriber = new ResourceInvalidationSubscriber(
+            new ScanningSubscriberIndex($subs),
+            $subs,
+            $coalescer,
+            new RedisSubscribeConnectionFactory(['scheme' => 'tcp', 'host' => '127.0.0.1', 'port' => 6379, 'password' => '']),
+            $this->nullDelivery(),
+        );
+        AsyncResourceSseServer::setConnectCoordinator(new ConnectCoordinator($subs, $subscriber, $coalescer, $this->nullChannels()));
+
+        return $subs;
+    }
+
+    /** Register a subscription through the static coordinator (a pre-existing live sub). */
+    private function staticOnConnect(string $streamingId, string $sessionId, array $scopeKeys): void
+    {
+        AsyncResourceSseServer::attachSubscription(
+            new SubscriptionRecord($streamingId, $sessionId, 'default', $scopeKeys, 'tenant-blob'),
+            $this->reRunContext($sessionId),
+        );
+    }
+
+    /** A factory that returns a fixed, controlled attachment. */
+    private function fakeFactory(SubscriptionRecord $record, ReRunContext $context): SubscriptionFactoryInterface
+    {
+        return new class($record, $context) implements SubscriptionFactoryInterface {
+            public function __construct(private readonly SubscriptionRecord $record, private readonly ReRunContext $context) {}
+
+            public function build(string $sessionId, string $streamingId, string $routePath, string $routeMethod, array $requestSnapshot, ?string $tenantId = null, ?string $tenantBlob = null): ?SubscriptionAttachment
+            {
+                return new SubscriptionAttachment($this->record, $this->context);
+            }
+        };
+    }
+
+    /** Seed the worker-local per-session state the KISS connect captures at admit
+     *  (tenant resolved in the connection's own authoritative coroutine). */
+    private function seedSessionTenant(string $sessionId, string $tenantId, string $tenantBlob): void
+    {
+        $prop = new \ReflectionProperty(AsyncResourceSseServer::class, 'sessions');
+        $prop->setAccessible(true);
+        /** @var array<string, array<string, mixed>> $sessions */
+        $sessions = $prop->getValue();
+        $sessions[$sessionId] = [
+            'response' => null,
+            'connected_at' => 0,
+            'tenant_id' => $tenantId,
+            'tenant_blob' => $tenantBlob,
+        ];
+        $prop->setValue(null, $sessions);
+    }
+
+    /** Drop all seeded sessions so a seeded tenant cannot bleed into a sibling test. */
+    private function clearServerSessions(): void
+    {
+        $prop = new \ReflectionProperty(AsyncResourceSseServer::class, 'sessions');
+        $prop->setAccessible(true);
+        $prop->setValue(null, []);
     }
 
     /**
@@ -353,6 +610,45 @@ final class ControlFrameReRunTest extends TestCase
         );
 
         return [$coordinator, $subs, $coalescer];
+    }
+
+    // -----------------------------------------------------------------------
+    // VERIFICATION — SSE transport unification · Phase 1.5: closing a KISS
+    // connection reaps EVERY multiplex subscription bound to its session
+    // (distinct streaming_ids, one shared session), and only those.
+    // -----------------------------------------------------------------------
+
+    #[Test]
+    public function reaping_a_session_disconnects_all_its_subscriptions_and_only_those(): void
+    {
+        $subs = SubscriptionTable::create(64);
+        $coalescer = RerunCoalescer::create(64);
+        $subscriber = new ResourceInvalidationSubscriber(
+            new ScanningSubscriberIndex($subs),
+            $subs,
+            $coalescer,
+            new RedisSubscribeConnectionFactory(['scheme' => 'tcp', 'host' => '127.0.0.1', 'port' => 6379, 'password' => '']),
+            $this->nullDelivery(),
+        );
+        $coordinator = new ConnectCoordinator($subs, $subscriber, $coalescer, $this->nullChannels());
+
+        // Two subscriptions on ONE KISS session + one on a different session.
+        $coordinator->onConnect(new SubscriptionRecord('str_a', 'sess_x', 'default', ['s1'], 'b'), $this->reRunContext('sess_x'));
+        $coordinator->onConnect(new SubscriptionRecord('str_b', 'sess_x', 'default', ['s2'], 'b'), $this->reRunContext('sess_x'));
+        $coordinator->onConnect(new SubscriptionRecord('str_c', 'sess_y', 'default', ['s3'], 'b'), $this->reRunContext('sess_y'));
+
+        $reaped = $coordinator->reapSession('sess_x');
+
+        sort($reaped);
+        self::assertSame(['str_a', 'str_b'], $reaped);
+        // Both tiers of the reaped session are gone…
+        self::assertFalse($subs->has('str_a'));
+        self::assertFalse($subs->has('str_b'));
+        self::assertNull(SubscriptionDtoRegistry::get('str_a'));
+        self::assertNull(SubscriptionDtoRegistry::get('str_b'));
+        // …while the other session's subscription is untouched.
+        self::assertTrue($subs->has('str_c'));
+        self::assertNotNull(SubscriptionDtoRegistry::get('str_c'));
     }
 
     /** A re-runner that re-queries a fresh, incrementing value each run. */

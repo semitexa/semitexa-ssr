@@ -42,7 +42,31 @@ use Semitexa\Ssr\Domain\Contract\ChannelSubscriptionControllerInterface;
  */
 final class LivePubSubChannelController implements ChannelSubscriptionControllerInterface
 {
+    /**
+     * Keep-alive tick cadence (ms) for the worker that owns the blocking subscribe
+     * loop. See {@see self::$keepAliveTimerId}.
+     */
+    private const KEEPALIVE_INTERVAL_MS = 1000;
+
     private bool $loopRunning = false;
+
+    /**
+     * Track R · Gap C-2 — the worker-reactor keep-alive timer id, alive for exactly
+     * as long as the subscribe loop coroutine runs.
+     *
+     * The blocking `pubSubLoop` parks its coroutine on a socket read. When it is the
+     * ONLY live coroutine in an otherwise-idle worker (subscribe-on-first fired but
+     * no request is in flight, e.g. just after WorkerStart), Swoole's scheduler sees
+     * a single suspended coroutine with nothing pending and raises the FATAL
+     * "all coroutines (count: 1) are asleep - deadlock!", killing the worker — and
+     * with it every held-open KISS connection that worker owns, so live invalidations
+     * stop re-running until reconnect. A persistent {@see \Swoole\Timer::tick} keeps
+     * the reactor's event queue non-empty for the loop's whole lifetime, so the lone
+     * parked subscribe coroutine can never be mistaken for a deadlock. The tick body
+     * is intentionally empty — its existence, not its work, is the guarantee. Cleared
+     * in the loop coroutine's `finally`, so it lives exactly as long as the loop.
+     */
+    private ?int $keepAliveTimerId = null;
 
     public function __construct(
         private readonly ResourceInvalidationSubscriber $subscriber,
@@ -118,6 +142,7 @@ final class LivePubSubChannelController implements ChannelSubscriptionController
         }
 
         $this->loopRunning = true;
+        $this->startKeepAlive();
         \Swoole\Coroutine::create(function (): void {
             try {
                 $this->subscriber->run();
@@ -128,7 +153,39 @@ final class LivePubSubChannelController implements ChannelSubscriptionController
                 ]);
             } finally {
                 $this->loopRunning = false;
+                $this->stopKeepAlive();
             }
         });
+    }
+
+    /**
+     * Arm the worker-reactor keep-alive for the subscribe loop's lifetime so the lone
+     * parked `pubSubLoop` coroutine cannot trip Swoole's deadlock detector
+     * ({@see self::$keepAliveTimerId}). No-op when already armed or `Swoole\Timer` is
+     * unavailable (CLI/test — the loop itself is a no-op there).
+     */
+    private function startKeepAlive(): void
+    {
+        if ($this->keepAliveTimerId !== null || !class_exists(\Swoole\Timer::class, false)) {
+            return;
+        }
+
+        $this->keepAliveTimerId = \Swoole\Timer::tick(self::KEEPALIVE_INTERVAL_MS, static function (): void {
+            // Intentionally empty: a pending timer keeps the reactor non-empty so a
+            // lone parked subscribe coroutine is never seen as a deadlock.
+        });
+    }
+
+    /** Disarm the keep-alive when the subscribe loop exits (its lifetime ended). */
+    private function stopKeepAlive(): void
+    {
+        if ($this->keepAliveTimerId === null || !class_exists(\Swoole\Timer::class, false)) {
+            $this->keepAliveTimerId = null;
+
+            return;
+        }
+
+        \Swoole\Timer::clear($this->keepAliveTimerId);
+        $this->keepAliveTimerId = null;
     }
 }

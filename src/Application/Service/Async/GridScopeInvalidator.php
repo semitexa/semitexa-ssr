@@ -6,7 +6,9 @@ namespace Semitexa\Ssr\Application\Service\Async;
 
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
+use Semitexa\Core\Attribute\SatisfiesServiceContract;
 use Semitexa\Ssr\Domain\Contract\ScopeInvalidationBusInterface;
+use Semitexa\Ssr\Domain\Contract\ScopeInvalidatorInterface;
 use Semitexa\Tenancy\Context\TenantContext;
 
 /**
@@ -42,7 +44,8 @@ use Semitexa\Tenancy\Context\TenantContext;
  * one missed re-query, repaired by the next mutation's signal.
  */
 #[AsService]
-final class GridScopeInvalidator
+#[SatisfiesServiceContract(of: ScopeInvalidatorInterface::class)]
+final class GridScopeInvalidator implements ScopeInvalidatorInterface
 {
     #[InjectAsReadonly]
     protected ScopeInvalidationBusInterface $bus;

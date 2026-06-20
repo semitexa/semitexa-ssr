@@ -48,6 +48,20 @@ enum UiSseEventType: string
     case UiCollectionData  = 'ui.collection.data';
     case UiCollectionError = 'ui.collection.error';
 
+    // Collaborative Form Data · Phase 1 — the single-document feed's typed
+    // frames, the object-valued sibling of `ui.collection.data`. A
+    // `ui.document.data` frame carries the canonical `{data, meta}` envelope
+    // where `data` is ONE record (not a list) — the live shared state of a
+    // collaborative form document (field values + version + presence/lock
+    // projection). Emitted by AbstractSseDocumentFeedHandler on initial
+    // connect, re-hydrate, and Track-R re-runs; errors travel as
+    // `ui.document.error`. Distinct from the collection types so a document
+    // client never mistakes a single record for a one-row collection, while
+    // the same allow-list rule holds: no client-controlled string can ever
+    // become the SSE event name.
+    case UiDocumentData    = 'ui.document.data';
+    case UiDocumentError   = 'ui.document.error';
+
     public static function isAllowed(string $type): bool
     {
         return self::tryFrom($type) !== null;

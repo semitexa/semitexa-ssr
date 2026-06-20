@@ -1978,7 +1978,14 @@ final class AsyncResourceSseServer
             $capturedTenantBlob,
         );
         if ($attachment === null) {
-            return self::denySubscribe($response, $streamingId, 'subscribe_unresolved');
+            // The route didn't resolve, so the feed kind is unknown — fall back to
+            // the generic error event.
+            return self::denySubscribe(
+                $response,
+                $streamingId,
+                'subscribe_unresolved',
+                \Semitexa\Ssr\Application\Service\UiEvent\UiSseEventType::UiError->value,
+            );
         }
 
         // The authorized initial frame, via the SAME re-run engine every tick uses.
@@ -1990,12 +1997,25 @@ final class AsyncResourceSseServer
         self::beginReRunScope();
         try {
             $result = self::$reRunner->reRun($attachment->context, []);
+        } catch (\Throwable $e) {
+            // A throwing initial re-run (e.g. a transient DB/handler failure while
+            // building the feed) must deny ONLY this subscribe — not escape
+            // handleControlFrame() and tear down the whole KISS drain loop, which
+            // would skip cleanup for the connection's sibling subscriptions.
+            // Mirrors the catch-and-log posture of the normal re-run tick.
+            \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'Multiplex subscribe re-run failed', [
+                'session_id' => $sessionId,
+                'streaming_id' => $streamingId,
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+            ]);
+            return self::denySubscribe($response, $streamingId, 'subscribe_failed', $attachment->errorEventType);
         } finally {
             self::endReRunScope();
         }
         if ($result->isTerminated() || $result->getFrame() === null) {
             // Not authorized for this feed (or no frame) — deny, register nothing.
-            return self::denySubscribe($response, $streamingId, 'subscribe_denied');
+            return self::denySubscribe($response, $streamingId, 'subscribe_denied', $attachment->errorEventType);
         }
 
         // Authorized: register both tiers, THEN push the initial frame.
@@ -2019,10 +2039,14 @@ final class AsyncResourceSseServer
      * Emit a per-subscription denial frame (tagged with streaming_id so the client
      * fails only that subscribe, not the whole connection) and register nothing.
      */
-    private static function denySubscribe(mixed $response, string $streamingId, string $reason): int
+    private static function denySubscribe(mixed $response, string $streamingId, string $reason, string $errorEventType): int
     {
         self::transport()->writeFrame($response, self::buildFrame([
-            '_type' => \Semitexa\Ssr\Application\Service\UiEvent\UiSseEventType::UiDocumentError->value,
+            // Use the SUBSCRIBED feed's error event (collection feeds frame errors
+            // as ui.collection.error, document feeds as ui.document.error). Hard-
+            // coding the document channel left a collection subscriber's
+            // ui.collection.error demux listener hanging on a denial.
+            '_type' => $errorEventType,
             'streaming_id' => $streamingId,
             'error' => $reason,
         ]));

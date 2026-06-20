@@ -28,5 +28,14 @@ final readonly class SubscriptionAttachment
     public function __construct(
         public SubscriptionRecord $record,
         public ReRunContext $context,
+        // The wire event name (a `UiSseEventType` value) a denial/failure for THIS
+        // subscription must carry, so the client demux routes it to the subscribing
+        // feed's typed error handler: collection feeds → `ui.collection.error`,
+        // document feeds → `ui.document.error`, unknown → the generic `ui.error`.
+        // Hard-coding `ui.document.error` would leave a collection subscriber's
+        // `ui.collection.error` listener hanging on a denial. Set by the factory
+        // from the resolved feed payload; defaults to the generic event for callers
+        // (and tests) that don't distinguish the feed kind.
+        public string $errorEventType = 'ui.error',
     ) {}
 }

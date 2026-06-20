@@ -494,6 +494,41 @@ final class ControlFrameReRunTest extends TestCase
     }
 
     #[Test]
+    public function a_denied_subscribe_carries_the_feeds_own_error_event_type(): void
+    {
+        $this->staticCoordinator();
+        // A collection feed's attachment declares ui.collection.error; the denial
+        // must use THAT, not the hard-coded document channel, or a collection
+        // subscriber's ui.collection.error demux listener never sees the denial.
+        $attachment = new SubscriptionAttachment(
+            new SubscriptionRecord('str_b', 'sess_a', 'default', ['orders'], 'tenant-blob'),
+            $this->reRunContext('sess_a'),
+            'ui.collection.error',
+        );
+        AsyncResourceSseServer::setSubscriptionFactory(new class($attachment) implements SubscriptionFactoryInterface {
+            public function __construct(private readonly SubscriptionAttachment $attachment) {}
+
+            public function build(string $sessionId, string $streamingId, string $routePath, string $routeMethod, array $requestSnapshot, ?string $tenantId = null, ?string $tenantBlob = null): ?SubscriptionAttachment
+            {
+                return $this->attachment;
+            }
+        });
+        AsyncResourceSseServer::setReRunner($this->terminatingReRunner('access_revoked'));
+        $transport = $this->captureTransport();
+        $this->setTransport($transport);
+
+        $this->drain('sess_a', [
+            '__ctrl' => 'subscribe', 'streaming_id' => 'str_b',
+            'route_path' => '/orders', 'route_method' => 'GET', 'request_snapshot' => [],
+        ]);
+
+        $wire = $transport->frames[0]->toWire();
+        self::assertStringContainsString('subscribe_denied', $wire);
+        self::assertStringContainsString('ui.collection.error', $wire, 'denial must use the feed-specific error event');
+        self::assertStringNotContainsString('ui.document.error', $wire);
+    }
+
+    #[Test]
     public function an_unsubscribe_control_detaches_only_its_subscription(): void
     {
         $subs = $this->staticCoordinator();

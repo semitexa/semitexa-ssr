@@ -13,7 +13,10 @@ use Semitexa\Core\Http\PayloadHydrator;
 use Semitexa\Core\Pipeline\ReRun\ReRunContext;
 use Semitexa\Core\Request;
 use Semitexa\Ssr\Application\Handler\PayloadHandler\AbstractSseFeedHandler;
+use Semitexa\Ssr\Application\Service\UiEvent\UiSseEventType;
 use Semitexa\Ssr\Domain\Contract\DynamicallyScopedFeedInterface;
+use Semitexa\Ssr\Domain\Contract\SseCollectionFeedPayloadInterface;
+use Semitexa\Ssr\Domain\Contract\SseDocumentFeedPayloadInterface;
 use Semitexa\Ssr\Domain\Contract\SubscriptionFactoryInterface;
 use Semitexa\Ssr\Domain\Model\SubscriptionAttachment;
 use Semitexa\Ssr\Domain\Model\SubscriptionRecord;
@@ -125,7 +128,25 @@ final class PipelineSubscriptionFactory implements SubscriptionFactoryInterface
             tenantContext: null,
         );
 
-        return new SubscriptionAttachment($record, $context);
+        return new SubscriptionAttachment($record, $context, self::errorEventTypeFor($dto));
+    }
+
+    /**
+     * The wire error event a denial/failure for this feed must carry, so the
+     * client demux routes it to the feed's own typed error listener. Keyed off
+     * the same marker interfaces the abstract feed handlers dispatch on, so the
+     * denial channel matches the data channel the subscriber listens on.
+     */
+    private static function errorEventTypeFor(object $dto): string
+    {
+        if ($dto instanceof SseDocumentFeedPayloadInterface) {
+            return UiSseEventType::UiDocumentError->value;
+        }
+        if ($dto instanceof SseCollectionFeedPayloadInterface) {
+            return UiSseEventType::UiCollectionError->value;
+        }
+
+        return UiSseEventType::UiError->value;
     }
 
     /**

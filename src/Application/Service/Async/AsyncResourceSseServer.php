@@ -377,6 +377,29 @@ final class AsyncResourceSseServer
             self::$sessionIps[self::sessionConnectionKey($sessionId, $response)] = $clientIp;
         }
 
+        // Exactly-once teardown for EVERY exit path. The counter above and the
+        // session/queue/worker-table registration below must be released even
+        // when a later step throws — a throw from writeSse, triggerDeferredBlocks
+        // or runHeldOpenLoop otherwise leaves self::$ipConnections[$ip]
+        // incremented for the worker's whole life, and after enough such throws
+        // the worker rejects ALL new SSE with 429 despite no live connections
+        // (serveResourceStream guards its loop the same way). Coroutine::defer
+        // runs the cleanup when the request coroutine ends (return OR uncaught
+        // throw); the explicit $close() calls below cover the SSE-impossible
+        // non-coroutine path and release immediately on normal exits. The
+        // $closed flag keeps it single-shot either way.
+        $closed = false;
+        $close = static function () use (&$closed, $sessionId, $response): void {
+            if ($closed) {
+                return;
+            }
+            $closed = true;
+            self::closeSession($sessionId, $response);
+        };
+        if (class_exists(\Swoole\Coroutine::class, false) && \Swoole\Coroutine::getCid() > 0) {
+            \Swoole\Coroutine::defer($close);
+        }
+
         $response->status(200);
         $response->header('Content-Type', 'text/event-stream');
         $response->header('Cache-Control', 'no-cache');
@@ -441,7 +464,7 @@ final class AsyncResourceSseServer
         }
 
         if (self::drainRedisQueueForSession($sessionId, $response)) {
-            self::closeSession($sessionId, $response);
+            $close();
             return;
         }
 
@@ -471,7 +494,7 @@ final class AsyncResourceSseServer
                 'live'   => false,
                 'reason' => 'drain_complete',
             ]);
-            self::closeSession($sessionId, $response);
+            $close();
             return;
         }
 
@@ -492,7 +515,7 @@ final class AsyncResourceSseServer
                     'close' => true,
                     'reconnect' => false,
                 ]);
-                self::closeSession($sessionId, $response);
+                $close();
                 return;
             }
             self::triggerDeferredBlocks(
@@ -506,7 +529,7 @@ final class AsyncResourceSseServer
 
         self::runHeldOpenLoop($sessionId, $request, $response, $authenticatedUserId);
 
-        self::closeSession($sessionId, $response);
+        $close();
     }
 
     /**

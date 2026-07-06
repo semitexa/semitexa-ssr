@@ -204,13 +204,19 @@ final class DeferredTemplateCompatibilityValidator
                 $this->addIssue($source, $line, 'function', $functionName, sprintf('Function `%s()` is not available in deferred frontend Twig rendering.', $functionName));
             }
         } elseif ($node instanceof TestExpression) {
-            $testName = $node->getAttribute('name');
-            if (!is_string($testName)) {
-                $testName = $node::class;
-            }
+            // Twig >= 3.28 wraps attribute access in boolean context with an
+            // implicit `true` test (TrueTest) at parse time — the construct
+            // never appears in the template source, and truthiness is exactly
+            // what deferred frontend rendering already applies to conditions.
+            if (!$node instanceof \Twig\Node\Expression\Test\TrueTest) {
+                $testName = $node->getAttribute('name');
+                if (!is_string($testName)) {
+                    $testName = $node::class;
+                }
 
-            if (!$this->profile->supportsTest($testName)) {
-                $this->addIssue($source, $line, 'test', $testName, sprintf('Test `%s` is not available in deferred frontend Twig rendering.', $testName));
+                if (!$this->profile->supportsTest($testName)) {
+                    $this->addIssue($source, $line, 'test', $testName, sprintf('Test `%s` is not available in deferred frontend Twig rendering.', $testName));
+                }
             }
         } elseif ($node instanceof AbstractBinary) {
             if (!$this->profile->supportsBinaryNode($node)) {

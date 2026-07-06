@@ -14,6 +14,7 @@ use Semitexa\Ssr\Application\Service\Async\RerunCoalescer;
 use Semitexa\Ssr\Application\Service\Async\SubscriptionTable;
 use Semitexa\Ssr\Application\Service\Async\ViewChangeCoalescer;
 use Swoole\Table;
+use Semitexa\Core\Server\Lifecycle\WorkerTimerRegistry;
 use Swoole\Timer;
 
 /**
@@ -108,6 +109,9 @@ final class ReapStaleSubscriptionsListener implements ServerLifecycleListenerInt
                 self::sweep($subscriptions, $coalescer, $maxAgeSeconds, time(), $viewChanges);
             },
         );
+        // Group-clear on worker stop (core ClearWorkerTimersListener) — a tick must
+        // never fire into a tearing-down worker (coroutine-deadlock family).
+        WorkerTimerRegistry::register(self::$timerId);
 
         StaticLoggerBridge::debug('ssr', 'sse_orphan_reaper_armed', [
             'interval_seconds' => self::SWEEP_INTERVAL_SECONDS,

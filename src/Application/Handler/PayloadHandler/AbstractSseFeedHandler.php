@@ -14,6 +14,7 @@ use Semitexa\Core\Exception\DomainException;
 use Semitexa\Core\Http\PayloadMetadataReflector;
 use Semitexa\Core\Pipeline\ReRun\ReRunContext;
 use Semitexa\Core\Resource\JsonResourceResponse;
+use Semitexa\Core\Tenant\TenantContextInterface;
 use Semitexa\Core\Server\SwooleBootstrap;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
 use Semitexa\Ssr\Application\Service\UiEvent\UiSseEventType;
@@ -522,21 +523,25 @@ abstract class AbstractSseFeedHandler
             'files'   => $request->files,
         ];
 
-        // tenantContext is INTENTIONALLY null for the held-open feed re-run.
-        // R4 re-invokes this handler IN THE SAME coroutine that already holds
-        // the open fd — so the request's tenant context is ALREADY established
-        // (and immutable for the life of the HTTP request). Passing a captured
-        // context here makes RouteReRunner's TenantContextStore::set() throw
-        // `TenantContextImmutableException`. The SubscriptionRecord still
-        // carries the tenant id/blob (read-only) for cross-worker channel
-        // scoping.
+        // Capture the connect-time tenant context for the held-open re-run.
+        // The old "re-run happens in the SAME coroutine, context already
+        // established" assumption died with the KISS transport unification:
+        // invalidation re-runs execute in the shared transport coroutine,
+        // where the ambient tenant is absent — a tenant-scoped feed re-ran
+        // as 'default' and served ANOTHER tenant's rows into the stream
+        // (proven live with two subdomain tenants). RouteReRunner restores
+        // this context only when the executing coroutine has none, so the
+        // view-change re-hydrate path (request's own coroutine, context
+        // locked) keeps working without TenantContextImmutableException.
+        $tenant = self::resolveTenant();
+
         return new ReRunContext(
             cachedDto: $payload,
             route: $route,
             requestSnapshot: $snapshot,
             sessionId: $sessionId,
             subjectRef: self::currentSubjectRef(),
-            tenantContext: null,
+            tenantContext: $tenant instanceof TenantContextInterface ? $tenant : null,
         );
     }
 

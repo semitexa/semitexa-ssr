@@ -306,6 +306,7 @@ final class AssetCollector
                 $priority     = is_int($override['priority'] ?? null)    ? $override['priority'] : $priority;
                 $attributes   = is_array($override['attributes'] ?? null)  ? $override['attributes']  : [];
                 $dependencies = is_array($override['dependencies'] ?? null) ? $override['dependencies'] : [];
+                $specifier    = is_string($override['specifier'] ?? null) ? $override['specifier'] : null;
 
                 if (!AssetEntry::isValidKey($key)) {
                     StaticLoggerBridge::warning('ssr', 'Derived asset key is invalid, skipping', ['key' => $key, 'file' => $fullRelative]);
@@ -322,6 +323,7 @@ final class AssetCollector
                     priority:     $priority,
                     attributes:   $attributes,
                     dependencies: $dependencies,
+                    specifier:    $specifier,
                 );
             }
         }

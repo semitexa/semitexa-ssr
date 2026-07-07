@@ -17,11 +17,17 @@ final class AssetRenderer
 {
     /**
      * Render all head-positioned assets as HTML.
+     *
+     * When any collected asset declares an import-map `specifier`, a single
+     * server-generated <script type="importmap"> is emitted FIRST — the spec
+     * requires the map to precede every module script, and mapping bare
+     * specifiers to fingerprinted URLs gives ES-module imports the same
+     * immutable cache-busting the classic <script src> path gets.
      */
     public static function renderHead(AssetCollector $collector): string
     {
         $entries = $collector->resolve();
-        $html = '';
+        $html = self::renderImportMap($entries);
         $renderedKeys = [];
 
         foreach ($entries as $entry) {
@@ -89,6 +95,33 @@ final class AssetRenderer
         }
 
         return $html;
+    }
+
+    /**
+     * One import map per page: every resolved js asset with a `specifier`
+     * contributes an imports entry pointing at its fingerprinted URL.
+     * Empty string when no asset declares a specifier (zero cost for
+     * module-free pages).
+     *
+     * @param AssetEntry[] $entries
+     */
+    private static function renderImportMap(array $entries): string
+    {
+        $imports = [];
+        foreach ($entries as $entry) {
+            if ($entry->type !== 'js' || $entry->specifier === null || $entry->specifier === '') {
+                continue;
+            }
+            $imports[$entry->specifier] = AssetManager::getUrl($entry->path, $entry->module);
+        }
+
+        if ($imports === []) {
+            return '';
+        }
+
+        $json = json_encode(['imports' => $imports], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+
+        return '<script type="importmap">' . str_ireplace('</script', '<\/script', $json) . '</script>' . "\n";
     }
 
     private static function renderCssLink(AssetEntry $entry): string

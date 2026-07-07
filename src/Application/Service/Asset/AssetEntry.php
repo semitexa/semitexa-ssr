@@ -27,6 +27,9 @@ final readonly class AssetEntry
      * @param int      $priority     Lower values emit earlier (default: 100)
      * @param array    $attributes   Extra HTML attributes (e.g. ["type" => "module", "defer" => true])
      * @param string[] $dependencies Canonical keys of assets that must load before this one
+     * @param ?string  $specifier    Bare import-map specifier (e.g. "platform-ui/core") — when set,
+     *                               the page's server-generated <script type="importmap"> maps it to
+     *                               this asset's fingerprinted URL so ES modules can `import` it
      */
     public function __construct(
         public string $key,
@@ -38,6 +41,7 @@ final readonly class AssetEntry
         public int    $priority = 100,
         public array  $attributes = [],
         public array  $dependencies = [],
+        public ?string $specifier = null,
     ) {}
 
     /**
@@ -113,6 +117,7 @@ final readonly class AssetEntry
             priority: $definition['priority'] ?? 100,
             attributes: $definition['attributes'] ?? [],
             dependencies: $definition['dependencies'] ?? [],
+            specifier: $definition['specifier'] ?? null,
         );
     }
 
@@ -133,6 +138,7 @@ final readonly class AssetEntry
             priority: $overrides['priority'] ?? $this->priority,
             attributes: array_merge($this->attributes, $overrides['attributes'] ?? []),
             dependencies: $overrides['dependencies'] ?? $this->dependencies,
+            specifier: $overrides['specifier'] ?? $this->specifier,
         );
     }
 

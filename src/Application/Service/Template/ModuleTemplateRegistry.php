@@ -463,21 +463,13 @@ final class ModuleTemplateRegistry
             }
         }
 
-        // Asset functions - asset(), mix(), version()
+        // Asset function — asset(path, module) → fingerprinted, immutable-
+        // cacheable URL. (The Laravel-compat mix()/version() functions are
+        // gone: they presupposed a /build/ manifest no build step produces.)
         if (class_exists(\Semitexa\Ssr\Application\Service\Asset\AssetManager::class)) {
             self::$twig->addFunction(new TwigFunction(
                 'asset',
                 fn (string $path, ?string $module = null) => \Semitexa\Ssr\Application\Service\Asset\AssetManager::getUrl($path, $module)
-            ));
-
-            self::$twig->addFunction(new TwigFunction(
-                'mix',
-                fn (string $path) => \Semitexa\Ssr\Application\Service\Asset\AssetManager::mix($path)
-            ));
-
-            self::$twig->addFunction(new TwigFunction(
-                'version',
-                fn (string $path) => \Semitexa\Ssr\Application\Service\Asset\AssetManager::version($path)
             ));
         }
 
@@ -675,10 +667,16 @@ final class ModuleTemplateRegistry
                     $basePath = parse_url($path, PHP_URL_PATH);
                     $path = is_string($basePath) && $basePath !== '' ? $basePath : '/';
 
-                    // Strip existing locale prefix if present
+                    // Strip existing locale prefix if present — against the
+                    // EFFECTIVE (per-tenant) set stored for this request; the
+                    // boot-frozen global set is only the pre-resolution fallback.
+                    $supported = \Semitexa\Locale\Context\LocaleContextStore::getSupportedLocales();
+                    if ($supported === []) {
+                        $supported = $localeConfig->supportedLocales;
+                    }
                     $trimmed = ltrim($path, '/');
                     $segments = explode('/', $trimmed, 2);
-                    if (in_array($segments[0], $localeConfig->supportedLocales, true)) {
+                    if (in_array($segments[0], $supported, true)) {
                         $path = '/' . ($segments[1] ?? '');
                     }
 

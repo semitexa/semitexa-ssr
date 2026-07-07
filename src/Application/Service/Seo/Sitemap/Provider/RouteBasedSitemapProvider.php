@@ -48,8 +48,16 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
         usort($routes, fn (array $a, array $b): int => $this->stringValue($a['path'] ?? '') <=> $this->stringValue($b['path'] ?? ''));
 
         $localeConfig = LocaleConfig::fromEnvironment();
-        $supportedLocales = array_values($localeConfig->supportedLocales);
-        $defaultLocale = $localeConfig->defaultLocale;
+        // Per-request (a tenant's domain serving its sitemap): the locale phase
+        // stored the tenant's EFFECTIVE pack — the sitemap must list THAT
+        // tenant's locales/default. Cron/pre-resolution: empty → global config.
+        $tenantSupported = \Semitexa\Locale\Context\LocaleContextStore::getSupportedLocales();
+        $supportedLocales = $tenantSupported !== []
+            ? array_values($tenantSupported)
+            : array_values($localeConfig->supportedLocales);
+        $defaultLocale = $tenantSupported !== []
+            ? \Semitexa\Locale\Context\LocaleContextStore::getDefaultLocale()
+            : $localeConfig->defaultLocale;
         $urlPrefixEnabled = $localeConfig->urlPrefixEnabled;
 
         foreach ($routes as $route) {

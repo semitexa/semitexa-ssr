@@ -667,10 +667,16 @@ final class ModuleTemplateRegistry
                     $basePath = parse_url($path, PHP_URL_PATH);
                     $path = is_string($basePath) && $basePath !== '' ? $basePath : '/';
 
-                    // Strip existing locale prefix if present
+                    // Strip existing locale prefix if present — against the
+                    // EFFECTIVE (per-tenant) set stored for this request; the
+                    // boot-frozen global set is only the pre-resolution fallback.
+                    $supported = \Semitexa\Locale\Context\LocaleContextStore::getSupportedLocales();
+                    if ($supported === []) {
+                        $supported = $localeConfig->supportedLocales;
+                    }
                     $trimmed = ltrim($path, '/');
                     $segments = explode('/', $trimmed, 2);
-                    if (in_array($segments[0], $localeConfig->supportedLocales, true)) {
+                    if (in_array($segments[0], $supported, true)) {
                         $path = '/' . ($segments[1] ?? '');
                     }
 

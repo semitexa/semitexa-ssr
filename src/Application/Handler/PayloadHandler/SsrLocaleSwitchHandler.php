@@ -38,8 +38,13 @@ final class SsrLocaleSwitchHandler implements TypedHandlerInterface
         }
 
         if (class_exists(\Semitexa\Locale\Configuration\LocaleConfig::class)) {
-            $config = \Semitexa\Locale\Configuration\LocaleConfig::fromEnvironment();
-            if (!in_array($locale, $config->supportedLocales, true)) {
+            // Validate against the EFFECTIVE (per-tenant) set the locale phase
+            // stored for this request; empty = not set → the global pack.
+            $supported = \Semitexa\Locale\Context\LocaleContextStore::getSupportedLocales();
+            if ($supported === []) {
+                $supported = \Semitexa\Locale\Configuration\LocaleConfig::fromEnvironment()->supportedLocales;
+            }
+            if (!in_array($locale, $supported, true)) {
                 throw new NotFoundException('Locale', $locale);
             }
         }

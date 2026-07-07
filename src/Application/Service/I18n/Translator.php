@@ -27,6 +27,8 @@ final class Translator
 
     /** @worker-scoped Set once at boot. */
     private static ?TranslationService $service = null;
+    /** @worker-scoped The catalog behind the service (key enumeration seam). */
+    private static ?TranslationCatalog $catalog = null;
     /** @worker-scoped Boot-time locale context (used as default). */
     private static ?LocaleContextInterface $localeContext = null;
     /** @worker-scoped */
@@ -37,6 +39,27 @@ final class Translator
      * container — the staticContainerAccess rule). Null = global catalog only.
      */
     private static ?TranslationOverrideProviderInterface $overrideProvider = null;
+    /**
+     * @worker-scoped moduleName => absolute locales dir for installed PACKAGES —
+     * JsonFileLoader's modulesRoot scan covers only src/modules/*. Registered at
+     * worker boot by a container-managed listener (ModuleRegistry-derived).
+     * @var array<string, string>
+     */
+    private static array $packageLocaleDirs = [];
+
+    /**
+     * Register package locale directories (container-managed listener, worker
+     * boot). Resets the cached service so the catalog rebuilds with them.
+     *
+     * @param array<string, string> $dirs moduleName => locales dir
+     */
+    public static function setPackageLocaleDirs(array $dirs): void
+    {
+        self::$packageLocaleDirs = $dirs;
+        if (self::$service !== null) {
+            self::$service = self::buildService(self::$localeContext ?? self::resolveLocaleContext());
+        }
+    }
 
     /**
      * Register the per-tenant translation override provider (container-managed
@@ -70,6 +93,17 @@ final class Translator
         self::initialize();
 
         return self::$service;
+    }
+
+    /**
+     * The loaded catalog — the key-enumeration seam (e.g. the OS shell
+     * resolves every `os.shell.*` key for its boot string bundle).
+     */
+    public static function getCatalog(): TranslationCatalog
+    {
+        self::initialize();
+
+        return self::$catalog ?? new TranslationCatalog();
     }
 
     public static function initialize(): void
@@ -165,8 +199,9 @@ final class Translator
     {
         $catalog = new TranslationCatalog();
         $modulesRoot = ProjectRoot::get() . '/src/modules';
-        $loader = new JsonFileLoader($modulesRoot);
+        $loader = new JsonFileLoader($modulesRoot, self::$packageLocaleDirs);
         $loader->load($catalog);
+        self::$catalog = $catalog;
 
         return new TranslationService($catalog, $localeContext, self::$overrideProvider);
     }

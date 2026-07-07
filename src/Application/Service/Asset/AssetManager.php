@@ -7,9 +7,18 @@ namespace Semitexa\Ssr\Application\Service\Asset;
 use Semitexa\Core\Environment;
 use Semitexa\Core\Support\ProjectRoot;
 
+/**
+ * Versioned URLs for module static assets.
+ *
+ * getUrl('js/ui-core.js', 'platform-ui') → '/assets/platform-ui/js/ui-core.js
+ * ?v=<sha256-12hex>' — the fingerprint makes the URL the cache key, which is
+ * what lets StaticAssetHandler answer it with a one-year `immutable`
+ * Cache-Control (unversioned URLs get must-revalidate + ETag instead). Twig
+ * exposes this as `asset(path, module)`; hardcoding a raw `/assets/...` URL
+ * in a template forfeits immutable caching and risks pinning stale copies.
+ */
 final class AssetManager
 {
-    private static ?array $manifest = null;
     private static string $publicPath = '/assets';
     private static array $moduleVersions = [];
     /**
@@ -21,11 +30,6 @@ final class AssetManager
     {
         $module = $module ?? self::detectCurrentModule();
 
-        $hashed = self::getManifestPath($path, $module);
-        if ($hashed) {
-            return self::$publicPath . "/{$module}/{$hashed}";
-        }
-
         $url = self::$publicPath . "/{$module}/" . ltrim($path, '/');
         $version = self::getAssetFingerprint($module, $path);
 
@@ -34,66 +38,8 @@ final class AssetManager
 
     public static function reset(): void
     {
-        self::$manifest = null;
         self::$moduleVersions = [];
         self::$fingerprintCache = [];
-    }
-
-    public static function mix(string $path): string
-    {
-        $manifest = self::getManifest();
-        
-        if (isset($manifest[$path])) {
-            return '/build/' . $manifest[$path];
-        }
-
-        return $path;
-    }
-
-    public static function version(string $path): string
-    {
-        $module = self::detectCurrentModule();
-        $hashed = self::getManifestPath($path, $module);
-        if ($hashed) {
-            return '/' . ltrim($hashed, '/');
-        }
-
-        $path = ltrim($path, '/');
-        return '/' . $path . '?v=' . rawurlencode(self::getBuildVersion());
-    }
-
-    /** @return array<string, string> */
-    private static function getManifest(): array
-    {
-        if (self::$manifest !== null) {
-            return self::$manifest;
-        }
-
-        $manifestPath = ProjectRoot::get() . '/public/mix-manifest.json';
-        
-        if (file_exists($manifestPath)) {
-            self::$manifest = json_decode(file_get_contents($manifestPath), true) ?? [];
-        } else {
-            self::$manifest = [];
-        }
-
-        return self::$manifest;
-    }
-
-    private static function getManifestPath(string $path, string $module): ?string
-    {
-        $manifest = self::getManifest();
-        
-        if (isset($manifest[$path])) {
-            return $manifest[$path];
-        }
-
-        $modulePath = "{$module}/{$path}";
-        if (isset($manifest[$modulePath])) {
-            return $manifest[$modulePath];
-        }
-
-        return null;
     }
 
     private static function getVersion(string $module): string

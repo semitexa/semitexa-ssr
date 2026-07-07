@@ -11,6 +11,7 @@ use Semitexa\Locale\Context\LocaleManager;
 use Semitexa\Locale\Application\Service\I18n\JsonFileLoader;
 use Semitexa\Locale\Application\Service\I18n\TranslationCatalog;
 use Semitexa\Locale\Application\Service\I18n\TranslationService;
+use Semitexa\Locale\Domain\Contract\TranslationOverrideProviderInterface;
 
 /**
  * Static facade for backward compatibility.
@@ -30,6 +31,25 @@ final class Translator
     private static ?LocaleContextInterface $localeContext = null;
     /** @worker-scoped */
     private static bool $initialized = false;
+    /**
+     * @worker-scoped Per-tenant override provider, registered at worker boot by
+     * a container-managed listener (this static facade cannot reach the
+     * container — the staticContainerAccess rule). Null = global catalog only.
+     */
+    private static ?TranslationOverrideProviderInterface $overrideProvider = null;
+
+    /**
+     * Register the per-tenant translation override provider (container-managed
+     * listener, worker boot). Resets the cached service so the next getService()
+     * rebuilds with overrides active.
+     */
+    public static function setOverrideProvider(?TranslationOverrideProviderInterface $provider): void
+    {
+        self::$overrideProvider = $provider;
+        if (self::$service !== null) {
+            self::$service = self::buildService(self::$localeContext ?? self::resolveLocaleContext());
+        }
+    }
 
     /**
      * Set the backing TranslationService (call at worker boot).
@@ -148,6 +168,6 @@ final class Translator
         $loader = new JsonFileLoader($modulesRoot);
         $loader->load($catalog);
 
-        return new TranslationService($catalog, $localeContext);
+        return new TranslationService($catalog, $localeContext, self::$overrideProvider);
     }
 }

@@ -14,6 +14,7 @@
         "twig/twig": "^3.10",
         "semitexa/scheduler": "*",
         "semitexa/locale": "*",
+        "semitexa/platform-settings": "*",
         "semitexa/tenancy": "*",
         "semitexa/theme": "*"
     },

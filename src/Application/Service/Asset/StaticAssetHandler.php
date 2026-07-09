@@ -31,6 +31,10 @@ readonly class StaticAssetHandler
         'woff' => 'font/woff',
         'map'  => 'application/json',
         'twig' => 'text/plain; charset=utf-8',
+        'ogg'  => 'audio/ogg',
+        'mp3'  => 'audio/mpeg',
+        'm4a'  => 'audio/mp4',
+        'wav'  => 'audio/wav',
     ];
 
     public function handle(SwooleRequest $request, SwooleResponse $response): bool

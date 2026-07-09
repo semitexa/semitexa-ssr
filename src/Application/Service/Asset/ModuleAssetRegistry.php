@@ -30,6 +30,8 @@ class ModuleAssetRegistry
         // .twig is reserved for SSR-published templates in public/assets/ssr/tpl (served as text/plain).
         // Do not publish secrets in these templates.
         'twig',
+        // Audio: module-bundled media (e.g. semitexa-music's generated playlist).
+        'ogg', 'mp3', 'm4a', 'wav',
     ];
 
     /** @var array<string, string[]> module name/alias → list of absolute base dirs (searched in order) */

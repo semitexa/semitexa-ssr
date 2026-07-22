@@ -32,6 +32,8 @@ class ModuleAssetRegistry
         'twig',
         // Audio: module-bundled media (e.g. semitexa-music's generated playlist).
         'ogg', 'mp3', 'm4a', 'wav',
+        // Modern image formats: semitexa-media variant output defaults to webp.
+        'webp', 'avif',
     ];
 
     /** @var array<string, string[]> module name/alias → list of absolute base dirs (searched in order) */

@@ -34,6 +34,8 @@ class ModuleAssetRegistry
         'ogg', 'mp3', 'm4a', 'wav',
         // Modern image formats: semitexa-media variant output defaults to webp.
         'webp', 'avif',
+        // Video: module-bundled promo/hero clips served via Swoole sendfile (range-capable).
+        'mp4', 'webm',
     ];
 
     /** @var array<string, string[]> module name/alias → list of absolute base dirs (searched in order) */

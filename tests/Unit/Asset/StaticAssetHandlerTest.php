@@ -6,10 +6,31 @@ namespace Semitexa\Ssr\Tests\Unit\Asset;
 
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+use Semitexa\Ssr\Application\Service\Asset\ModuleAssetRegistry;
 use Semitexa\Ssr\Application\Service\Asset\StaticAssetHandler;
 
 final class StaticAssetHandlerTest extends TestCase
 {
+    /**
+     * Regression guard: module-bundled video (promo/hero clips) must be both
+     * allow-listed for resolution and mapped to a proper video/* content-type.
+     * These used to live only in a gitignored vendor patch that composer
+     * rolled back on every ssr bump, silently 404-ing hero videos on prod.
+     */
+    #[Test]
+    public function video_assets_are_allow_listed_and_typed(): void
+    {
+        $contentTypes = new \ReflectionClassConstant(StaticAssetHandler::class, 'CONTENT_TYPES');
+        $map = $contentTypes->getValue();
+        self::assertSame('video/mp4', $map['mp4'] ?? null);
+        self::assertSame('video/webm', $map['webm'] ?? null);
+
+        $allowed = new \ReflectionClassConstant(ModuleAssetRegistry::class, 'ALLOWED_EXTENSIONS');
+        $extensions = $allowed->getValue();
+        self::assertContains('mp4', $extensions);
+        self::assertContains('webm', $extensions);
+    }
+
     #[Test]
     public function match_prefix_accepts_assets_and_static_routes(): void
     {

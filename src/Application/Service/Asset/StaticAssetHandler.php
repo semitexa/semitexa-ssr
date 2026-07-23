@@ -35,6 +35,8 @@ readonly class StaticAssetHandler
         'mp3'  => 'audio/mpeg',
         'm4a'  => 'audio/mp4',
         'wav'  => 'audio/wav',
+        'mp4'  => 'video/mp4',
+        'webm' => 'video/webm',
     ];
 
     public function handle(SwooleRequest $request, SwooleResponse $response): bool

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Seo\Sitemap\Job;
 
+use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Scheduler\Attribute\AsScheduledJob;
 use Semitexa\Scheduler\Domain\Contract\ScheduledJobInterface;
@@ -19,6 +20,7 @@ use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapStoragePath;
  * Requires the semitexa/scheduler package. If the scheduler is not installed,
  * this class is never instantiated (auto-discovery skips it).
  */
+#[AsService]
 #[AsScheduledJob(
     key: 'ssr.sitemap_regeneration',
     cronExpression: '0 3 * * *',

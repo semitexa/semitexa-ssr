@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Seo\Sitemap\Job;
 
+use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Scheduler\Attribute\AsScheduledJob;
 use Semitexa\Scheduler\Domain\Contract\ScheduledJobInterface;
@@ -16,9 +17,12 @@ use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapStoragePath;
 /**
  * Regenerates sitemap.xml on a daily schedule.
  *
- * Requires the semitexa/scheduler package. If the scheduler is not installed,
- * this class is never instantiated (auto-discovery skips it).
+ * semitexa/scheduler is a hard dependency of this package (composer.json
+ * `require`), so it is always present — the job is registered through
+ * #[AsScheduledJob] discovery on every install. The previous note here implied
+ * the dependency was optional, which it is not.
  */
+#[AsService]
 #[AsScheduledJob(
     key: 'ssr.sitemap_regeneration',
     cronExpression: '0 3 * * *',

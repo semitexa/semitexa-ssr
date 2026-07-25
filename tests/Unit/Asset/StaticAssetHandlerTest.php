@@ -31,6 +31,36 @@ final class StaticAssetHandlerTest extends TestCase
         self::assertContains('webm', $extensions);
     }
 
+    /**
+     * The per-format assertions above only catch the formats someone thought to
+     * list. Review finding on PR #83: webp and avif were allow-listed for
+     * resolution but missing from CONTENT_TYPES, so they were served as
+     * application/octet-stream. Pin the invariant itself — every resolvable
+     * extension must have a content type — instead of adding one more pair.
+     */
+    #[Test]
+    public function every_allowed_extension_has_a_content_type(): void
+    {
+        $extensions = (new \ReflectionClassConstant(ModuleAssetRegistry::class, 'ALLOWED_EXTENSIONS'))->getValue();
+        $map = (new \ReflectionClassConstant(StaticAssetHandler::class, 'CONTENT_TYPES'))->getValue();
+
+        $untyped = array_values(array_diff($extensions, array_keys($map)));
+
+        self::assertSame(
+            [],
+            $untyped,
+            'Allow-listed but not typed, so served as application/octet-stream: ' . implode(', ', $untyped),
+        );
+    }
+
+    #[Test]
+    public function video_assets_stay_allow_listed(): void
+    {
+        $extensions = (new \ReflectionClassConstant(ModuleAssetRegistry::class, 'ALLOWED_EXTENSIONS'))->getValue();
+        self::assertContains('mp4', $extensions);
+        self::assertContains('webm', $extensions);
+    }
+
     #[Test]
     public function match_prefix_accepts_assets_and_static_routes(): void
     {

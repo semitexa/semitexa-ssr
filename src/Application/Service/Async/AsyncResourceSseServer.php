@@ -303,8 +303,8 @@ final class AsyncResourceSseServer
         }
 
         // Flush pending table for this session only
-        foreach (self::workerTables()->takePendingFor($sessionId) as $row) {
-            $data = json_decode($row['payload'], true);
+        foreach (self::workerTables()->takePendingFor($sessionId) as $payload) {
+            $data = json_decode($payload, true);
             if (is_array($data)) {
                 self::writeSse($response, $data);
             }

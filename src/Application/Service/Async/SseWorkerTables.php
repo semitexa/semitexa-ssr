@@ -176,10 +176,15 @@ final class SseWorkerTables
     }
 
     /**
-     * Rows addressed to a session in the pending table, paired with their keys so
-     * the caller can delete exactly what it consumed.
+     * Take every pending payload addressed to a session, deleting the rows.
      *
-     * @return list<array{key: string, payload: string}>
+     * Take-all is right here, unlike {@see readDeliveriesFor()}: a pending row is
+     * consumed by the act of being handed to a connection that has just opened,
+     * and a payload that fails to decode is dropped rather than left to be
+     * re-read forever. Keys are not returned because the caller has nothing left
+     * to do with them.
+     *
+     * @return list<string> encoded payloads, in table order.
      */
     public function takePendingFor(string $sessionId): array
     {
@@ -187,20 +192,22 @@ final class SseWorkerTables
             return [];
         }
 
-        $rows = [];
+        $keys = [];
+        $payloads = [];
         foreach ($this->pending as $key => $row) {
             if (!is_array($row) || trim((string) ($row['session_id'] ?? '')) !== $sessionId) {
                 continue;
             }
 
-            $rows[] = ['key' => (string) $key, 'payload' => (string) ($row['payload'] ?? '')];
+            $keys[] = (string) $key;
+            $payloads[] = (string) ($row['payload'] ?? '');
         }
 
-        foreach ($rows as $row) {
-            $this->pending->del($row['key']);
+        foreach ($keys as $key) {
+            $this->pending->del($key);
         }
 
-        return $rows;
+        return $payloads;
     }
 
     /**

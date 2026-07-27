@@ -7,6 +7,7 @@ namespace Semitexa\Ssr\Tests\Unit\UiEvent;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Async\SseSessionRegistry;
 use Semitexa\Ssr\Application\Service\UiEvent\AsyncResourceSseMessagePublisher;
 use Semitexa\Ssr\Application\Service\UiEvent\CanonicalUiMessagePublisherInterface;
 use Semitexa\Ssr\Application\Service\UiEvent\UiErrorMessage;
@@ -93,18 +94,22 @@ final class AsyncResourceSseMessagePublisherTest extends TestCase
     private function resetTransportState(): void
     {
         // Reset same-worker state so deliver() does not pick the local-queue path.
-        $arrayProperties = ['sessions', 'queues', 'buffer'];
-        foreach ($arrayProperties as $name) {
-            $property = new \ReflectionProperty(AsyncResourceSseServer::class, $name);
-            $property->setAccessible(true);
-            $property->setValue(null, []);
-        }
+        self::resetServerSessionRegistry();
 
         // Neutralise cross-worker transports so deliver() lands in the in-process
-        // buffer (the test's verification seam). The redis pool is the trickiest
-        // — getRedisPool() rebuilds it from REDIS_HOST env every call, so we both
-        // clear the static and clear the env var for the duration of the test.
-        $nullableProperties = ['httpServer', 'sessionWorkerTable', 'deliverTable', 'pendingDeliverTable', 'redisPool'];
+        // buffer (the test's verification seam). The redis side is the trickiest:
+        // since ep-slay-sse-god-class the pool lives in SseRedisPool, memoized by
+        // the collaborators that hold it, so clearing REDIS_HOST is not enough on
+        // its own — the collaborator slots must be dropped too, forcing them to be
+        // rebuilt against the now-empty env.
+        // The Swoole tables and the server handle moved into SseWorkerTables, so
+        // dropping that one slot neutralises the whole shared-memory path at once.
+        $nullableProperties = [
+            'workerTables',
+            'redisPoolResolver',
+            'redisSessionQueue',
+            'authSessionMap',
+        ];
         foreach ($nullableProperties as $name) {
             $property = new \ReflectionProperty(AsyncResourceSseServer::class, $name);
             $property->setAccessible(true);
@@ -116,14 +121,36 @@ final class AsyncResourceSseMessagePublisherTest extends TestCase
     }
 
     /**
+     * `ep-slay-sse-god-class` · tk-sse-session-state — the sessions/queues/buffer
+     * maps moved into {@see SseSessionRegistry}. Tests reach the FACADE's
+     * instance: the code under test goes through AsyncResourceSseServer, so a
+     * separately constructed registry would be invisible to it.
+     */
+    private static function serverSessionRegistry(): SseSessionRegistry
+    {
+        $slot = new \ReflectionProperty(AsyncResourceSseServer::class, 'sessionRegistry');
+        $slot->setAccessible(true);
+        $registry = $slot->getValue();
+        if (!$registry instanceof SseSessionRegistry) {
+            $registry = new SseSessionRegistry();
+            $slot->setValue(null, $registry);
+        }
+
+        return $registry;
+    }
+
+    private static function resetServerSessionRegistry(): void
+    {
+        $slot = new \ReflectionProperty(AsyncResourceSseServer::class, 'sessionRegistry');
+        $slot->setAccessible(true);
+        $slot->setValue(null, null);
+    }
+
+    /**
      * @return list<array<string, mixed>>
      */
     private function bufferedFor(string $sessionId): array
     {
-        $property = new \ReflectionProperty(AsyncResourceSseServer::class, 'buffer');
-        $property->setAccessible(true);
-        /** @var array<string, list<array<string, mixed>>> $buffer */
-        $buffer = $property->getValue();
-        return $buffer[$sessionId] ?? [];
+        return self::serverSessionRegistry()->buffered($sessionId);
     }
 }

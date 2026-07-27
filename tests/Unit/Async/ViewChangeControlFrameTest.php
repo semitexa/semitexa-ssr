@@ -14,6 +14,7 @@ use Semitexa\Core\Pipeline\ReRun\ReRunResult;
 use Semitexa\Core\Server\SseFrame;
 use Semitexa\Core\Server\SseTransportInterface;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Async\SseRuntime;
 use Semitexa\Ssr\Application\Service\Async\ConnectCoordinator;
 use Semitexa\Ssr\Application\Service\Async\RedisSubscribeConnectionFactory;
 use Semitexa\Ssr\Application\Service\Async\RerunCoalescer;
@@ -252,11 +253,22 @@ final class ViewChangeControlFrameTest extends TestCase
         };
     }
 
+    /**
+     * `ep-slay-sse-god-class` · tk-sse-wire-di — the eight worker-boot
+     * collaborators moved into {@see SseRuntime}. Still the FACADE's holder, not
+     * a fresh one: the code under test reads the facade's runtime, so a
+     * separately built holder would be invisible to it.
+     */
     private function setTransport(?SseTransportInterface $transport): void
     {
-        $property = new \ReflectionProperty(AsyncResourceSseServer::class, 'transport');
-        $property->setAccessible(true);
-        $property->setValue(null, $transport);
+        $slot = new \ReflectionProperty(AsyncResourceSseServer::class, 'runtime');
+        $slot->setAccessible(true);
+        $runtime = $slot->getValue();
+        if (!$runtime instanceof SseRuntime) {
+            $runtime = new SseRuntime();
+            $slot->setValue(null, $runtime);
+        }
+        $runtime->transport = $transport;
     }
 
     private function nullChannels(): ChannelSubscriptionControllerInterface

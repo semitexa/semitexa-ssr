@@ -14,6 +14,8 @@ use Semitexa\Core\Pipeline\ReRun\ReRunResult;
 use Semitexa\Core\Server\SseFrame;
 use Semitexa\Core\Server\SseTransportInterface;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Async\SseRuntime;
+use Semitexa\Ssr\Application\Service\Async\SseSessionRegistry;
 use Semitexa\Ssr\Application\Service\Async\ConnectCoordinator;
 use Semitexa\Ssr\Application\Service\Async\RedisSubscribeConnectionFactory;
 use Semitexa\Ssr\Application\Service\Async\RerunCoalescer;
@@ -290,34 +292,57 @@ final class HeldOpenGridStreamTest extends TestCase
         return $outcomes;
     }
 
+    /**
+     * `ep-slay-sse-god-class` · tk-sse-session-state — the sessions/queues/buffer
+     * maps moved into {@see SseSessionRegistry}. Tests reach the FACADE's
+     * instance: the code under test goes through AsyncResourceSseServer, so a
+     * separately constructed registry would be invisible to it.
+     */
+    private static function serverSessionRegistry(): SseSessionRegistry
+    {
+        $slot = new \ReflectionProperty(AsyncResourceSseServer::class, 'sessionRegistry');
+        $slot->setAccessible(true);
+        $registry = $slot->getValue();
+        if (!$registry instanceof SseSessionRegistry) {
+            $registry = new SseSessionRegistry();
+            $slot->setValue(null, $registry);
+        }
+
+        return $registry;
+    }
+
+    private static function resetServerSessionRegistry(): void
+    {
+        $slot = new \ReflectionProperty(AsyncResourceSseServer::class, 'sessionRegistry');
+        $slot->setAccessible(true);
+        $slot->setValue(null, null);
+    }
+
     private function registerSession(string $sessionId, mixed $fd): void
     {
-        $sessions = $this->readStatic('sessions');
-        $sessions[$sessionId] = ['response' => $fd, 'connected_at' => time()];
-        $this->writeStatic('sessions', $sessions);
+        self::serverSessionRegistry()->open($sessionId, $fd, '', '');
         $this->setQueue($sessionId, []);
     }
 
     /** @return list<array<string, mixed>> */
     private function queuedFor(string $sessionId): array
     {
-        $queues = $this->readStatic('queues');
-
-        return $queues[$sessionId] ?? [];
+        return self::serverSessionRegistry()->queued($sessionId);
     }
 
     private function setQueue(string $sessionId, array $items): void
     {
-        $queues = $this->readStatic('queues');
-        $queues[$sessionId] = $items;
-        $this->writeStatic('queues', $queues);
+        $registry = self::serverSessionRegistry();
+        $registry->takeQueued($sessionId);
+        $registry->ensureQueue($sessionId);
+        foreach ($items as $item) {
+            $registry->enqueue($sessionId, $item);
+        }
     }
 
     private function resetSessions(): void
     {
-        $this->writeStatic('sessions', []);
-        $this->writeStatic('queues', []);
-        $this->writeStatic('buffer', []);
+        self::resetServerSessionRegistry();
     }
 
     private function readStatic(string $name): array
@@ -396,11 +421,22 @@ final class HeldOpenGridStreamTest extends TestCase
         };
     }
 
+    /**
+     * `ep-slay-sse-god-class` · tk-sse-wire-di — the eight worker-boot
+     * collaborators moved into {@see SseRuntime}. Still the FACADE's holder, not
+     * a fresh one: the code under test reads the facade's runtime, so a
+     * separately built holder would be invisible to it.
+     */
     private function setTransport(?SseTransportInterface $transport): void
     {
-        $property = new \ReflectionProperty(AsyncResourceSseServer::class, 'transport');
-        $property->setAccessible(true);
-        $property->setValue(null, $transport);
+        $slot = new \ReflectionProperty(AsyncResourceSseServer::class, 'runtime');
+        $slot->setAccessible(true);
+        $runtime = $slot->getValue();
+        if (!$runtime instanceof SseRuntime) {
+            $runtime = new SseRuntime();
+            $slot->setValue(null, $runtime);
+        }
+        $runtime->transport = $transport;
     }
 
     private function nullChannels(): ChannelSubscriptionControllerInterface

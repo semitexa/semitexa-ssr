@@ -140,10 +140,12 @@ final class SlotHandlerPipeline
             );
         }
 
-        if (self::isContainerBuilt($handlerClass)) {
+        // Only worth warning when a container EXISTS and does not know the class:
+        // that is a probable missing binding. With no container at all (CLI, early
+        // boot) direct construction is the expected path, and warning there would
+        // be noise on a route that is working as designed.
+        if ($container !== null && self::isContainerBuilt($handlerClass)) {
             // Not fatal: nothing is injected, so `new` produces a usable object.
-            // Still worth saying, because a service the container does not know
-            // is usually a missing binding rather than an intent.
             StaticLoggerBridge::warning('ssr', 'Slot handler is container-declared but was not resolved', [
                 'handler' => $handlerClass,
                 'note' => 'constructed directly; nothing is injected so this is safe, but the binding is likely missing',

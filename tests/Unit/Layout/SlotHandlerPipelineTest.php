@@ -11,6 +11,7 @@ use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Ssr\Application\Service\Http\Response\HtmlSlotResponse;
 use Semitexa\Ssr\Application\Service\Layout\SlotHandlerPipeline;
+use Semitexa\Ssr\Application\Service\Layout\SlotHandlerRegistry;
 use Semitexa\Ssr\Domain\Contract\TypedSlotHandlerInterface;
 
 /**
@@ -107,14 +108,31 @@ final class SlotHandlerPipelineTest extends TestCase
     }
 
     #[Test]
-    public function one_failing_handler_does_not_stop_the_pipeline(): void
+    public function one_failing_handler_does_not_stop_the_ones_after_it(): void
     {
-        // Containment is deliberate: a broken region must not cost the page every
-        // other region. What changed is that the failure is now reported at error
-        // level rather than debug — the pipeline still returns a usable slot.
-        $slot = new ConcreteSlotFixture();
+        // Review caught that this used to register nothing, so it passed whether
+        // or not containment worked — the exact shape of test this PR exists to
+        // criticise elsewhere. It now registers a handler that throws, followed by
+        // one that records, and asserts the second still ran.
+        SlotHandlerRegistry::reset();
+        RecordingSlotHandlerFixture::$ran = false;
 
-        self::assertSame($slot, SlotHandlerPipeline::execute($slot));
+        try {
+            SlotHandlerRegistry::register(ConcreteSlotFixture::class, ThrowingSlotHandlerFixture::class, 10);
+            SlotHandlerRegistry::register(ConcreteSlotFixture::class, RecordingSlotHandlerFixture::class, 0);
+
+            $slot = new ConcreteSlotFixture();
+            $result = SlotHandlerPipeline::execute($slot);
+
+            self::assertTrue(
+                RecordingSlotHandlerFixture::$ran,
+                'a handler that throws must not stop the handlers queued after it',
+            );
+            self::assertInstanceOf(ConcreteSlotFixture::class, $result);
+        } finally {
+            SlotHandlerRegistry::reset();
+            RecordingSlotHandlerFixture::$ran = false;
+        }
     }
 }
 
@@ -162,6 +180,26 @@ final class InjectingServiceSlotHandlerFixture implements TypedSlotHandlerInterf
 
 final class NotAHandlerFixture
 {
+}
+
+final class ThrowingSlotHandlerFixture implements TypedSlotHandlerInterface
+{
+    public function handle(object $slot): object
+    {
+        throw new \RuntimeException('handler blew up');
+    }
+}
+
+final class RecordingSlotHandlerFixture implements TypedSlotHandlerInterface
+{
+    public static bool $ran = false;
+
+    public function handle(object $slot): object
+    {
+        self::$ran = true;
+
+        return $slot;
+    }
 }
 
 /** HtmlSlotResponse is abstract; the pipeline only needs a concrete instance. */

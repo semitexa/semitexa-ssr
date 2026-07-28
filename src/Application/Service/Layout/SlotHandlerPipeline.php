@@ -4,16 +4,45 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Layout;
 
+use ReflectionClass;
+use ReflectionException;
+use Semitexa\Core\Attribute\AsService;
+use Semitexa\Core\Attribute\ExecutionScoped;
+use Semitexa\Core\Attribute\InjectAsFactory;
+use Semitexa\Core\Attribute\InjectAsMutable;
+use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Container\ContainerFactory;
-use Semitexa\Ssr\Domain\Contract\TypedSlotHandlerInterface;
-use Semitexa\Ssr\Application\Service\Http\Response\HtmlSlotResponse;
 use Semitexa\Core\Log\StaticLoggerBridge;
+use Semitexa\Ssr\Application\Service\Http\Response\HtmlSlotResponse;
+use Semitexa\Ssr\Domain\Contract\TypedSlotHandlerInterface;
 
 /**
  * Executes all registered slot handlers for a slot resource in priority order.
+ *
+ * A handler that fails does not stop the others: one broken region must not cost
+ * the page every other region. But it is reported at **error** level, because a
+ * slot that failed and a slot that legitimately had nothing to render produce
+ * the identical empty output, and the only difference a reader can see is the
+ * log line.
  */
 final class SlotHandlerPipeline
 {
+    /**
+     * Attributes that mean "the container builds this, not `new`".
+     *
+     * A class carrying any of them has collaborators that arrive after
+     * construction, so instantiating it directly yields an object whose
+     * dependencies are uninitialised — it either throws on first use or, worse,
+     * quietly returns nothing.
+     */
+    private const CONTAINER_MANAGED_ATTRIBUTES = [
+        AsService::class,
+        ExecutionScoped::class,
+        InjectAsReadonly::class,
+        InjectAsMutable::class,
+        InjectAsFactory::class,
+    ];
+
     /**
      * Execute the handler pipeline for the given slot resource.
      * Handlers are resolved from the DI container when available.
@@ -34,7 +63,11 @@ final class SlotHandlerPipeline
                 }
                 $slot = $result;
             } catch (\Throwable $e) {
-                StaticLoggerBridge::debug('ssr', 'SlotHandlerPipeline error', [
+                // Error, not debug. A failed slot renders as an empty region, so
+                // at any normal log level this used to be indistinguishable from
+                // a slot that had nothing to show — the failure was only findable
+                // by abandoning the render path entirely.
+                StaticLoggerBridge::error('ssr', 'Slot handler failed; region rendered empty', [
                     'handler' => $handlerClass,
                     'slot' => $slotClass,
                     'exception' => $e::class,
@@ -46,18 +79,52 @@ final class SlotHandlerPipeline
         return $slot;
     }
 
+    /**
+     * Resolve a handler, preferring the container.
+     *
+     * Three outcomes, deliberately distinct:
+     *  - the container knows the class → use it, and a failure there is a real
+     *    failure, not a reason to try something weaker;
+     *  - the container does not know it but the class declares container-managed
+     *    dependencies → refuse, because `new` would hand back an object with
+     *    uninitialised collaborators and the symptom would surface far away;
+     *  - a plain class with nothing injected → `new` is legitimate.
+     *
+     * The previous version collapsed all three into "try the container, fall
+     * through to `new` on any problem", which is what turned a missing binding
+     * into an empty region with no explanation.
+     */
     private static function resolveHandler(string $handlerClass): TypedSlotHandlerInterface
     {
+        $container = null;
+        $containerError = null;
         try {
             $container = ContainerFactory::get();
-            if ($container->has($handlerClass)) {
-                $instance = $container->get($handlerClass);
-                if ($instance instanceof TypedSlotHandlerInterface) {
-                    return $instance;
-                }
+        } catch (\Throwable $e) {
+            // No container at all (CLI, early boot). Plain classes still work.
+            $containerError = $e;
+        }
+
+        if ($container !== null && $container->has($handlerClass)) {
+            $instance = $container->get($handlerClass);
+            if (!$instance instanceof TypedSlotHandlerInterface) {
+                throw new \RuntimeException(
+                    "Slot handler '{$handlerClass}' resolved from the container but does not implement "
+                    . TypedSlotHandlerInterface::class . '.'
+                );
             }
-        } catch (\Throwable) {
-            // Fall through to direct instantiation
+
+            return $instance;
+        }
+
+        if (self::isContainerManaged($handlerClass)) {
+            throw new \RuntimeException(
+                "Slot handler '{$handlerClass}' declares container-managed dependencies but the container "
+                . 'did not resolve it'
+                . ($containerError !== null ? ' (no container available: ' . $containerError->getMessage() . ')' : '')
+                . '. Constructing it directly would leave those dependencies uninitialised, so the handler '
+                . 'is refused rather than run half-built.'
+            );
         }
 
         $instance = new $handlerClass();
@@ -68,5 +135,38 @@ final class SlotHandlerPipeline
         }
 
         return $instance;
+    }
+
+    /**
+     * Whether the class expects the container to build it — either because it is
+     * declared as a service, or because it asks for injected collaborators.
+     *
+     * A class we cannot reflect is treated as NOT container-managed, so an
+     * unloadable handler still reaches `new` and fails with the original error
+     * rather than a misleading one about dependency injection.
+     */
+    private static function isContainerManaged(string $handlerClass): bool
+    {
+        try {
+            $reflection = new ReflectionClass($handlerClass);
+        } catch (ReflectionException) {
+            return false;
+        }
+
+        foreach (self::CONTAINER_MANAGED_ATTRIBUTES as $attribute) {
+            if ($reflection->getAttributes($attribute) !== []) {
+                return true;
+            }
+        }
+
+        foreach ($reflection->getProperties() as $property) {
+            foreach (self::CONTAINER_MANAGED_ATTRIBUTES as $attribute) {
+                if ($property->getAttributes($attribute) !== []) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 }

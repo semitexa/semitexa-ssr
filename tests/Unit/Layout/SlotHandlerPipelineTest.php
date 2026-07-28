@@ -41,25 +41,47 @@ final class SlotHandlerPipelineTest extends TestCase
     }
 
     #[Test]
-    public function a_service_handler_the_container_does_not_know_is_refused(): void
+    public function a_service_handler_with_nothing_injected_is_still_built(): void
     {
-        // The reported failure. Previously this fell through to `new` and handed
-        // back a half-built object; now it says what is wrong.
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessageMatches('/declares container-managed dependencies/');
-
-        self::resolve(ServiceSlotHandlerFixture::class);
+        // Self-review correction: #[AsService] alone does NOT make `new` unsafe.
+        // A service with a parameterless constructor and no injected properties
+        // constructs perfectly well, so refusing it would break setups that work
+        // today. It is reported as a probable missing binding and then built.
+        self::assertInstanceOf(ServiceSlotHandlerFixture::class, self::resolve(ServiceSlotHandlerFixture::class));
     }
 
     #[Test]
-    public function a_handler_with_injected_properties_is_refused_too(): void
+    public function a_handler_with_injected_properties_is_refused(): void
     {
-        // Injection is declared on the PROPERTY here, not on the class, which is
-        // the shape the report described. Both must be detected.
+        // The provable case: these properties can only be filled by the
+        // container, so `new` yields an object that fatals on first access.
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessageMatches('/uninitialised/');
 
         self::resolve(InjectedSlotHandlerFixture::class);
+    }
+
+    #[Test]
+    public function the_refusal_names_the_property_that_would_be_uninitialised(): void
+    {
+        // Naming the class is not enough to act on — the property is what tells
+        // the reader which binding is missing.
+        try {
+            self::resolve(InjectedSlotHandlerFixture::class);
+            self::fail('expected a refusal');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('$collaborator', $e->getMessage());
+        }
+    }
+
+    #[Test]
+    public function a_service_that_also_injects_is_refused(): void
+    {
+        // Both markers present: the injected property decides, not the class
+        // attribute.
+        $this->expectException(\RuntimeException::class);
+
+        self::resolve(InjectingServiceSlotHandlerFixture::class);
     }
 
     #[Test]
@@ -68,10 +90,10 @@ final class SlotHandlerPipelineTest extends TestCase
         // The original symptom was an empty region with nothing to grep for. The
         // class name is the one thing that makes it findable.
         try {
-            self::resolve(ServiceSlotHandlerFixture::class);
+            self::resolve(InjectedSlotHandlerFixture::class);
             self::fail('expected a refusal');
         } catch (\RuntimeException $e) {
-            self::assertStringContainsString(ServiceSlotHandlerFixture::class, $e->getMessage());
+            self::assertStringContainsString(InjectedSlotHandlerFixture::class, $e->getMessage());
         }
     }
 
@@ -122,6 +144,18 @@ final class InjectedSlotHandlerFixture implements TypedSlotHandlerInterface
     {
         // Would fatal on an uninitialised typed property — which is exactly the
         // half-built object the old bare `new` fallback produced.
+        return $slot;
+    }
+}
+
+#[AsService]
+final class InjectingServiceSlotHandlerFixture implements TypedSlotHandlerInterface
+{
+    #[InjectAsReadonly]
+    protected \stdClass $collaborator;
+
+    public function handle(object $slot): object
+    {
         return $slot;
     }
 }

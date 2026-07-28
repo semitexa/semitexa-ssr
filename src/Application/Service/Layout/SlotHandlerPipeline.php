@@ -28,19 +28,30 @@ use Semitexa\Ssr\Domain\Contract\TypedSlotHandlerInterface;
 final class SlotHandlerPipeline
 {
     /**
-     * Attributes that mean "the container builds this, not `new`".
+     * Property attributes whose collaborators arrive AFTER construction.
      *
-     * A class carrying any of them has collaborators that arrive after
-     * construction, so instantiating it directly yields an object whose
-     * dependencies are uninitialised — it either throws on first use or, worse,
-     * quietly returns nothing.
+     * A handler declaring any of these cannot be built with `new`: the typed
+     * properties stay uninitialised, so it either fatals on first access or
+     * quietly returns nothing. This is the provable case, and the only one worth
+     * refusing outright.
      */
-    private const CONTAINER_MANAGED_ATTRIBUTES = [
-        AsService::class,
-        ExecutionScoped::class,
+    private const INJECTED_PROPERTY_ATTRIBUTES = [
         InjectAsReadonly::class,
         InjectAsMutable::class,
         InjectAsFactory::class,
+    ];
+
+    /**
+     * Class attributes that mean "the container was meant to build this".
+     *
+     * Weaker evidence than an injected property: a service with a parameterless
+     * constructor and nothing injected constructs perfectly well with `new`.
+     * Refusing on this alone would break setups that work today, so an
+     * unresolved one is reported and then built directly.
+     */
+    private const CONTAINER_BUILT_ATTRIBUTES = [
+        AsService::class,
+        ExecutionScoped::class,
     ];
 
     /**
@@ -117,14 +128,26 @@ final class SlotHandlerPipeline
             return $instance;
         }
 
-        if (self::isContainerManaged($handlerClass)) {
+        $injected = self::injectedProperties($handlerClass);
+        if ($injected !== []) {
             throw new \RuntimeException(
-                "Slot handler '{$handlerClass}' declares container-managed dependencies but the container "
-                . 'did not resolve it'
+                "Slot handler '{$handlerClass}' declares injected propert"
+                . (count($injected) === 1 ? 'y' : 'ies') . ' (' . implode(', ', $injected) . ') '
+                . 'but the container did not resolve it'
                 . ($containerError !== null ? ' (no container available: ' . $containerError->getMessage() . ')' : '')
-                . '. Constructing it directly would leave those dependencies uninitialised, so the handler '
-                . 'is refused rather than run half-built.'
+                . '. Constructing it directly would leave those uninitialised, so the handler is refused '
+                . 'rather than run half-built.'
             );
+        }
+
+        if (self::isContainerBuilt($handlerClass)) {
+            // Not fatal: nothing is injected, so `new` produces a usable object.
+            // Still worth saying, because a service the container does not know
+            // is usually a missing binding rather than an intent.
+            StaticLoggerBridge::warning('ssr', 'Slot handler is container-declared but was not resolved', [
+                'handler' => $handlerClass,
+                'note' => 'constructed directly; nothing is injected so this is safe, but the binding is likely missing',
+            ]);
         }
 
         $instance = new $handlerClass();
@@ -138,14 +161,36 @@ final class SlotHandlerPipeline
     }
 
     /**
-     * Whether the class expects the container to build it — either because it is
-     * declared as a service, or because it asks for injected collaborators.
+     * Names of properties the container was supposed to fill.
      *
-     * A class we cannot reflect is treated as NOT container-managed, so an
-     * unloadable handler still reaches `new` and fails with the original error
-     * rather than a misleading one about dependency injection.
+     * A class we cannot reflect yields none, so an unloadable handler still
+     * reaches `new` and fails with its own error rather than a misleading one
+     * about dependency injection.
+     *
+     * @return list<string>
      */
-    private static function isContainerManaged(string $handlerClass): bool
+    private static function injectedProperties(string $handlerClass): array
+    {
+        try {
+            $reflection = new ReflectionClass($handlerClass);
+        } catch (ReflectionException) {
+            return [];
+        }
+
+        $names = [];
+        foreach ($reflection->getProperties() as $property) {
+            foreach (self::INJECTED_PROPERTY_ATTRIBUTES as $attribute) {
+                if ($property->getAttributes($attribute) !== []) {
+                    $names[] = '$' . $property->getName();
+                    continue 2;
+                }
+            }
+        }
+
+        return $names;
+    }
+
+    private static function isContainerBuilt(string $handlerClass): bool
     {
         try {
             $reflection = new ReflectionClass($handlerClass);
@@ -153,17 +198,9 @@ final class SlotHandlerPipeline
             return false;
         }
 
-        foreach (self::CONTAINER_MANAGED_ATTRIBUTES as $attribute) {
+        foreach (self::CONTAINER_BUILT_ATTRIBUTES as $attribute) {
             if ($reflection->getAttributes($attribute) !== []) {
                 return true;
-            }
-        }
-
-        foreach ($reflection->getProperties() as $property) {
-            foreach (self::CONTAINER_MANAGED_ATTRIBUTES as $attribute) {
-                if ($property->getAttributes($attribute) !== []) {
-                    return true;
-                }
             }
         }
 

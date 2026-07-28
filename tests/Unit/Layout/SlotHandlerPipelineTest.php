@@ -118,8 +118,12 @@ final class SlotHandlerPipelineTest extends TestCase
         RecordingSlotHandlerFixture::$ran = false;
 
         try {
-            SlotHandlerRegistry::register(ConcreteSlotFixture::class, ThrowingSlotHandlerFixture::class, 10);
-            SlotHandlerRegistry::register(ConcreteSlotFixture::class, RecordingSlotHandlerFixture::class, 0);
+            // Ascending priority, so the throwing handler must have the LOWER
+            // number to run first. Registered the other way round, the recorder
+            // would run before the exception and the assertion below would hold
+            // even if the pipeline stopped dead on failure.
+            SlotHandlerRegistry::register(ConcreteSlotFixture::class, ThrowingSlotHandlerFixture::class, 0);
+            SlotHandlerRegistry::register(ConcreteSlotFixture::class, RecordingSlotHandlerFixture::class, 10);
 
             $slot = new ConcreteSlotFixture();
             $result = SlotHandlerPipeline::execute($slot);

@@ -7,6 +7,7 @@ namespace Semitexa\Ssr\Tests\Unit\Layout;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
+use ReflectionProperty;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Ssr\Application\Service\Http\Response\HtmlSlotResponse;
@@ -25,6 +26,43 @@ use Semitexa\Ssr\Domain\Contract\TypedSlotHandlerInterface;
  */
 final class SlotHandlerPipelineTest extends TestCase
 {
+    /**
+     * The registry is a process-wide static that `AttributeDiscovery` fills
+     * exactly once, at boot, behind a guard. `reset()` therefore does not clear
+     * it "for this test" — it clears it for every test that runs afterwards in
+     * the same process, and nothing ever puts the entries back.
+     *
+     * This test used to reset() in a finally and leave it empty, which silently
+     * emptied the slot pipeline for the rest of the suite. Any later test that
+     * renders a real slot then saw a region with no handlers and no error: the
+     * exact indistinguishable-empty symptom this file exists to pin.
+     *
+     * So snapshot the real contents and put them back, rather than assuming the
+     * registry was empty to begin with.
+     *
+     * @return array<string, list<array{handlerClass: string, priority: int}>>
+     */
+    private static function snapshotRegistry(): array
+    {
+        $p = new ReflectionProperty(SlotHandlerRegistry::class, 'handlers');
+        $p->setAccessible(true);
+
+        /** @var array<string, list<array{handlerClass: string, priority: int}>> $handlers */
+        $handlers = $p->getValue();
+
+        return $handlers;
+    }
+
+    /**
+     * @param array<string, list<array{handlerClass: string, priority: int}>> $handlers
+     */
+    private static function restoreRegistry(array $handlers): void
+    {
+        $p = new ReflectionProperty(SlotHandlerRegistry::class, 'handlers');
+        $p->setAccessible(true);
+        $p->setValue(null, $handlers);
+    }
+
     private static function resolve(string $handlerClass): mixed
     {
         $m = new ReflectionMethod(SlotHandlerPipeline::class, 'resolveHandler');
@@ -114,6 +152,7 @@ final class SlotHandlerPipelineTest extends TestCase
         // or not containment worked — the exact shape of test this PR exists to
         // criticise elsewhere. It now registers a handler that throws, followed by
         // one that records, and asserts the second still ran.
+        $snapshot = self::snapshotRegistry();
         SlotHandlerRegistry::reset();
         RecordingSlotHandlerFixture::$ran = false;
 
@@ -134,7 +173,7 @@ final class SlotHandlerPipelineTest extends TestCase
             );
             self::assertInstanceOf(ConcreteSlotFixture::class, $result);
         } finally {
-            SlotHandlerRegistry::reset();
+            self::restoreRegistry($snapshot);
             RecordingSlotHandlerFixture::$ran = false;
         }
     }

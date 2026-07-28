@@ -7,7 +7,7 @@ namespace Semitexa\Ssr\Application\Service\Async;
 /**
  * Canonical contract for the opt-in "passthrough" SSE frame mode.
  *
- * The SSR frame chokepoint ({@see AsyncResourceSseServer::resolveSseEventName()})
+ * The SSR frame chokepoint ({@see SseFrameFactory::resolveEventName()})
  * normally keeps a frame's discriminator key INSIDE the JSON body (the typed
  * `_type` envelope is self-describing, the legacy `event` key is rendered
  * verbatim). That coupling means an `event:` line always implies an in-body

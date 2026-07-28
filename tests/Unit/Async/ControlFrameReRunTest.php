@@ -14,6 +14,8 @@ use Semitexa\Core\Pipeline\ReRun\ReRunResult;
 use Semitexa\Core\Server\SseFrame;
 use Semitexa\Core\Server\SseTransportInterface;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Async\SseRuntime;
+use Semitexa\Ssr\Application\Service\Async\SseSessionRegistry;
 use Semitexa\Ssr\Application\Service\Async\ConnectCoordinator;
 use Semitexa\Ssr\Application\Service\Async\RedisSubscribeConnectionFactory;
 use Semitexa\Ssr\Application\Service\Async\RerunCoalescer;
@@ -594,29 +596,43 @@ final class ControlFrameReRunTest extends TestCase
         };
     }
 
+    /**
+     * `ep-slay-sse-god-class` · tk-sse-session-state — the sessions/queues/buffer
+     * maps moved into {@see SseSessionRegistry}. Tests reach the FACADE's
+     * instance: the code under test goes through AsyncResourceSseServer, so a
+     * separately constructed registry would be invisible to it.
+     */
+    private static function serverSessionRegistry(): SseSessionRegistry
+    {
+        $slot = new \ReflectionProperty(AsyncResourceSseServer::class, 'sessionRegistry');
+        $slot->setAccessible(true);
+        $registry = $slot->getValue();
+        if (!$registry instanceof SseSessionRegistry) {
+            $registry = new SseSessionRegistry();
+            $slot->setValue(null, $registry);
+        }
+
+        return $registry;
+    }
+
+    private static function resetServerSessionRegistry(): void
+    {
+        $slot = new \ReflectionProperty(AsyncResourceSseServer::class, 'sessionRegistry');
+        $slot->setAccessible(true);
+        $slot->setValue(null, null);
+    }
+
     /** Seed the worker-local per-session state the KISS connect captures at admit
      *  (tenant resolved in the connection's own authoritative coroutine). */
     private function seedSessionTenant(string $sessionId, string $tenantId, string $tenantBlob): void
     {
-        $prop = new \ReflectionProperty(AsyncResourceSseServer::class, 'sessions');
-        $prop->setAccessible(true);
-        /** @var array<string, array<string, mixed>> $sessions */
-        $sessions = $prop->getValue();
-        $sessions[$sessionId] = [
-            'response' => null,
-            'connected_at' => 0,
-            'tenant_id' => $tenantId,
-            'tenant_blob' => $tenantBlob,
-        ];
-        $prop->setValue(null, $sessions);
+        self::serverSessionRegistry()->open($sessionId, null, $tenantId, $tenantBlob);
     }
 
     /** Drop all seeded sessions so a seeded tenant cannot bleed into a sibling test. */
     private function clearServerSessions(): void
     {
-        $prop = new \ReflectionProperty(AsyncResourceSseServer::class, 'sessions');
-        $prop->setAccessible(true);
-        $prop->setValue(null, []);
+        self::resetServerSessionRegistry();
     }
 
     /**
@@ -764,11 +780,22 @@ final class ControlFrameReRunTest extends TestCase
         };
     }
 
+    /**
+     * `ep-slay-sse-god-class` · tk-sse-wire-di — the eight worker-boot
+     * collaborators moved into {@see SseRuntime}. Still the FACADE's holder, not
+     * a fresh one: the code under test reads the facade's runtime, so a
+     * separately built holder would be invisible to it.
+     */
     private function setTransport(?SseTransportInterface $transport): void
     {
-        $property = new \ReflectionProperty(AsyncResourceSseServer::class, 'transport');
-        $property->setAccessible(true);
-        $property->setValue(null, $transport);
+        $slot = new \ReflectionProperty(AsyncResourceSseServer::class, 'runtime');
+        $slot->setAccessible(true);
+        $runtime = $slot->getValue();
+        if (!$runtime instanceof SseRuntime) {
+            $runtime = new SseRuntime();
+            $slot->setValue(null, $runtime);
+        }
+        $runtime->transport = $transport;
     }
 
     private function nullChannels(): ChannelSubscriptionControllerInterface

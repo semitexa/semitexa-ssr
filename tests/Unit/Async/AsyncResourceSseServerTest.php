@@ -8,6 +8,10 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Async\SseRedisSessionQueue;
+use Semitexa\Ssr\Application\Service\Async\SseRequestGuard;
+use Semitexa\Ssr\Application\Service\Async\SseSessionCoroutines;
+use Semitexa\Ssr\Application\Service\Async\SseTransportModePolicy;
 use Swoole\Coroutine\Channel;
 
 final class AsyncResourceSseServerTest extends TestCase
@@ -467,10 +471,7 @@ final class AsyncResourceSseServerTest extends TestCase
             'reason' => 'drain_complete',
         ];
 
-        $method = new \ReflectionMethod(AsyncResourceSseServer::class, 'shouldCloseAfterPayload');
-        $method->setAccessible(true);
-
-        self::assertTrue($method->invoke(null, $payload));
+        self::assertTrue((new SseTransportModePolicy())->shouldCloseAfterPayload($payload));
     }
 
     #[Test]
@@ -573,13 +574,19 @@ final class AsyncResourceSseServerTest extends TestCase
         $sessionId = 'test-session';
         $started = new Channel(1);
         $finished = new Channel(1);
-        $property = new \ReflectionProperty(AsyncResourceSseServer::class, 'sessionCoroutines');
-        $property->setAccessible(true);
+        // `ep-slay-sse-god-class` · tk-sse-session-coroutines — the tracking map
+        // moved into SseSessionCoroutines, so this asks the tracker instead of
+        // poking a raw array. It must be the FACADE's instance: registration
+        // happens through AsyncResourceSseServer::createSessionCoroutine(), so a
+        // freshly built tracker would see nothing.
+        $slot = new \ReflectionProperty(AsyncResourceSseServer::class, 'sessionCoroutines');
+        $slot->setAccessible(true);
+        $slot->setValue(null, null);
         $cancelMethod = new \ReflectionMethod(AsyncResourceSseServer::class, 'cancelSessionCoroutines');
         $cancelMethod->setAccessible(true);
 
         try {
-            \Co\run(function () use ($sessionId, $started, $finished, $property, $cancelMethod): void {
+            \Co\run(function () use ($sessionId, $started, $finished, $slot, $cancelMethod): void {
                 $cid = AsyncResourceSseServer::createSessionCoroutine(function () use ($started, $finished): void {
                     $started->push(true);
                     try {
@@ -594,22 +601,31 @@ final class AsyncResourceSseServerTest extends TestCase
                 self::assertIsInt($cid);
                 self::assertTrue($started->pop(1.0));
 
-                $registered = $property->getValue();
-                self::assertArrayHasKey($sessionId, $registered);
-                self::assertArrayHasKey($cid, $registered[$sessionId]);
+                /** @var SseSessionCoroutines $tracker */
+                $tracker = $slot->getValue();
+                self::assertTrue($tracker->hasAny($sessionId));
+                self::assertContains($cid, $tracker->idsFor($sessionId));
 
                 $cancelMethod->invoke(null, $sessionId);
 
                 self::assertTrue($finished->pop(1.0));
 
                 \Swoole\Coroutine::sleep(0.02);
-                self::assertSame([], $property->getValue());
+                /** @var SseSessionCoroutines $tracker */
+                $tracker = $slot->getValue();
+                self::assertSame([], $tracker->idsFor($sessionId), 'the cancelled coroutine deregisters itself');
             });
         } finally {
-            $property->setValue(null, []);
+            $slot->setValue(null, null);
         }
     }
 
+    /**
+     * `ep-slay-sse-god-class` · tk-sse-request-guard — these three gates moved to
+     * {@see SseRequestGuard}, so the helpers below call it directly instead of
+     * reflecting into a private static. The test CASES above are untouched: they
+     * are the proof that the extraction changed no behaviour.
+     */
     private function resolveSseAuthorizationError(
         bool $authenticated,
         bool $anonymousAllowed,
@@ -618,11 +634,7 @@ final class AsyncResourceSseServerTest extends TestCase
         bool $safeBearerSessionId,
         bool $persistentRequested = false,
     ): ?string {
-        $method = new \ReflectionMethod(AsyncResourceSseServer::class, 'resolveSseAuthorizationError');
-        $method->setAccessible(true);
-
-        $result = $method->invoke(
-            null,
+        return (new SseRequestGuard())->resolveAuthorizationError(
             $authenticated,
             $anonymousAllowed,
             $demoStream,
@@ -630,16 +642,11 @@ final class AsyncResourceSseServerTest extends TestCase
             $safeBearerSessionId,
             $persistentRequested,
         );
-
-        return is_string($result) ? $result : null;
     }
 
     private function isSafeBearerSessionId(mixed $rawSessionId): bool
     {
-        $method = new \ReflectionMethod(AsyncResourceSseServer::class, 'isSafeBearerSessionId');
-        $method->setAccessible(true);
-
-        return (bool) $method->invoke(null, $rawSessionId);
+        return (new SseRequestGuard())->isSafeBearerSessionId($rawSessionId);
     }
 
     private function shouldServeAsSse(string $path): bool
@@ -652,10 +659,7 @@ final class AsyncResourceSseServerTest extends TestCase
 
     private function shouldSendHeartbeat(int $now, int $lastWriteAt, int $intervalSeconds): bool
     {
-        $method = new \ReflectionMethod(AsyncResourceSseServer::class, 'shouldSendHeartbeat');
-        $method->setAccessible(true);
-
-        return (bool) $method->invoke(null, $now, $lastWriteAt, $intervalSeconds);
+        return (new SseTransportModePolicy())->shouldSendHeartbeat($now, $lastWriteAt, $intervalSeconds);
     }
 
     /**
@@ -664,13 +668,7 @@ final class AsyncResourceSseServerTest extends TestCase
      */
     private function encodeSessionQueueForRedis(array $queue): array
     {
-        $method = new \ReflectionMethod(AsyncResourceSseServer::class, 'encodeSessionQueueForRedis');
-        $method->setAccessible(true);
-
-        /** @var list<string> $result */
-        $result = $method->invoke(null, $queue);
-
-        return $result;
+        return SseRedisSessionQueue::encode($queue);
     }
 
     /**
@@ -678,16 +676,7 @@ final class AsyncResourceSseServerTest extends TestCase
      */
     private function resolveSseRequestRejection(bool $sameOrigin, ?string $authError): ?array
     {
-        $method = new \ReflectionMethod(AsyncResourceSseServer::class, 'resolveSseRequestRejection');
-        $method->setAccessible(true);
-
-        $result = $method->invoke(
-            null,
-            $sameOrigin,
-            $authError,
-        );
-
-        return is_array($result) ? $result : null;
+        return (new SseRequestGuard())->resolveRejection($sameOrigin, $authError);
     }
 
     private function resolveTransportMode(
@@ -697,18 +686,12 @@ final class AsyncResourceSseServerTest extends TestCase
         bool $safeBearerSessionId,
         string $deferredRequestId,
     ): ?string {
-        $method = new \ReflectionMethod(AsyncResourceSseServer::class, 'resolveTransportMode');
-        $method->setAccessible(true);
-
-        $result = $method->invoke(
-            null,
+        return (new SseTransportModePolicy())->resolveMode(
             $rawMode,
             $authenticated,
             $anonymousAllowed,
             $safeBearerSessionId,
             $deferredRequestId,
         );
-
-        return is_string($result) ? $result : null;
     }
 }

@@ -42,8 +42,13 @@ use Semitexa\Ssr\Domain\Contract\SubscriberIndexInterface;
 final class ResourceInvalidationSubscriber
 {
     /** The control marker R4 recognises on the stream's queue. */
-    public const CTRL_KEY = '__ctrl';
-    public const CTRL_RERUN = 'rerun';
+    /**
+     * @deprecated Aliases of {@see SseControlFrame}, kept because they are public
+     *             and tests pin them. The vocabulary has ONE definition now —
+     *             this class used to carry a second, independent copy.
+     */
+    public const CTRL_KEY = SseControlFrame::KEY;
+    public const CTRL_RERUN = SseControlFrame::RERUN;
 
     /**
      * Track R · Gap C — backoff between reconnect attempts after a dropped
@@ -238,11 +243,10 @@ final class ResourceInvalidationSubscriber
                 continue;
             }
 
-            $this->delivery->deliverControl($ref->sessionId, [
-                self::CTRL_KEY => self::CTRL_RERUN,
-                'streaming_id' => $ref->streamingId,
-                'scope_key' => $scopeKey,
-            ]);
+            $this->delivery->deliverControl(
+                $ref->sessionId,
+                SseControlFrame::rerun($ref->streamingId, $scopeKey),
+            );
             $enqueued++;
         }
 

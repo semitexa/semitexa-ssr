@@ -181,9 +181,7 @@ final class AbstractSseDocumentFeedHandlerTest extends TestCase
         // Contrast pin: the `&& !isReRunInProgress()` guard must NOT widen plain
         // pulls — a non-SSE request that is not a re-run still returns the
         // builder's byte-identical body, never the typed frame.
-        $depth = new \ReflectionProperty(AsyncResourceSseServer::class, 'reRunDepthFallback');
-        $depth->setAccessible(true);
-        $depth->setValue(null, 0);
+        self::resetReRunScope();
 
         $serve = new \ReflectionMethod(AbstractSseDocumentFeedHandler::class, 'serve');
         $serve->setAccessible(true);
@@ -196,17 +194,21 @@ final class AbstractSseDocumentFeedHandlerTest extends TestCase
     }
 
     /**
-     * Invoke the protected serve() with the static re-run scope active. A unit
-     * test runs outside a Swoole coroutine, so {@see AsyncResourceSseServer::isReRunInProgress()}
-     * reads the private `$reRunDepthFallback` counter — set it here, always reset.
+     * Invoke the protected serve() with the re-run scope active. A unit test runs
+     * outside a Swoole coroutine, so {@see AsyncResourceSseServer::isReRunInProgress()}
+     * reads {@see \Semitexa\Ssr\Application\Service\Async\SseReRunScope}'s
+     * non-coroutine fallback depth — open it here, always close it.
+     *
+     * This must go through the FACADE's scope, not a fresh SseReRunScope: the
+     * handler under test asks the facade, which holds one instance per worker, so
+     * a separately constructed scope would be invisible to it.
      */
     private static function invokeServeInReRunScope(
         AbstractSseDocumentFeedHandler $handler,
         SseDocumentFeedPayloadInterface $payload,
     ): JsonResourceResponse {
-        $depth = new \ReflectionProperty(AsyncResourceSseServer::class, 'reRunDepthFallback');
-        $depth->setAccessible(true);
-        $depth->setValue(null, 1);
+        self::resetReRunScope();
+        self::invokeFacadeScope('beginReRunScope');
 
         $serve = new \ReflectionMethod(AbstractSseDocumentFeedHandler::class, 'serve');
         $serve->setAccessible(true);
@@ -217,8 +219,27 @@ final class AbstractSseDocumentFeedHandlerTest extends TestCase
 
             return $out;
         } finally {
-            $depth->setValue(null, 0);
+            self::invokeFacadeScope('endReRunScope');
         }
+    }
+
+    /**
+     * Drop the facade's memoized scope so a leaked depth from an earlier test
+     * cannot make this one pass (or fail) for the wrong reason — the next call
+     * rebuilds it at depth 0.
+     */
+    private static function resetReRunScope(): void
+    {
+        $slot = new \ReflectionProperty(AsyncResourceSseServer::class, 'reRunScope');
+        $slot->setAccessible(true);
+        $slot->setValue(null, null);
+    }
+
+    private static function invokeFacadeScope(string $method): void
+    {
+        $m = new \ReflectionMethod(AsyncResourceSseServer::class, $method);
+        $m->setAccessible(true);
+        $m->invoke(null);
     }
 
     private static function subscribeRequest(): Request

@@ -207,9 +207,19 @@ final class SseSessionRegistry
     /**
      * Forget a session entirely. Callers flush the queue to Redis first when
      * durability matters — this drops whatever is left.
+     *
+     * The buffer goes too. Leaving it behind would let a reconnect on the same
+     * session id drain frames from a connection that is already gone, and a
+     * session that never reconnects would keep its buffer for the worker's whole
+     * life. Cross-reconnect durability is the Redis queue's job, not this map's.
      */
     public function close(string $sessionId): void
     {
-        unset($this->sessions[$sessionId], $this->queues[$sessionId], $this->demoProducers[$sessionId]);
+        unset(
+            $this->sessions[$sessionId],
+            $this->queues[$sessionId],
+            $this->buffers[$sessionId],
+            $this->demoProducers[$sessionId],
+        );
     }
 }

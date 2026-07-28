@@ -67,10 +67,12 @@ final class SseControlFrameTest extends TestCase
     #[Test]
     public function an_unknown_kind_is_still_reported_so_the_dispatcher_can_refuse_it(): void
     {
-        // kindOf() reports the shape, not the vocabulary — the dispatcher decides
-        // an unrecognised kind is NOT_CONTROL. Swallowing it here would hide a
-        // protocol mismatch instead of surfacing it as an unhandled frame.
+        // kindOf() reports the shape, not the vocabulary. The router refuses an
+        // unrecognised kind by CONSUMING it (see SseControlRouter) rather than
+        // returning NOT_CONTROL, which would hand the marker to the drain and put
+        // `{"__ctrl":"teleport"}` on the wire as if it were content.
         self::assertSame('teleport', SseControlFrame::kindOf([SseControlFrame::KEY => 'teleport']));
+        self::assertTrue(SseControlFrame::isControl([SseControlFrame::KEY => 'teleport']));
     }
 
     #[Test]

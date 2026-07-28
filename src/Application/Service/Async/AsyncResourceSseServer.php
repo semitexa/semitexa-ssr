@@ -740,6 +740,24 @@ final class AsyncResourceSseServer
             return;
         }
 
+        // Exactly-once teardown for EVERY exit path, registered BEFORE the work
+        // below. The try/finally further down only covers the held-open loop, so
+        // a throw from the headers, the stream-id frame, the initial frame or the
+        // subscription attach would unwind past it and leave the limiter slot held
+        // for the worker's whole life — the same leak handleSse() guards against
+        // and SseConnectionCounterLeakTest pins.
+        $closed = false;
+        $close = static function () use (&$closed, $sessionId, $response): void {
+            if ($closed) {
+                return;
+            }
+            $closed = true;
+            self::closeSession($sessionId, $response);
+        };
+        if (class_exists(\Swoole\Coroutine::class, false) && \Swoole\Coroutine::getCid() > 0) {
+            \Swoole\Coroutine::defer($close);
+        }
+
         $response->status(200);
         $response->header('Content-Type', 'text/event-stream');
         $response->header('Cache-Control', 'no-cache');
@@ -809,7 +827,7 @@ final class AsyncResourceSseServer
                     ]);
                 }
             }
-            self::closeSession($sessionId, $response);
+            $close();
         }
     }
 
@@ -1085,15 +1103,6 @@ final class AsyncResourceSseServer
         return self::frameFactory()->build($data);
     }
 
-    /**
-     * Resolve the SSE event name from the payload, applying the typed-
-     * `_type` allow-list. Returns `[event_name|null, normalised_data]`.
-     * The normalised data may have `_type` removed when it was unknown
-     * (so unauthorised strings never reach the wire).
-     *
-     * @param array<array-key, mixed> $data
-     * @return array{0: string|null, 1: array<array-key, mixed>}
-     */
     private static function startDemoStreamProducer(string $sessionId, string $demoStream): void
     {
         if ($demoStream !== 'showcase') {
@@ -1700,11 +1709,6 @@ final class AsyncResourceSseServer
         //     return $delivered;
     }
 
-    /**
-     * Typed wrapper around \Swoole\Coroutine::getCid(). The Swoole stub PHPStan
-     * sees returns mixed, but the runtime contract is int (>=0 inside a coroutine,
-     * negative otherwise). Wrapping it once keeps the rest of this class type-safe.
-     */
     private static function closeSession(string $sessionId, Response $response): void
     {
         // This handler owns the response lifecycle end-to-end. SseKissHandler
@@ -1883,20 +1887,12 @@ final class AsyncResourceSseServer
 
     /**
      * Publish a DATA-LESS scope-invalidation signal on the SSE Redis bus
-     * (Track R · P3 — the cross-instance push origin). The channel name
-     * (`ui.invalidate.{tenant}.{scopeKey}`) carries the full routing key;
-     * the message body is intentionally empty — the subscriber (R3) re-runs
-     * the recipient's own chain, it does not consume row data here.
+     * (Track R · P3 — the cross-instance push origin). The channel name carries
+     * the full routing key; the body is intentionally empty, because the
+     * subscriber re-runs the recipient's own chain rather than consuming row
+     * data. A dropped signal is repaired by the next mutation's signal
+     * (idempotent / lossy-tolerant).
      *
-     * Reuses the existing size-1 SSE pool deliberately: a PUBLISH is a
-     * non-blocking request/reply command, so — unlike the subscriber's
-     * blocking `pubSubLoop`, which MUST own a dedicated connection — it is
-     * safe to borrow the shared pooled connection (design §C.3). No-op
-     * without a Redis pool (single-server / in-memory mode): cross-instance
-     * fan-out has no non-Redis path, and a dropped signal is repaired by the
-     * next mutation's signal (idempotent / lossy-tolerant, design §C.3).
-     */
-    /**
      * @see SseRedisSessionQueue::publishInvalidation()
      */
     public static function publishScopeInvalidation(string $channel): void
@@ -1921,10 +1917,6 @@ final class AsyncResourceSseServer
         return self::authSessionMap()->allSessionIds();
     }
 
-    /**
-     * @param list<mixed> $sessionIds
-     * @return list<string>
-     */
     private static function isSameOriginRequest(Request $request): bool
     {
         return self::requestGuard()->isSameOriginRequest($request);

@@ -24,8 +24,10 @@ namespace Semitexa\Ssr\Application\Service\Async;
  * between the cap check and the increment, so there is no TOCTOU window.
  *
  * Accounting rule worth knowing: a connection whose client IP could not be
- * resolved is **admitted but not counted**. It still has to pass the global cap
- * (which sums the per-IP counters), it simply cannot be attributed to anyone.
+ * resolved is **admitted without a per-IP entry** — there is nobody to attribute
+ * it to — but it still counts toward the global cap. Those are two separate
+ * counters on purpose: deriving the global total by summing the per-IP map would
+ * let a flood of unattributable connections pass a cap they were never added to.
  */
 final class SseConnectionLimiter
 {
@@ -42,6 +44,20 @@ final class SseConnectionLimiter
     private array $sessionIps = [];
 
     /**
+     * Every admitted connection, attributable or not.
+     *
+     * Kept separately from {@see $ipConnections} because a connection whose
+     * client IP could not be resolved is admitted WITHOUT a per-IP entry. Summing
+     * the per-IP map would therefore miss it entirely, and a flood of
+     * unattributable connections would never raise the global total — each one
+     * passing a cap it should have been counted against.
+     */
+    private int $openConnections = 0;
+
+    /** @var array<string, true> Connection keys admitted without an attributable IP. */
+    private array $unattributed = [];
+
+    /**
      * Check the caps and, if admitted, account the connection.
      *
      * The global cap is evaluated before the per-IP cap so a worker at capacity
@@ -55,7 +71,7 @@ final class SseConnectionLimiter
         $maxPerIp = SseEnv::int('SSE_MAX_CONN_PER_IP', self::DEFAULT_MAX_CONN_PER_IP);
         $maxGlobal = SseEnv::int('SSE_MAX_CONN_GLOBAL', self::DEFAULT_MAX_CONN_GLOBAL);
 
-        if (array_sum($this->ipConnections) >= $maxGlobal) {
+        if ($this->openConnections >= $maxGlobal) {
             return self::DENIED_GLOBAL;
         }
 
@@ -63,10 +79,14 @@ final class SseConnectionLimiter
             return self::DENIED_PER_IP;
         }
 
+        $connectionKey = self::connectionKey($sessionId, $response);
         if ($clientIp !== '') {
             $this->ipConnections[$clientIp] = ($this->ipConnections[$clientIp] ?? 0) + 1;
-            $this->sessionIps[self::connectionKey($sessionId, $response)] = $clientIp;
+            $this->sessionIps[$connectionKey] = $clientIp;
+        } else {
+            $this->unattributed[$connectionKey] = true;
         }
+        $this->openConnections++;
 
         return null;
     }
@@ -80,6 +100,14 @@ final class SseConnectionLimiter
     public function release(string $sessionId, object $response): void
     {
         $connectionKey = self::connectionKey($sessionId, $response);
+
+        if (isset($this->unattributed[$connectionKey])) {
+            unset($this->unattributed[$connectionKey]);
+            $this->openConnections = max(0, $this->openConnections - 1);
+
+            return;
+        }
+
         $ip = $this->sessionIps[$connectionKey] ?? '';
         if ($ip === '') {
             return;
@@ -93,6 +121,7 @@ final class SseConnectionLimiter
         }
 
         unset($this->sessionIps[$connectionKey]);
+        $this->openConnections = max(0, $this->openConnections - 1);
     }
 
     /**
@@ -110,7 +139,14 @@ final class SseConnectionLimiter
         return $this->ipConnections[$clientIp] ?? 0;
     }
 
+    /** Every open connection, including the ones with no attributable IP. */
     public function totalOpenConnections(): int
+    {
+        return $this->openConnections;
+    }
+
+    /** Only the connections attributed to a client IP. */
+    public function attributedOpenConnections(): int
     {
         return array_sum($this->ipConnections);
     }
@@ -124,5 +160,7 @@ final class SseConnectionLimiter
     {
         $this->ipConnections = [];
         $this->sessionIps = [];
+        $this->unattributed = [];
+        $this->openConnections = 0;
     }
 }

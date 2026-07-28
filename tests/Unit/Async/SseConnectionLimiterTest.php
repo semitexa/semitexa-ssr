@@ -15,8 +15,8 @@ use Semitexa\Ssr\Application\Service\Async\SseConnectionLimiter;
  * the KISS admit path, once for the held-open resource stream — and neither copy
  * had a direct test. These cases pin the parts that a second copy would have
  * been free to get subtly wrong: which cap is reported when both are breached,
- * that the caps are `>=` and not `>`, and that an unattributable connection is
- * admitted without being counted.
+ * that the caps are `>=` and not `>`, and that an unattributable connection gets
+ * no per-IP entry yet still occupies a global slot.
  */
 final class SseConnectionLimiterTest extends TestCase
 {
@@ -97,16 +97,17 @@ final class SseConnectionLimiterTest extends TestCase
     }
 
     #[Test]
-    public function an_unresolvable_client_ip_is_admitted_but_not_counted(): void
+    public function an_unresolvable_client_ip_is_admitted_without_a_per_ip_entry(): void
     {
         $limiter = new SseConnectionLimiter();
 
         self::assertNull($limiter->tryAcquire('', 'sess-1', new \stdClass()));
-        self::assertSame(0, $limiter->totalOpenConnections(), 'there is nobody to attribute it to');
+        self::assertSame(0, $limiter->attributedOpenConnections(), 'there is nobody to attribute it to');
+        self::assertSame(1, $limiter->totalOpenConnections(), 'but it still occupies a global slot');
     }
 
     #[Test]
-    public function an_uncounted_connection_still_faces_the_global_cap(): void
+    public function an_unattributable_connection_still_faces_the_global_cap(): void
     {
         $this->setEnv('SSE_MAX_CONN_GLOBAL', '1');
         $limiter = new SseConnectionLimiter();
@@ -121,6 +122,53 @@ final class SseConnectionLimiterTest extends TestCase
     }
 
     #[Test]
+    public function a_flood_of_unattributable_connections_cannot_bypass_the_global_cap(): void
+    {
+        // Review caught that the previous test passed only because a COUNTED
+        // connection was admitted first. Deriving the global total by summing the
+        // per-IP map missed unattributable connections entirely, so a flood of
+        // them raised nothing and every single one passed the cap.
+        $this->setEnv('SSE_MAX_CONN_GLOBAL', '2');
+        $limiter = new SseConnectionLimiter();
+
+        self::assertNull($limiter->tryAcquire('', 's1', new \stdClass()));
+        self::assertNull($limiter->tryAcquire('', 's2', new \stdClass()));
+
+        self::assertSame(
+            SseConnectionLimiter::DENIED_GLOBAL,
+            $limiter->tryAcquire('', 's3', new \stdClass()),
+            'with no attributable connection present at all, the cap must still bite',
+        );
+    }
+
+    #[Test]
+    public function releasing_an_unattributable_connection_frees_its_global_slot(): void
+    {
+        $this->setEnv('SSE_MAX_CONN_GLOBAL', '1');
+        $limiter = new SseConnectionLimiter();
+        $first = new \stdClass();
+
+        $limiter->tryAcquire('', 's1', $first);
+        self::assertSame(SseConnectionLimiter::DENIED_GLOBAL, $limiter->tryAcquire('', 's2', new \stdClass()));
+
+        $limiter->release('s1', $first);
+
+        self::assertNull($limiter->tryAcquire('', 's3', new \stdClass()), 'the freed slot is reusable');
+        self::assertSame(0, $limiter->attributedOpenConnections(), 'and it was never attributed to an IP');
+    }
+
+    #[Test]
+    public function the_two_counters_report_different_things(): void
+    {
+        $limiter = new SseConnectionLimiter();
+        $limiter->tryAcquire('10.0.0.1', 's1', new \stdClass());
+        $limiter->tryAcquire('', 's2', new \stdClass());
+
+        self::assertSame(2, $limiter->totalOpenConnections(), 'every open connection');
+        self::assertSame(1, $limiter->attributedOpenConnections(), 'only the ones with an IP');
+    }
+
+    #[Test]
     public function releasing_an_uncounted_connection_is_a_no_op(): void
     {
         $limiter = new SseConnectionLimiter();
@@ -130,6 +178,7 @@ final class SseConnectionLimiterTest extends TestCase
         $limiter->release('sess-1', $response);
 
         self::assertSame(0, $limiter->totalOpenConnections());
+        self::assertSame(0, $limiter->attributedOpenConnections());
     }
 
     #[Test]

@@ -54,8 +54,30 @@ final class SseControlRouter
             SseControlFrame::VIEWCHANGE => $this->handleViewChange($sessionId, $response, $data),
             SseControlFrame::SUBSCRIBE => $this->handleSubscribe($sessionId, $response, $data),
             SseControlFrame::UNSUBSCRIBE => $this->handleUnsubscribe($data),
-            default => SseControlFrame::NOT_CONTROL,
+            null => SseControlFrame::NOT_CONTROL,
+            default => $this->refuseUnknownControl($sessionId, $data),
         };
+    }
+
+    /**
+     * A frame carrying the control marker with a kind we do not implement.
+     *
+     * It is consumed, never written. Returning NOT_CONTROL here would hand it to
+     * the drain, which would write `{"__ctrl":"..."}` to the browser as if it
+     * were content — breaking the invariant that a control frame is a signal and
+     * never bytes for the wire. Logged, because reaching this means a producer
+     * and this router disagree about the protocol.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function refuseUnknownControl(string $sessionId, array $data): int
+    {
+        StaticLoggerBridge::warning('ssr', 'sse_unknown_control_dropped', [
+            'session_id' => $sessionId,
+            'kind' => SseControlFrame::kindOf($data),
+        ]);
+
+        return SseControlFrame::HANDLED_CONTINUE;
     }
 
     /**
@@ -316,13 +338,15 @@ final class SseControlRouter
 
     private function deny(mixed $response, string $streamingId, string $reason, string $errorEventType): int
     {
-        $this->transport()->writeFrame($response, $this->frames->build([
+        $wrote = $this->transport()->writeFrame($response, $this->frames->build([
             '_type' => $errorEventType,
             'streaming_id' => $streamingId,
             'error' => $reason,
         ]));
 
-        return SseControlFrame::HANDLED_CONTINUE;
+        // A denial written to a dead socket must close the stream, like every
+        // other write path here — otherwise the connection is never reaped.
+        return $wrote ? SseControlFrame::HANDLED_CONTINUE : SseControlFrame::HANDLED_CLOSE;
     }
 
     private function writeClose(mixed $response, string $reason): void

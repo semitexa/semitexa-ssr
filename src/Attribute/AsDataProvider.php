@@ -5,7 +5,18 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Attribute;
 
 use Attribute;
+use Semitexa\Core\Attribute\Capability;
 
+#[Capability(
+    id: 'ssr.data-provider',
+    summary: 'Supplies the data for a given slot across the page handles it declares.',
+    useWhen: 'The same data backs a region on several pages.',
+    avoidWhen: 'The data is used by a single page - fetch it in that page handler instead.',
+    replaces: [
+        'fetching the same data again in each page handler',
+    ],
+    seeAlso: 'ssr.with-data-provider',
+)]
 #[Attribute(Attribute::TARGET_CLASS)]
 final class AsDataProvider
 {

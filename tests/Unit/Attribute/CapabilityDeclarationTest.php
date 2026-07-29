@@ -8,6 +8,7 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use Semitexa\Core\Attribute\Capability;
+use Semitexa\Core\Attribute\InternalAttribute;
 
 /**
  * Every SSR capability attribute must describe itself.
@@ -58,16 +59,73 @@ final class CapabilityDeclarationTest extends TestCase
     }
 
     #[Test]
-    public function every_attribute_class_declares_a_capability(): void
+    public function every_attribute_class_is_either_advertised_or_declared_internal(): void
     {
-        $missing = [];
+        // Undecided is the failure mode. An attribute with neither marker is a
+        // capability nobody classified, and the way a real one quietly becomes
+        // invisible. Requiring a decision — not requiring a capability — is what
+        // lets this same guard apply to packages that are mostly plumbing.
+        $undecided = [];
         foreach (self::attributeClasses() as $class) {
-            if ((new ReflectionClass($class))->getAttributes(Capability::class) === []) {
-                $missing[] = $class;
+            $reflection = new ReflectionClass($class);
+            if ($reflection->getAttributes(Capability::class) === []
+                && $reflection->getAttributes(InternalAttribute::class) === []) {
+                $undecided[] = $class;
             }
         }
 
-        self::assertSame([], $missing, 'these declare a framework ability but describe none of it: ' . implode(', ', $missing));
+        self::assertSame([], $undecided, 'neither #[Capability] nor #[InternalAttribute]: ' . implode(', ', $undecided));
+    }
+
+    #[Test]
+    public function nothing_claims_to_be_both(): void
+    {
+        // Collect, then assert once: a loop of assertions performs none at all
+        // when the collection is empty, and a test that quietly asserts nothing
+        // is the shape this whole file exists to prevent.
+        $both = [];
+        foreach (self::attributeClasses() as $class) {
+            $reflection = new ReflectionClass($class);
+            if ($reflection->getAttributes(Capability::class) !== []
+                && $reflection->getAttributes(InternalAttribute::class) !== []) {
+                $both[] = $class;
+            }
+        }
+
+        self::assertSame([], $both, 'declared both advertised and internal: ' . implode(', ', $both));
+    }
+
+    #[Test]
+    public function every_internal_attribute_records_why(): void
+    {
+        // "Internal" with no reason is an opt-out, not a decision. The reason is
+        // written for whoever next asks the same question about a neighbouring
+        // attribute.
+        $unexplained = [];
+        foreach (self::attributeClasses() as $class) {
+            foreach ((new ReflectionClass($class))->getAttributes(InternalAttribute::class) as $a) {
+                if (trim($a->newInstance()->reason) === '') {
+                    $unexplained[] = $class;
+                }
+            }
+        }
+
+        self::assertSame([], $unexplained, 'internal without saying why: ' . implode(', ', $unexplained));
+    }
+
+    #[Test]
+    public function every_capability_names_what_it_replaces(): void
+    {
+        // The criterion, enforced. A capability is an ability someone can MISS,
+        // and the operational form of that is being able to name what they would
+        // have built instead. Nothing to name means nothing to miss, which means
+        // plumbing.
+        foreach (self::capabilities() as $c) {
+            self::assertNotEmpty(
+                $c->replaces,
+                $c->id . ' names no hand-rolled alternative, so it is not a missable ability',
+            );
+        }
     }
 
     #[Test]

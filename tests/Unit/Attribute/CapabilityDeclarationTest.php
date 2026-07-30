@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Tests\Unit\Attribute;
 
+use Attribute;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
@@ -29,9 +30,25 @@ final class CapabilityDeclarationTest extends TestCase
         $classes = [];
         foreach ((array) glob(self::ATTRIBUTE_DIR . '/*.php') as $file) {
             $fqcn = 'Semitexa\\Ssr\\Attribute\\' . basename((string) $file, '.php');
-            if (class_exists($fqcn)) {
-                $classes[] = $fqcn;
+
+            // Loudly, not by skipping. A file whose class does not match its
+            // name is exactly the drift this guard exists to catch, and
+            // dropping it silently would let a new attribute arrive
+            // unclassified while every assertion below still passed.
+            self::assertTrue(
+                class_exists($fqcn),
+                basename((string) $file) . ' does not declare ' . $fqcn . ' — namespace or class name drift',
+            );
+
+            // Only real attributes. The question this file asks — advertised or
+            // internal? — has no meaning for a support class that happens to
+            // sit in this directory, and demanding an answer would force a
+            // marker onto something that is neither.
+            if ((new ReflectionClass($fqcn))->getAttributes(Attribute::class) === []) {
+                continue;
             }
+
+            $classes[] = $fqcn;
         }
 
         return $classes;
@@ -134,8 +151,11 @@ final class CapabilityDeclarationTest extends TestCase
         // Verify findings point at an id. Two capabilities answering to one id
         // means a finding sends the reader to the wrong mechanism.
         $ids = array_map(static fn (Capability $c): string => $c->id, self::capabilities());
+        // Named, not merely detected: the point of failing is to be told which
+        // id to go and change.
+        $duplicates = array_values(array_unique(array_diff_assoc($ids, array_unique($ids))));
 
-        self::assertSame(array_values(array_unique($ids)), $ids, 'duplicate capability id');
+        self::assertSame([], $duplicates, 'duplicate capability id: ' . implode(', ', $duplicates));
     }
 
     #[Test]

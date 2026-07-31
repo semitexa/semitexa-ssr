@@ -14,10 +14,10 @@ use Semitexa\Core\Server\Lifecycle\ServerLifecyclePhase;
 use Semitexa\Ssr\Application\Service\Asset\AssetCollector;
 use Semitexa\Ssr\Application\Service\Asset\ModuleAssetRegistry;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Component\ComponentHtmlRenderer;
 use Semitexa\Ssr\Application\Service\Component\ComponentMetadataProviderRegistry;
 use Semitexa\Ssr\Application\Service\Component\ComponentRegistry;
 use Semitexa\Ssr\Application\Service\Component\ComponentRenderer;
-use Semitexa\Ssr\Application\Service\DataProviderRegistry;
 use Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator;
 use Semitexa\Ssr\Application\Service\Extension\TwigExtensionRegistry;
 use Semitexa\Ssr\Application\Service\Routing\RouteUrlBuilder;
@@ -50,7 +50,7 @@ final class WireCoreInstancesListener implements ServerLifecycleListenerInterfac
     protected DeferredBlockOrchestrator $deferredBlockOrchestrator;
 
     #[InjectAsReadonly]
-    protected DataProviderRegistry $dataProviderRegistry;
+    protected ComponentHtmlRenderer $componentHtmlRenderer;
 
     #[InjectAsReadonly]
     protected ComponentMetadataProviderRegistry $metadataProviderRegistry;
@@ -59,7 +59,7 @@ final class WireCoreInstancesListener implements ServerLifecycleListenerInterfac
     {
         ComponentRegistry::setClassDiscovery($this->classDiscovery);
         ComponentRegistry::setMetadataProviderRegistry($this->metadataProviderRegistry);
-        ComponentRenderer::setDataProviderRegistry($this->dataProviderRegistry);
+        ComponentRenderer::setRenderer($this->componentHtmlRenderer);
         TwigExtensionRegistry::setClassDiscovery($this->classDiscovery);
         ModuleTemplateRegistry::setModuleRegistry($this->moduleRegistry);
         ModuleAssetRegistry::setModuleRegistry($this->moduleRegistry);

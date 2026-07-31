@@ -6,6 +6,7 @@ namespace Semitexa\Ssr\Application\Handler\PayloadHandler;
 
 use Semitexa\Core\Attribute\AsPayloadHandler;
 use Semitexa\Core\Attribute\InjectAsMutable;
+use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Contract\TypedHandlerInterface;
 use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Request;
@@ -22,6 +23,9 @@ final class SitemapJsonHandler implements TypedHandlerInterface
 
     #[InjectAsMutable]
     protected TenantContextInterface $tenantContext;
+
+    #[InjectAsReadonly]
+    protected AiSitemapJsonRenderer $sitemapRenderer;
 
     public function handle(SitemapJsonPayload $payload, ResourceResponse $resource): ResourceResponse
     {
@@ -45,6 +49,6 @@ final class SitemapJsonHandler implements TypedHandlerInterface
             }
         }
 
-        return AiSitemapJsonRenderer::render($this->request, $this->tenantContext);
+        return $this->sitemapRenderer->render($this->request, $this->tenantContext);
     }
 }

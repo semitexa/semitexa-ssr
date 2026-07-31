@@ -6,7 +6,6 @@ namespace Semitexa\Ssr\Application\Service\Server\Lifecycle;
 
 use Semitexa\Core\Attribute\AsServerLifecycleListener;
 use Semitexa\Core\Attribute\InjectAsReadonly;
-use Semitexa\Core\Discovery\AttributeDiscovery;
 use Semitexa\Core\Discovery\ClassDiscovery;
 use Semitexa\Core\ModuleRegistry;
 use Semitexa\Core\Server\Lifecycle\ServerLifecycleContext;
@@ -21,8 +20,8 @@ use Semitexa\Ssr\Application\Service\Component\ComponentRenderer;
 use Semitexa\Ssr\Application\Service\DataProviderRegistry;
 use Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator;
 use Semitexa\Ssr\Application\Service\Extension\TwigExtensionRegistry;
+use Semitexa\Ssr\Application\Service\Routing\RouteUrlBuilder;
 use Semitexa\Ssr\Application\Service\Routing\UrlGenerator;
-use Semitexa\Ssr\Application\Service\Seo\AiSitemapJsonRenderer;
 use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
 
 /**
@@ -45,7 +44,7 @@ final class WireCoreInstancesListener implements ServerLifecycleListenerInterfac
     protected ModuleRegistry $moduleRegistry;
 
     #[InjectAsReadonly]
-    protected AttributeDiscovery $attributeDiscovery;
+    protected RouteUrlBuilder $routeUrlBuilder;
 
     #[InjectAsReadonly]
     protected DeferredBlockOrchestrator $deferredBlockOrchestrator;
@@ -65,8 +64,7 @@ final class WireCoreInstancesListener implements ServerLifecycleListenerInterfac
         ModuleTemplateRegistry::setModuleRegistry($this->moduleRegistry);
         ModuleAssetRegistry::setModuleRegistry($this->moduleRegistry);
         AssetCollector::setModuleRegistry($this->moduleRegistry);
-        AiSitemapJsonRenderer::setAttributeDiscovery($this->attributeDiscovery);
-        UrlGenerator::setAttributeDiscovery($this->attributeDiscovery);
+        UrlGenerator::setBuilder($this->routeUrlBuilder);
         AsyncResourceSseServer::setDeferredBlockOrchestrator($this->deferredBlockOrchestrator);
     }
 }

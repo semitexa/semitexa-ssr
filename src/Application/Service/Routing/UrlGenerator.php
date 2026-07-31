@@ -4,86 +4,54 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Routing;
 
-use Semitexa\Core\Discovery\AttributeDiscovery;
 use Semitexa\Core\Request;
-use Semitexa\Locale\Context\LocaleContextStore;
 
+/**
+ * Static entry point for URL generation.
+ *
+ * Retained deliberately: this is documented public API (AI_BEST_PRACTICES.md
+ * recommends `UrlGenerator::to()` to template and handler authors) and the
+ * Twig `url()` function is registered from a static context that cannot inject.
+ *
+ * It holds exactly one wired slot and no logic — everything lives in
+ * {@see RouteUrlBuilder}, which container-managed callers inject directly.
+ * The wired instance is worker-lifetime and immutable, so the static slot
+ * carries no request-scoped state across coroutines.
+ */
 final class UrlGenerator
 {
-    private static ?AttributeDiscovery $attributeDiscovery = null;
+    private static ?RouteUrlBuilder $builder = null;
 
-    public static function setAttributeDiscovery(AttributeDiscovery $attributeDiscovery): void
+    public static function setBuilder(RouteUrlBuilder $builder): void
     {
-        self::$attributeDiscovery = $attributeDiscovery;
+        self::$builder = $builder;
     }
 
+    /**
+     * @param array<string, mixed> $params
+     */
     public static function to(string $routeName, array $params = []): string
     {
-        if (self::$attributeDiscovery === null) {
-            throw new \LogicException('UrlGenerator requires AttributeDiscovery instance. Call setAttributeDiscovery() first.');
-        }
-
-        $route = self::$attributeDiscovery->findRouteByName($routeName);
-
-        if ($route === null) {
-            $route = self::findByPath($routeName);
-        }
-
-        if ($route === null) {
-            throw new \RuntimeException("Route '{$routeName}' not found");
-        }
-
-        $path = self::buildPath($route['path'], $params);
-
-        return self::prefixLocale($path);
+        return self::builder()->to($routeName, $params);
     }
 
-    private static function prefixLocale(string $path): string
-    {
-        if (!LocaleContextStore::isUrlPrefixEnabled()) {
-            return $path;
-        }
-
-        $locale = LocaleContextStore::getLocale();
-        $default = LocaleContextStore::getDefaultLocale();
-
-        if ($locale === $default) {
-            return $path;
-        }
-
-        return '/' . $locale . '/' . ltrim($path, '/');
-    }
-
+    /**
+     * @param array<string, mixed> $overrides
+     */
     public static function current(Request $request, array $overrides = []): string
     {
-        $path = $request->getUri();
-
-        if (!empty($overrides)) {
-            $query = http_build_query($overrides);
-            $path = strtok($path, '?') . '?' . $query;
-        }
-
-        return $path;
+        return self::builder()->current($request, $overrides);
     }
 
-    private static function buildPath(string $path, array $params): string
+    private static function builder(): RouteUrlBuilder
     {
-        foreach ($params as $key => $value) {
-            $path = str_replace("{{$key}}", urlencode((string) $value), $path);
-            $path = str_replace("{$key}", urlencode((string) $value), $path);
+        if (self::$builder === null) {
+            throw new \LogicException(
+                'UrlGenerator is not wired. RouteUrlBuilder is attached at worker start; '
+                . 'outside the worker lifecycle, inject RouteUrlBuilder directly.'
+            );
         }
 
-        $path = preg_replace('/\{(\w+)\?\}/', '', $path);
-
-        return $path;
-    }
-
-    private static function findByPath(string $path): ?array
-    {
-        if (self::$attributeDiscovery === null) {
-            return null;
-        }
-
-        return self::$attributeDiscovery->findRoute($path, 'GET');
+        return self::$builder;
     }
 }

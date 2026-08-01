@@ -7,7 +7,6 @@ namespace Semitexa\Ssr\Application\Service\Server\Lifecycle;
 use Semitexa\Core\Attribute\AsServerLifecycleListener;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Discovery\ClassDiscovery;
-use Semitexa\Core\ModuleRegistry;
 use Semitexa\Core\Server\Lifecycle\ServerLifecycleContext;
 use Semitexa\Core\Server\Lifecycle\ServerLifecycleListenerInterface;
 use Semitexa\Core\Server\Lifecycle\ServerLifecyclePhase;
@@ -25,6 +24,7 @@ use Semitexa\Ssr\Application\Service\Extension\TwigExtensionCatalog;
 use Semitexa\Ssr\Application\Service\Extension\TwigExtensionRegistry;
 use Semitexa\Ssr\Application\Service\Routing\RouteUrlBuilder;
 use Semitexa\Ssr\Application\Service\Routing\UrlGenerator;
+use Semitexa\Ssr\Application\Service\Template\ModuleTemplateCatalog;
 use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
 
 /**
@@ -42,9 +42,6 @@ final class WireCoreInstancesListener implements ServerLifecycleListenerInterfac
 {
     #[InjectAsReadonly]
     protected ClassDiscovery $classDiscovery;
-
-    #[InjectAsReadonly]
-    protected ModuleRegistry $moduleRegistry;
 
     #[InjectAsReadonly]
     protected RouteUrlBuilder $routeUrlBuilder;
@@ -65,6 +62,9 @@ final class WireCoreInstancesListener implements ServerLifecycleListenerInterfac
     protected TwigExtensionCatalog $twigExtensionCatalog;
 
     #[InjectAsReadonly]
+    protected ModuleTemplateCatalog $moduleTemplateCatalog;
+
+    #[InjectAsReadonly]
     protected ComponentCatalog $componentCatalog;
 
     public function handle(ServerLifecycleContext $context): void
@@ -72,7 +72,7 @@ final class WireCoreInstancesListener implements ServerLifecycleListenerInterfac
         ComponentRegistry::setCatalog($this->componentCatalog);
         ComponentRenderer::setRenderer($this->componentHtmlRenderer);
         TwigExtensionRegistry::setCatalog($this->twigExtensionCatalog);
-        ModuleTemplateRegistry::setModuleRegistry($this->moduleRegistry);
+        ModuleTemplateRegistry::setCatalog($this->moduleTemplateCatalog);
         ModuleAssetRegistry::setResolver($this->moduleAssetResolver);
         AssetCollector::setManifestRegistry($this->assetManifestRegistry);
         UrlGenerator::setBuilder($this->routeUrlBuilder);

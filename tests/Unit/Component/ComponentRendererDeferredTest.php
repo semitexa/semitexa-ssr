@@ -10,6 +10,7 @@ use Semitexa\Ssr\Application\Service\Component\ComponentInstanceStore;
 use Semitexa\Ssr\Application\Service\Component\ComponentCatalog;
 use Semitexa\Ssr\Application\Service\Component\ComponentRegistry;
 use Semitexa\Ssr\Application\Service\Component\ComponentRenderer;
+use Semitexa\Ssr\Application\Service\Template\ModuleTemplateCatalog;
 use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
 use Twig\Environment as TwigEnvironment;
 use Twig\Loader\ArrayLoader;
@@ -30,10 +31,16 @@ final class ComponentRendererDeferredTest extends TestCase
         ComponentInstanceStore::reset();
         ComponentRenderer::setDataProviderRegistry(null);
         ComponentRenderer::setCurrentRequest(null);
-        $reflection = new \ReflectionClass(ModuleTemplateRegistry::class);
-        $reflection->getProperty('twig')->setValue(null, null);
-        $reflection->getProperty('loader')->setValue(null, null);
-        $reflection->getProperty('initialized')->setValue(null, false);
+        $catalog = (new \ReflectionClass(ModuleTemplateRegistry::class))
+            ->getProperty('catalog')->getValue();
+        if (!$catalog instanceof ModuleTemplateCatalog) {
+            $catalog = new ModuleTemplateCatalog();
+            ModuleTemplateRegistry::setCatalog($catalog);
+        }
+        $reflection = new \ReflectionClass($catalog);
+        $reflection->getProperty('twig')->setValue($catalog, null);
+        $reflection->getProperty('loader')->setValue($catalog, null);
+        $reflection->getProperty('initialized')->setValue($catalog, false);
     }
 
     private function resetRegistries(): void
@@ -58,10 +65,16 @@ final class ComponentRendererDeferredTest extends TestCase
                 'rendered:{{ title }}',
         ]);
         $twig = new TwigEnvironment($loader, ['autoescape' => false, 'cache' => false]);
-        $reflection = new \ReflectionClass(ModuleTemplateRegistry::class);
-        $reflection->getProperty('twig')->setValue(null, $twig);
-        $reflection->getProperty('loader')->setValue(null, $loader);
-        $reflection->getProperty('initialized')->setValue(null, true);
+        $catalog = (new \ReflectionClass(ModuleTemplateRegistry::class))
+            ->getProperty('catalog')->getValue();
+        if (!$catalog instanceof ModuleTemplateCatalog) {
+            $catalog = new ModuleTemplateCatalog();
+            ModuleTemplateRegistry::setCatalog($catalog);
+        }
+        $reflection = new \ReflectionClass($catalog);
+        $reflection->getProperty('twig')->setValue($catalog, $twig);
+        $reflection->getProperty('loader')->setValue($catalog, $loader);
+        $reflection->getProperty('initialized')->setValue($catalog, true);
     }
 
     private function registerDeferredSseComponent(): void

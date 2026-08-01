@@ -14,6 +14,7 @@ use Semitexa\Core\Server\Lifecycle\ServerLifecyclePhase;
 use Semitexa\Ssr\Application\Service\Asset\AssetCollector;
 use Semitexa\Ssr\Application\Service\Asset\AssetManifestRegistry;
 use Semitexa\Ssr\Application\Service\Asset\ModuleAssetRegistry;
+use Semitexa\Ssr\Application\Service\Asset\ModuleAssetResolver;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
 use Semitexa\Ssr\Application\Service\Component\ComponentHtmlRenderer;
 use Semitexa\Ssr\Application\Service\Component\ComponentCatalog;
@@ -57,6 +58,9 @@ final class WireCoreInstancesListener implements ServerLifecycleListenerInterfac
     protected AssetManifestRegistry $assetManifestRegistry;
 
     #[InjectAsReadonly]
+    protected ModuleAssetResolver $moduleAssetResolver;
+
+    #[InjectAsReadonly]
     protected ComponentCatalog $componentCatalog;
 
     public function handle(ServerLifecycleContext $context): void
@@ -65,7 +69,7 @@ final class WireCoreInstancesListener implements ServerLifecycleListenerInterfac
         ComponentRenderer::setRenderer($this->componentHtmlRenderer);
         TwigExtensionRegistry::setClassDiscovery($this->classDiscovery);
         ModuleTemplateRegistry::setModuleRegistry($this->moduleRegistry);
-        ModuleAssetRegistry::setModuleRegistry($this->moduleRegistry);
+        ModuleAssetRegistry::setResolver($this->moduleAssetResolver);
         AssetCollector::setManifestRegistry($this->assetManifestRegistry);
         UrlGenerator::setBuilder($this->routeUrlBuilder);
         AsyncResourceSseServer::setDeferredBlockOrchestrator($this->deferredBlockOrchestrator);

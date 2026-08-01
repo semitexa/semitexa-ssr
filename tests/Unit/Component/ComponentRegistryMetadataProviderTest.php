@@ -10,6 +10,7 @@ use ReflectionClass;
 use Semitexa\Core\Discovery\ClassDiscovery;
 use Semitexa\Core\ModuleRegistry;
 use Semitexa\Ssr\Application\Service\Component\ComponentMetadataProviderRegistry;
+use Semitexa\Ssr\Application\Service\Component\ComponentCatalog;
 use Semitexa\Ssr\Application\Service\Component\ComponentRegistry;
 use Semitexa\Ssr\Attribute\AsComponent;
 use Semitexa\Ssr\Attribute\AsComponentMetadataProvider;
@@ -117,9 +118,7 @@ final class ComponentRegistryMetadataProviderTest extends TestCase
 
     private function resetRegistry(): void
     {
-        $ref = new ReflectionClass(ComponentRegistry::class);
-        $ref->getProperty('components')->setValue(null, []);
-        $ref->getProperty('initialized')->setValue(null, false);
+        ComponentRegistry::setCatalog(new ComponentCatalog());
     }
 
     /**
@@ -190,8 +189,12 @@ final class ComponentRegistryMetadataProviderTest extends TestCase
     {
         // Mark registry as already-initialized so register() is the only path
         // exercised and get() does not trigger discovery.
-        $ref = new ReflectionClass(ComponentRegistry::class);
-        $ref->getProperty('initialized')->setValue(null, true);
+        $catalog = (new \ReflectionClass(ComponentRegistry::class))->getProperty('catalog')->getValue();
+        if (!$catalog instanceof ComponentCatalog) {
+            $catalog = new ComponentCatalog();
+            ComponentRegistry::setCatalog($catalog);
+        }
+        (new \ReflectionClass($catalog))->getProperty('initialized')->setValue($catalog, true);
 
         ComponentRegistry::register([
             'class' => 'X',

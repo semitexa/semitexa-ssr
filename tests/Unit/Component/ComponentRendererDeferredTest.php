@@ -7,6 +7,7 @@ namespace Semitexa\Ssr\Tests\Unit\Component;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Core\Attribute\TransportType;
 use Semitexa\Ssr\Application\Service\Component\ComponentInstanceStore;
+use Semitexa\Ssr\Application\Service\Component\ComponentCatalog;
 use Semitexa\Ssr\Application\Service\Component\ComponentRegistry;
 use Semitexa\Ssr\Application\Service\Component\ComponentRenderer;
 use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
@@ -37,15 +38,17 @@ final class ComponentRendererDeferredTest extends TestCase
 
     private function resetRegistries(): void
     {
-        $reflection = new \ReflectionClass(ComponentRegistry::class);
-        $reflection->getProperty('components')->setValue(null, []);
-        $reflection->getProperty('initialized')->setValue(null, false);
+        ComponentRegistry::setCatalog(new ComponentCatalog());
     }
 
     private function markRegistryInitialized(): void
     {
-        $reflection = new \ReflectionClass(ComponentRegistry::class);
-        $reflection->getProperty('initialized')->setValue(null, true);
+        $catalog = (new \ReflectionClass(ComponentRegistry::class))->getProperty('catalog')->getValue();
+        if (!$catalog instanceof ComponentCatalog) {
+            $catalog = new ComponentCatalog();
+            ComponentRegistry::setCatalog($catalog);
+        }
+        (new \ReflectionClass($catalog))->getProperty('initialized')->setValue($catalog, true);
     }
 
     private function installTwigStub(): void

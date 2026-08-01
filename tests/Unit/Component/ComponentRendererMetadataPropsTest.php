@@ -6,6 +6,7 @@ namespace Semitexa\Ssr\Tests\Unit\Component;
 
 use PHPUnit\Framework\TestCase;
 use Semitexa\Core\Attribute\TransportType;
+use Semitexa\Ssr\Application\Service\Component\ComponentCatalog;
 use Semitexa\Ssr\Application\Service\Component\ComponentRegistry;
 use Semitexa\Ssr\Application\Service\Component\ComponentRenderer;
 use Semitexa\Ssr\Application\Service\DataProviderRegistry;
@@ -49,15 +50,17 @@ final class ComponentRendererMetadataPropsTest extends TestCase
 
     private function resetRegistries(): void
     {
-        $ref = new \ReflectionClass(ComponentRegistry::class);
-        $ref->getProperty('components')->setValue(null, []);
-        $ref->getProperty('initialized')->setValue(null, false);
+        ComponentRegistry::setCatalog(new ComponentCatalog());
     }
 
     private function markRegistryInitialized(): void
     {
-        $ref = new \ReflectionClass(ComponentRegistry::class);
-        $ref->getProperty('initialized')->setValue(null, true);
+        $catalog = (new \ReflectionClass(ComponentRegistry::class))->getProperty('catalog')->getValue();
+        if (!$catalog instanceof ComponentCatalog) {
+            $catalog = new ComponentCatalog();
+            ComponentRegistry::setCatalog($catalog);
+        }
+        (new \ReflectionClass($catalog))->getProperty('initialized')->setValue($catalog, true);
     }
 
     private function installTwigStub(): void

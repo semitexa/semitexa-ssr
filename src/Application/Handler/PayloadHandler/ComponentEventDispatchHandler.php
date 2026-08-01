@@ -16,7 +16,7 @@ use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Server\SwooleBootstrap;
 use Semitexa\Ssr\Application\Payload\Request\ComponentEventDispatchPayload;
 use Semitexa\Ssr\Application\Service\Component\ComponentEventBridge;
-use Semitexa\Ssr\Application\Service\Component\ComponentRegistry;
+use Semitexa\Ssr\Application\Service\Component\ComponentCatalog;
 
 #[AsPayloadHandler(payload: ComponentEventDispatchPayload::class, resource: ResourceResponse::class)]
 final class ComponentEventDispatchHandler implements TypedHandlerInterface
@@ -24,13 +24,16 @@ final class ComponentEventDispatchHandler implements TypedHandlerInterface
     #[InjectAsReadonly]
     protected EventDispatcherInterface $eventDispatcher;
 
+    #[InjectAsReadonly]
+    protected ComponentCatalog $componentCatalog;
+
     public function handle(ComponentEventDispatchPayload $payload, ResourceResponse $resource): ResourceResponse
     {
         if (!$this->isSameOriginRequest()) {
             throw new AccessDeniedException('Cross-origin component event dispatch is not allowed.');
         }
 
-        $component = ComponentRegistry::get($payload->getComponentName());
+        $component = $this->componentCatalog->get($payload->getComponentName());
         if ($component === null || ($component['event'] ?? null) === null) {
             throw new NotFoundException('Component event bridge metadata', $payload->getComponentName());
         }

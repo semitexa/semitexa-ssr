@@ -21,10 +21,14 @@ use Semitexa\Ssr\Domain\Model\DataProviderContext;
  * is the static entry point retained while ModuleTemplateRegistry still registers
  * the Twig `component()` bridge from a static context; it delegates here.
  *
- * The registry is nullable on purpose. DataProviderRegistry::resolveByClass()
- * instantiates the provider class directly rather than consulting a map, so an
- * empty registry is not equivalent to no registry: a null registry disables
- * provider resolution entirely, which is the behaviour unit tests rely on.
+ * Injected collaborators are declared non-nullable without a default, which
+ * lint:di requires of container-managed objects. The container always
+ * initialises them; a unit test constructing this class directly leaves them
+ * uninitialised, and the isset() guards below then take the degraded path.
+ * That distinction matters: DataProviderRegistry::resolveByClass() instantiates
+ * the provider class directly rather than consulting a map, so an empty
+ * registry is not equivalent to an absent one — only an absent one disables
+ * provider resolution, which is the behaviour the unit tests rely on.
  */
 #[AsService]
 final class ComponentHtmlRenderer
@@ -33,10 +37,18 @@ final class ComponentHtmlRenderer
     private const CTX_CURRENT_REQUEST = '__ssr_current_request';
 
     #[InjectAsReadonly]
-    protected ?DataProviderRegistry $dataProviderRegistry = null;
+    protected DataProviderRegistry $dataProviderRegistry;
+
+    #[InjectAsReadonly]
+    protected ComponentCatalog $catalog;
 
     public function setDataProviderRegistry(?DataProviderRegistry $registry): void
     {
+        if ($registry === null) {
+            unset($this->dataProviderRegistry);
+            return;
+        }
+
         $this->dataProviderRegistry = $registry;
     }
 
@@ -58,7 +70,9 @@ final class ComponentHtmlRenderer
         array $slots = [],
         bool $forceImmediateRender = false,
     ): string {
-        $component = ComponentRegistry::get($name);
+        $component = isset($this->catalog)
+            ? $this->catalog->get($name)
+            : ComponentRegistry::get($name);
 
         if ($component === null) {
             return "<!-- Component '{$name}' not found -->";
@@ -101,7 +115,7 @@ final class ComponentHtmlRenderer
 
             $providerData = [];
             $providerClass = $component['dataProviderClass'] ?? null;
-            if ($providerClass !== null && $this->dataProviderRegistry !== null) {
+            if ($providerClass !== null && isset($this->dataProviderRegistry)) {
                 $provider = $this->dataProviderRegistry->resolveByClass($providerClass);
                 if ($provider !== null) {
                     $providerData = $provider->resolve(

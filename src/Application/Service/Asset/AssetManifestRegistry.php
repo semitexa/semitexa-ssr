@@ -16,8 +16,10 @@ use Semitexa\Core\Log\StaticLoggerBridge;
  * then serves the parsed declarations read-only. AssetCollector keeps only the
  * per-request required-set and reads its metadata from here.
  *
- * The module registry is nullable with a null default so test bootstraps can
- * drive discovery without a container, mirroring the historical static setter.
+ * The module registry is injected non-nullable without a default, as lint:di
+ * requires of container-managed objects. Test bootstraps that construct this
+ * class without a container supply it through setModuleRegistry(); until they
+ * do, the property stays uninitialised and discovery fails loudly.
  *
  * Manifest format: v2 only (semitexa://asset-manifest/v2).
  * Location: {module}/Application/Static/assets.json
@@ -34,7 +36,7 @@ final class AssetManifestRegistry
     private bool $booted = false;
     /** @worker-scoped */
     #[InjectAsReadonly]
-    protected ?ModuleRegistry $moduleRegistry = null;
+    protected ModuleRegistry $moduleRegistry;
 
     public function setModuleRegistry(ModuleRegistry $moduleRegistry): void
     {
@@ -96,7 +98,7 @@ final class AssetManifestRegistry
      */
     private function discoverManifests(): void
     {
-        if ($this->moduleRegistry === null) {
+        if (!isset($this->moduleRegistry)) {
             throw new \LogicException('AssetCollector requires ModuleRegistry instance. Call setModuleRegistry() first.');
         }
 

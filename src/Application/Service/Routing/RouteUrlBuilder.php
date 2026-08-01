@@ -7,7 +7,6 @@ namespace Semitexa\Ssr\Application\Service\Routing;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Discovery\AttributeDiscovery;
-use Semitexa\Core\Request;
 use Semitexa\Locale\Context\LocaleContextStore;
 
 /**
@@ -36,20 +35,6 @@ final class RouteUrlBuilder
         }
 
         return $this->prefixLocale($this->buildPath((string) $route['path'], $params));
-    }
-
-    /**
-     * @param array<string, mixed> $overrides
-     */
-    public function current(Request $request, array $overrides = []): string
-    {
-        $path = $request->getUri();
-
-        if ($overrides === []) {
-            return $path;
-        }
-
-        return strtok($path, '?') . '?' . http_build_query($overrides);
     }
 
     private function prefixLocale(string $path): string

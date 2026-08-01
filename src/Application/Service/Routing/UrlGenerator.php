@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Routing;
 
-use Semitexa\Core\Request;
-
 /**
  * Static entry point for URL generation.
  *
@@ -33,14 +31,6 @@ final class UrlGenerator
     public static function to(string $routeName, array $params = []): string
     {
         return self::builder()->to($routeName, $params);
-    }
-
-    /**
-     * @param array<string, mixed> $overrides
-     */
-    public static function current(Request $request, array $overrides = []): string
-    {
-        return self::builder()->current($request, $overrides);
     }
 
     private static function builder(): RouteUrlBuilder

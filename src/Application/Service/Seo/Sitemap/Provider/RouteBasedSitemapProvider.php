@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Seo\Sitemap\Provider;
 
+use Semitexa\Core\Auth\PayloadAccessType;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Attribute\TransportType;
@@ -127,7 +128,7 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
             return false;
         }
 
-        if (($route['public'] ?? false) !== true) {
+        if (self::accessTypeOf($route) !== 'public') {
             return false;
         }
 
@@ -205,5 +206,23 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
         }
 
         return '';
+    }
+
+    /**
+     * Routes carry accessType, a PayloadAccessType enum (or its string value in
+     * hand-built arrays). A raw route has no 'access' and no 'public' key; both
+     * were assumed at different times and each silently rejected every route.
+     *
+     * @param array<string, mixed> $route
+     */
+    private static function accessTypeOf(array $route): ?string
+    {
+        $value = $route['accessType'] ?? null;
+
+        if ($value instanceof PayloadAccessType) {
+            return $value->value;
+        }
+
+        return is_string($value) && $value !== '' ? $value : null;
     }
 }

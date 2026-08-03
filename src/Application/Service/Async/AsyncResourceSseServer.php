@@ -79,6 +79,12 @@ final class AsyncResourceSseServer
     /** @see SseTransportModePolicy::HEARTBEAT_INTERVAL_SECONDS */
     private const HEARTBEAT_INTERVAL_SECONDS = SseTransportModePolicy::HEARTBEAT_INTERVAL_SECONDS;
 
+    /**
+     * Drain-loop tick. Short enough that a queued frame leaves promptly, long
+     * enough that an idle connection is not a busy-wait.
+     */
+    private const HELD_OPEN_TICK_SECONDS = 0.2;
+
 
     /**
      * Track R · R8a — the set of request paths served by the SSE intercept,
@@ -252,6 +258,69 @@ final class AsyncResourceSseServer
      * served as a stream (the dispatch is correct, not over-broad).
      */
     /**
+     * Open the HTTP side of an SSE stream and register the session.
+     *
+     * Shared by the kiss admit path and by a held-open resource stream: both
+     * need the same status line, the same four headers, and the same
+     * tenant-capturing session open. Written twice before
+     * ep-slay-sse-god-class-2, byte for byte.
+     *
+     * `X-Accel-Buffering: no` is the one header worth knowing about — without it
+     * nginx buffers the stream and every frame arrives late, in a batch, which
+     * looks exactly like a broken application.
+     */
+    private static function beginSseResponse(Response $response, string $sessionId): void
+    {
+        $response->status(200);
+        $response->header('Content-Type', 'text/event-stream');
+        $response->header('Cache-Control', 'no-cache');
+        $response->header('Connection', 'keep-alive');
+        $response->header('X-Accel-Buffering', 'no');
+
+        // Capture the tenant THIS connection resolved, in its own coroutine where
+        // TenantContext is authoritative (TenancyPhase ran before route dispatch),
+        // so a later multiplex subscribe scopes its record from the connecting
+        // tenant rather than the draining coroutine's ambient one.
+        self::sessionRegistry()->open($sessionId, $response, self::currentTenantId(), self::currentTenantBlob());
+    }
+
+    /**
+     * Arrange for the session to be torn down exactly once, however this
+     * connection ends.
+     *
+     * Registered BEFORE any work that can throw. Without it, a throw from the
+     * headers, a frame write, the deferred door or the drain loop unwinds past
+     * the teardown and leaves the {@see SseConnectionLimiter} slot held for the
+     * worker's entire life; after enough such throws the worker answers 429 to
+     * every new SSE connection while serving none. `Coroutine::defer` covers the
+     * coroutine path (normal return AND uncaught throw); the returned closure is
+     * for callers to invoke on their normal exits, and on the non-coroutine path
+     * that Swoole makes impossible for SSE but tests still reach. The captured
+     * flag keeps it single-shot either way.
+     *
+     * Pinned by SseConnectionCounterLeakTest.
+     *
+     * @return \Closure(): void
+     */
+    private static function registerExactlyOnceTeardown(string $sessionId, Response $response): \Closure
+    {
+        $closed = false;
+        $close = static function () use (&$closed, $sessionId, $response): void {
+            if ($closed) {
+                return;
+            }
+            $closed = true;
+            self::closeSession($sessionId, $response);
+        };
+
+        if (class_exists(\Swoole\Coroutine::class, false) && \Swoole\Coroutine::getCid() > 0) {
+            \Swoole\Coroutine::defer($close);
+        }
+
+        return $close;
+    }
+
+    /**
      * Turn an accepted request into a live stream: 200 + SSE headers, the
      * worker-local session record, the authenticated-session index entry, and
      * the cross-worker ownership claim.
@@ -265,17 +334,7 @@ final class AsyncResourceSseServer
      */
     private static function openSseStream(Request $request, Response $response, string $sessionId): string
     {
-        $response->status(200);
-        $response->header('Content-Type', 'text/event-stream');
-        $response->header('Cache-Control', 'no-cache');
-        $response->header('Connection', 'keep-alive');
-        $response->header('X-Accel-Buffering', 'no');
-
-        // Capture the tenant THIS connection resolved, in its own coroutine where
-        // TenantContext is authoritative (TenancyPhase ran before route dispatch),
-        // so a later multiplex subscribe scopes its record from the connecting
-        // tenant rather than the draining coroutine's ambient one.
-        self::sessionRegistry()->open($sessionId, $response, self::currentTenantId(), self::currentTenantBlob());
+        self::beginSseResponse($response, $sessionId);
 
         $authenticatedUserId = self::resolveAuthenticatedUserId($request);
         if ($authenticatedUserId !== '') {
@@ -347,26 +406,31 @@ final class AsyncResourceSseServer
         mixed $lastEventId,
         string $resolvedMode,
     ): bool {
-        $bindToken = self::getSsrBindToken($request);
-        if (!\Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry::matchesBindToken($deferredRequestId, $bindToken)) {
-            self::writeSse($response, [
-                'type' => 'done',
-                'live' => false,
-                'close' => true,
-                'reconnect' => false,
-            ]);
-
-            return false;
-        }
-        self::triggerDeferredBlocks(
+        return self::deferredDoor()->open(
+            $response,
             $sessionId,
             $deferredRequestId,
+            self::getSsrBindToken($request),
             $lastEventId,
             self::canUsePersistentDeferredSse($request),
             $resolvedMode === self::TRANSPORT_MODE_LIVE,
         );
+    }
 
-        return true;
+    private static function deferredDoor(): SseDeferredDoor
+    {
+        return new SseDeferredDoor(
+            static fn (): DeferredBlockOrchestrator => self::deferredBlockOrchestrator(),
+            static function (string $session, array $data): void {
+                self::deliver($session, $data);
+            },
+            static function (mixed $response, array $data): void {
+                self::writeSse($response, $data);
+            },
+            static function (callable $task, string $session): void {
+                self::createSessionCoroutine($task, $session);
+            },
+        );
     }
 
     private static function shouldServeAsSse(string $path): bool
@@ -376,84 +440,19 @@ final class AsyncResourceSseServer
 
     private static function handleSse(Request $request, Response $response): void
     {
-        $get = is_array($request->get) ? $request->get : [];
-        $sessionId = trim((string) (($get['session_id'] ?? null) ?: uniqid('sse_', true)));
-        $demoStream = '';
-        if (isset($get['demo_stream'])) {
-            $demoStream = trim((string) $get['demo_stream']);
-        }
-        $deferredRequestId = trim((string) ($get['deferred_request_id'] ?? ''));
-        $rawMode = trim((string) ($get['mode'] ?? ''));
+        $stream = SseStreamRequest::fromRequest($request);
 
-        // Auth gate — only persistent streams require a session:
-        //  1. demo_stream runs an infinite per-minute producer → auth always.
-        //  2. deferred_request_id requests are guest-safe: the orchestrator runs
-        //     delivery then sends done/close (canUsePersistentDeferredSse() keeps
-        //     the persistent live loop auth-gated), so we let guests through the
-        //     gate and rely on the delivery-complete close.
-        //  3. a bare kiss stream with no deferred_request_id is long-lived →
-        //     auth required, unless SSE_PUBLIC_ANONYMOUS is opt-in.
-        $authenticated = self::hasAuthenticatedSession($request);
-        $anonymousAllowed = filter_var((string) (\getenv('SSE_PUBLIC_ANONYMOUS') ?: ''), FILTER_VALIDATE_BOOLEAN);
-        $safeBearerSessionId = self::isSafeBearerSessionId($get['session_id'] ?? null);
-
-        $authError = self::resolveSseAuthorizationError(
-            authenticated: $authenticated,
-            anonymousAllowed: $anonymousAllowed,
-            demoStream: $demoStream,
-            deferredRequestId: $deferredRequestId,
-            safeBearerSessionId: $safeBearerSessionId,
-            // An explicit mode=live request is persistent — it must not borrow
-            // the deferred door's guest-permissive bypass (see method docblock).
-            persistentRequested: $rawMode === self::TRANSPORT_MODE_LIVE,
-        );
-        $rejection = self::resolveSseRequestRejection(
-            sameOrigin: self::isSameOriginRequest($request),
-            authError: $authError,
-        );
-        if ($rejection !== null) {
-            if ($rejection['status'] === 401) {
-                self::rejectUnauthorized($response, $rejection['message']);
-                return;
-            }
-
-            $response->status($rejection['status']);
-            $response->end();
-            return;
-        }
-
-        // Resolve transport mode early — an explicit unknown `mode=` value
-        // gets a clean 400 before any IP cap accounting. Missing mode is
-        // legal: the resolver maps it to drain for anonymous bearer
-        // channels and to legacy for everything else.
-        $resolvedMode = self::resolveTransportMode(
-            rawMode: $rawMode,
-            authenticated: $authenticated,
-            anonymousAllowed: $anonymousAllowed,
-            safeBearerSessionId: $safeBearerSessionId,
-            deferredRequestId: $deferredRequestId,
-        );
+        $resolvedMode = self::admitStream($request, $response, $stream);
         if ($resolvedMode === null) {
-            self::rejectBadRequest($response, 'Unknown SSE transport mode.');
             return;
         }
 
-        // Per-IP + global connection caps. Apply to every connection (authenticated
-        // or anonymous) to bound worker/FD consumption.
-        $denial = self::connectionLimiter()->tryAcquire(
-            self::resolveClientIp($request),
-            $sessionId,
-            $response,
-        );
-        if ($denial !== null) {
-            self::rejectTooManyRequests($response, $denial);
-            return;
-        }
+        $sessionId = $stream->sessionId;
 
         // Exactly-once teardown for EVERY exit path. The connection the limiter
         // just accounted, and the session/queue/worker-table registration below,
         // must be released even when a later step throws — a throw from writeSse,
-        // triggerDeferredBlocks or runHeldOpenLoop otherwise leaves the
+        // the deferred door or runHeldOpenLoop otherwise leaves the
         // {@see SseConnectionLimiter} slot held for the worker's whole life, and
         // after enough such throws the worker rejects ALL new SSE with 429
         // despite no live connections. Coroutine::defer
@@ -461,17 +460,7 @@ final class AsyncResourceSseServer
         // throw); the explicit $close() calls below cover the SSE-impossible
         // non-coroutine path and release immediately on normal exits. The
         // $closed flag keeps it single-shot either way.
-        $closed = false;
-        $close = static function () use (&$closed, $sessionId, $response): void {
-            if ($closed) {
-                return;
-            }
-            $closed = true;
-            self::closeSession($sessionId, $response);
-        };
-        if (class_exists(\Swoole\Coroutine::class, false) && \Swoole\Coroutine::getCid() > 0) {
-            \Swoole\Coroutine::defer($close);
-        }
+        $close = self::registerExactlyOnceTeardown($sessionId, $response);
 
         $authenticatedUserId = self::openSseStream($request, $response, $sessionId);
 
@@ -497,21 +486,21 @@ final class AsyncResourceSseServer
         // drained above; flush any same-worker queue items that landed
         // between admit and here, then emit the canonical close frame so
         // the client's `close` listener fires deterministically.
-        if ($resolvedMode === self::TRANSPORT_MODE_DRAIN && $deferredRequestId === '') {
+        if ($resolvedMode === self::TRANSPORT_MODE_DRAIN && !$stream->hasDeferredRequest()) {
             self::completeDrain($sessionId, $response);
             $close();
             return;
         }
 
         $enableDemoStream = filter_var((string) (\getenv('APP_DEBUG') ?: ''), FILTER_VALIDATE_BOOLEAN);
-        if ($demoStream !== '' && $enableDemoStream) {
-            self::startDemoStreamProducer($sessionId, $demoStream);
+        if ($stream->hasDemoStream() && $enableDemoStream) {
+            self::startDemoStreamProducer($sessionId, $stream->demoStream);
         }
 
         // Trigger deferred block streaming if deferred_request_id is present
-        $header = is_array($request->header) ? $request->header : [];
-        $lastEventId = $header['last-event-id'] ?? null;
-        if ($deferredRequestId !== '' && !self::openDeferredDoor($request, $response, $sessionId, $deferredRequestId, $lastEventId, $resolvedMode)) {
+        if ($stream->hasDeferredRequest()
+            && !self::openDeferredDoor($request, $response, $sessionId, $stream->deferredRequestId, $stream->lastEventId, $resolvedMode)
+        ) {
             $close();
             return;
         }
@@ -519,6 +508,91 @@ final class AsyncResourceSseServer
         self::runHeldOpenLoop($sessionId, $request, $response, $authenticatedUserId);
 
         $close();
+    }
+
+    /**
+     * Run the three admission gates in order and hand back the resolved transport
+     * mode, or null when the request was turned away.
+     *
+     * Order is deliberate and not interchangeable:
+     *  1. authorization + origin — never spend work on a request that may not stream;
+     *  2. transport mode — an unknown `mode=` earns a clean 400 BEFORE any
+     *     connection-cap accounting, so a typo cannot consume a client's quota;
+     *  3. connection caps — per-IP and global, applied to authenticated and
+     *     anonymous alike, since the resource being bounded is worker file
+     *     descriptors and those do not care who owns them.
+     *
+     * Each gate writes its own rejection onto the response before returning.
+     */
+    private static function admitStream(Request $request, Response $response, SseStreamRequest $stream): ?string
+    {
+        // Auth gate — only persistent streams require a session:
+        //  1. demo_stream runs an infinite per-minute producer → auth always.
+        //  2. deferred_request_id requests are guest-safe: the orchestrator runs
+        //     delivery then sends done/close (canUsePersistentDeferredSse() keeps
+        //     the persistent live loop auth-gated), so we let guests through the
+        //     gate and rely on the delivery-complete close.
+        //  3. a bare kiss stream with no deferred_request_id is long-lived →
+        //     auth required, unless SSE_PUBLIC_ANONYMOUS is opt-in.
+        $authenticated = self::hasAuthenticatedSession($request);
+        $anonymousAllowed = filter_var((string) (\getenv('SSE_PUBLIC_ANONYMOUS') ?: ''), FILTER_VALIDATE_BOOLEAN);
+        $safeBearerSessionId = self::isSafeBearerSessionId($stream->rawSessionId);
+
+        $rejection = self::resolveSseRequestRejection(
+            sameOrigin: self::isSameOriginRequest($request),
+            authError: self::resolveSseAuthorizationError(
+                authenticated: $authenticated,
+                anonymousAllowed: $anonymousAllowed,
+                demoStream: $stream->demoStream,
+                deferredRequestId: $stream->deferredRequestId,
+                safeBearerSessionId: $safeBearerSessionId,
+                // An explicit mode=live request is persistent — it must not borrow
+                // the deferred door's guest-permissive bypass (see method docblock).
+                persistentRequested: $stream->isPersistentRequested(),
+            ),
+        );
+        if ($rejection !== null) {
+            if ($rejection['status'] === 401) {
+                self::rejectUnauthorized($response, $rejection['message']);
+
+                return null;
+            }
+
+            $response->status($rejection['status']);
+            $response->end();
+
+            return null;
+        }
+
+        // Missing mode is legal: the resolver maps it to drain for anonymous
+        // bearer channels and to legacy for everything else.
+        $resolvedMode = self::resolveTransportMode(
+            rawMode: $stream->rawMode,
+            authenticated: $authenticated,
+            anonymousAllowed: $anonymousAllowed,
+            safeBearerSessionId: $safeBearerSessionId,
+            deferredRequestId: $stream->deferredRequestId,
+        );
+        if ($resolvedMode === null) {
+            self::rejectBadRequest($response, 'Unknown SSE transport mode.');
+
+            return null;
+        }
+
+        // Per-IP + global connection caps. Apply to every connection (authenticated
+        // or anonymous) to bound worker/FD consumption.
+        $denial = self::connectionLimiter()->tryAcquire(
+            self::resolveClientIp($request),
+            $stream->sessionId,
+            $response,
+        );
+        if ($denial !== null) {
+            self::rejectTooManyRequests($response, $denial);
+
+            return null;
+        }
+
+        return $resolvedMode;
     }
 
     /**
@@ -541,106 +615,28 @@ final class AsyncResourceSseServer
         Response $response,
         string $authenticatedUserId,
     ): void {
-        $closed = false;
-        $lastAuthTouchAt = time();
-        $connectionStartedAt = time();
-        // Seed the heartbeat clock from the `connected` frame written just
-        // above; refreshed on every successful outbound write below.
-        $lastWriteAt = time();
+        $state = new SseHeldOpenState($authenticatedUserId, time());
         $maxAgeSeconds = self::maxConnectionAgeSeconds();
-        while (!$closed && self::sessionRegistry()->isOpen($sessionId)) {
+
+        while (!$state->isClosed() && self::sessionRegistry()->isOpen($sessionId)) {
             // Hard connection-age cap — bounds hanging-connection attacks.
-            if ($maxAgeSeconds > 0 && (time() - $connectionStartedAt) >= $maxAgeSeconds) {
+            if ($state->hasOutlivedCap(time(), $maxAgeSeconds)) {
                 self::writeSse($response, ['event' => 'close', 'reason' => 'max_age', 'close' => true]);
                 break;
             }
 
-            if ((time() - $lastAuthTouchAt) >= SseAuthSessionMap::TOUCH_INTERVAL_SECONDS) {
-                $authenticatedUserId = self::refreshAuthenticatedSessionMapping($request, $sessionId, $authenticatedUserId);
-                self::touchActiveSession($sessionId);
-                $lastAuthTouchAt = time();
+            self::refreshAuthIfDue($sessionId, $request, $state);
+            self::drainSameWorkerQueue($sessionId, $response, $state);
+
+            if (!$state->isClosed()) {
+                self::drainCrossWorkerTable($sessionId, $response, $state);
             }
 
-            while (($data = self::sessionRegistry()->shiftQueued($sessionId)) !== null) {
-
-                // Track R · R4 — catch a control marker before it can be written
-                // as a data frame (same-worker path: X==W, the control landed on
-                // this worker's in-memory queue).
-                $ctrl = self::handleControlFrame($sessionId, $response, $data);
-                if ($ctrl === self::CTRL_HANDLED_CLOSE) {
-                    $closed = true;
-                    break;
-                }
-                if ($ctrl === self::CTRL_HANDLED_CONTINUE) {
-                    $lastWriteAt = time();
-                    continue;
-                }
-
-                if (!self::writeSse($response, $data)) {
-                    // Durability: the socket died mid-send. Requeue this
-                    // in-flight payload (already shifted off the queue) to
-                    // Redis so the reconnecting subscriber drains it; any
-                    // remaining queue items are flushed by closeSession.
-                    self::requeueToRedis($sessionId, [$data]);
-                    $closed = true;
-                    break;
-                }
-                $lastWriteAt = time();
-                if (self::shouldCloseAfterPayload($data)) {
-                    $closed = true;
-                    break;
-                }
+            if (!$state->isClosed() && self::drainRedisQueueForSession($sessionId, $response)) {
+                $state->close();
             }
 
-            if (!$closed && self::workerTables()->canRouteCrossWorker()) {
-                $tables = self::workerTables();
-                $toDel = [];
-                $deliverCount = 0;
-                foreach ($tables->readDeliveriesFor($tables->currentWorkerId(), $sessionId) as $row) {
-                    $data = json_decode($row['payload'], true);
-                    if (!is_array($data)) {
-                        continue;
-                    }
-
-                    // Track R · R4 — catch a control marker on the cross-worker
-                    // Swoole-table fallback (no-Redis path). The owning worker W
-                    // self-selects via the worker_id match in the read above, so
-                    // the tier-2 context resolves locally here.
-                    $ctrl = self::handleControlFrame($sessionId, $response, $data);
-                    if ($ctrl === self::CTRL_HANDLED_CLOSE) {
-                        $toDel[] = $row['key'];
-                        $closed = true;
-                        break;
-                    }
-                    if ($ctrl === self::CTRL_HANDLED_CONTINUE) {
-                        $toDel[] = $row['key'];
-                        $deliverCount++;
-                        $lastWriteAt = time();
-                        continue;
-                    }
-
-                    if (self::writeSse($response, $data)) {
-                        $toDel[] = $row['key'];
-                        $deliverCount++;
-                        $lastWriteAt = time();
-                        if (self::shouldCloseAfterPayload($data)) {
-                            $closed = true;
-                            break;
-                        }
-                    }
-                }
-                // Only rows whose frame actually got out are consumed; a failed
-                // write leaves its row for the next tick.
-                foreach ($toDel as $k) {
-                    $tables->deleteDelivery($k);
-                }
-            }
-
-            if (!$closed && self::drainRedisQueueForSession($sessionId, $response)) {
-                $closed = true;
-            }
-
-            if ($closed) {
+            if ($state->isClosed()) {
                 break;
             }
 
@@ -648,18 +644,145 @@ final class AsyncResourceSseServer
                 break;
             }
 
-            // Keepalive: emit an inert comment after an idle gap so the
-            // connection survives proxy idle timeouts and a dead socket is
-            // detected here rather than only on the next data frame.
-            if (self::shouldSendHeartbeat(time(), $lastWriteAt, self::HEARTBEAT_INTERVAL_SECONDS)) {
-                if (!self::writeSseComment($response)) {
-                    break;
-                }
-                $lastWriteAt = time();
+            if (!self::sendHeartbeatIfDue($response, $state)) {
+                break;
             }
 
-            \Swoole\Coroutine::sleep(0.2);
+            \Swoole\Coroutine::sleep(self::HELD_OPEN_TICK_SECONDS);
         }
+    }
+
+    /**
+     * Re-authorize the session periodically so a revoked subject stops receiving
+     * frames without waiting for the connection to end on its own.
+     */
+    private static function refreshAuthIfDue(string $sessionId, Request $request, SseHeldOpenState $state): void
+    {
+        if (!$state->isAuthTouchDue(time(), SseAuthSessionMap::TOUCH_INTERVAL_SECONDS)) {
+            return;
+        }
+
+        $state->markAuthTouched(
+            self::refreshAuthenticatedSessionMapping($request, $sessionId, $state->authenticatedUserId()),
+            time(),
+        );
+        self::touchActiveSession($sessionId);
+    }
+
+    /**
+     * Flush frames queued on this worker's own in-memory queue.
+     */
+    private static function drainSameWorkerQueue(string $sessionId, Response $response, SseHeldOpenState $state): void
+    {
+        while (($data = self::sessionRegistry()->shiftQueued($sessionId)) !== null) {
+            // Track R · R4 — catch a control marker before it can be written
+            // as a data frame (same-worker path: X==W, the control landed on
+            // this worker's in-memory queue).
+            $ctrl = self::handleControlFrame($sessionId, $response, $data);
+            if ($ctrl === self::CTRL_HANDLED_CLOSE) {
+                $state->close();
+
+                return;
+            }
+            if ($ctrl === self::CTRL_HANDLED_CONTINUE) {
+                $state->markWritten(time());
+                continue;
+            }
+
+            if (!self::writeSse($response, $data)) {
+                // Durability: the socket died mid-send. Requeue this
+                // in-flight payload (already shifted off the queue) to
+                // Redis so the reconnecting subscriber drains it; any
+                // remaining queue items are flushed by closeSession.
+                self::requeueToRedis($sessionId, [$data]);
+                $state->close();
+
+                return;
+            }
+            $state->markWritten(time());
+
+            if (self::shouldCloseAfterPayload($data)) {
+                $state->close();
+
+                return;
+            }
+        }
+    }
+
+    /**
+     * Flush frames another worker parked in the shared Swoole table.
+     *
+     * This is the no-Redis fallback path. Its bookkeeping differs from the
+     * same-worker drain in one way that matters: a row is deleted only once its
+     * frame actually reached the client, so a failed write leaves the row for the
+     * next tick instead of dropping the payload.
+     */
+    private static function drainCrossWorkerTable(string $sessionId, Response $response, SseHeldOpenState $state): void
+    {
+        if (!self::workerTables()->canRouteCrossWorker()) {
+            return;
+        }
+
+        $tables = self::workerTables();
+        $consumed = [];
+
+        foreach ($tables->readDeliveriesFor($tables->currentWorkerId(), $sessionId) as $row) {
+            $data = json_decode($row['payload'], true);
+            if (!is_array($data)) {
+                continue;
+            }
+
+            // Track R · R4 — catch a control marker on the cross-worker
+            // Swoole-table fallback (no-Redis path). The owning worker W
+            // self-selects via the worker_id match in the read above, so
+            // the tier-2 context resolves locally here.
+            $ctrl = self::handleControlFrame($sessionId, $response, $data);
+            if ($ctrl === self::CTRL_HANDLED_CLOSE) {
+                $consumed[] = $row['key'];
+                $state->close();
+                break;
+            }
+            if ($ctrl === self::CTRL_HANDLED_CONTINUE) {
+                $consumed[] = $row['key'];
+                $state->markWritten(time());
+                continue;
+            }
+
+            if (self::writeSse($response, $data)) {
+                $consumed[] = $row['key'];
+                $state->markWritten(time());
+                if (self::shouldCloseAfterPayload($data)) {
+                    $state->close();
+                    break;
+                }
+            }
+        }
+
+        foreach ($consumed as $key) {
+            $tables->deleteDelivery($key);
+        }
+    }
+
+    /**
+     * Keepalive: emit an inert comment after an idle gap so the connection
+     * survives proxy idle timeouts and a dead socket is detected here rather
+     * than only on the next data frame.
+     *
+     * @return bool false when the socket is gone and the loop must stop
+     */
+    private static function sendHeartbeatIfDue(Response $response, SseHeldOpenState $state): bool
+    {
+        if (!self::shouldSendHeartbeat(time(), $state->lastWriteAt(), self::HEARTBEAT_INTERVAL_SECONDS)) {
+            return true;
+        }
+
+        if (!self::writeSseComment($response)) {
+            return false;
+        }
+
+        $state->markWritten(time());
+
+        return true;
     }
 
     /**
@@ -746,29 +869,9 @@ final class AsyncResourceSseServer
         // subscription attach would unwind past it and leave the limiter slot held
         // for the worker's whole life — the same leak handleSse() guards against
         // and SseConnectionCounterLeakTest pins.
-        $closed = false;
-        $close = static function () use (&$closed, $sessionId, $response): void {
-            if ($closed) {
-                return;
-            }
-            $closed = true;
-            self::closeSession($sessionId, $response);
-        };
-        if (class_exists(\Swoole\Coroutine::class, false) && \Swoole\Coroutine::getCid() > 0) {
-            \Swoole\Coroutine::defer($close);
-        }
+        $close = self::registerExactlyOnceTeardown($sessionId, $response);
 
-        $response->status(200);
-        $response->header('Content-Type', 'text/event-stream');
-        $response->header('Cache-Control', 'no-cache');
-        $response->header('Connection', 'keep-alive');
-        $response->header('X-Accel-Buffering', 'no');
-
-        // Capture the tenant THIS connection resolved, in its own coroutine where
-        // TenantContext is authoritative (TenancyPhase ran before route dispatch),
-        // so a later multiplex subscribe scopes its record from the connecting
-        // tenant rather than the draining coroutine's ambient one.
-        self::sessionRegistry()->open($sessionId, $response, self::currentTenantId(), self::currentTenantBlob());
+        self::beginSseResponse($response, $sessionId);
         self::sessionRegistry()->ensureQueue($sessionId);
         self::workerTables()->recordOwnership($sessionId);
         self::touchActiveSession($sessionId);
@@ -828,108 +931,6 @@ final class AsyncResourceSseServer
                 }
             }
             $close();
-        }
-    }
-
-    private static function triggerDeferredBlocks(
-        string $sessionId,
-        string $deferredRequestId,
-        ?string $lastEventId,
-        bool $allowPersistentDeferredSse,
-        bool $keepChannelOpen,
-    ): void
-    {
-        $registry = \Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry::consume($deferredRequestId);
-
-        $debugLog = static function (string $msg, array $data = []): void {
-            /** @var array<string, mixed> $data */
-            \Semitexa\Core\Log\StaticLoggerBridge::debug('ssr', $msg, $data);
-        };
-
-        if ($registry === null) {
-            $debugLog('registry_null', ['deferred_request_id' => $deferredRequestId]);
-            self::deliver($sessionId, [
-                'type' => 'done',
-                'live' => false,
-                'close' => true,
-                'reconnect' => false,
-            ]);
-            return;
-        }
-
-        $locale = $registry['locale'];
-
-        $debugLog('registry_found', [
-            'deferred_request_id' => $deferredRequestId,
-            'page_handle' => $registry['page_handle'],
-            'slots' => $registry['slots'],
-            'locale' => $locale,
-        ]);
-
-        // Use coroutine to resolve deferred blocks concurrently
-        if (class_exists(\Swoole\Coroutine::class, false) && \Swoole\Coroutine::getCid() > 0) {
-            self::createSessionCoroutine(static function () use ($sessionId, $registry, $lastEventId, $deferredRequestId, $debugLog, $allowPersistentDeferredSse, $keepChannelOpen, $locale): void {
-                try {
-                    $orchestrator = self::deferredBlockOrchestrator();
-                    $debugLog('orchestrator_resolved', ['session_id' => $sessionId]);
-                    $orchestrator->streamDeferredBlocks(
-                        sessionId: $sessionId,
-                        pageHandle: $registry['page_handle'],
-                        pageContext: $registry['page_context'],
-                        lastEventId: $lastEventId,
-                        deferredRequestId: $deferredRequestId,
-                        locale: $locale !== '' ? $locale : null,
-                        startLiveLoop: $allowPersistentDeferredSse,
-                        keepChannelOpen: $keepChannelOpen,
-                    );
-                } catch (\Throwable $e) {
-                    if (SseSessionCoroutines::isCancellation($e)) {
-                        $debugLog('streaming_cancelled', ['session_id' => $sessionId]);
-                        return;
-                    }
-
-                    $debugLog('streaming_failed', ['error' => $e->getMessage(), 'trace' => substr($e->getTraceAsString(), 0, 500)]);
-                    \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'Deferred block streaming failed', [
-                        'session_id' => $sessionId,
-                        'exception' => $e::class,
-                        'message' => $e->getMessage(),
-                    ]);
-                    self::deliver($sessionId, [
-                        'type' => 'done',
-                        'live' => false,
-                        'close' => true,
-                        'reconnect' => false,
-                    ]);
-                }
-            }, $sessionId);
-        } else {
-            try {
-                $orchestrator = self::deferredBlockOrchestrator();
-                $debugLog('orchestrator_resolved_sync', ['session_id' => $sessionId]);
-                $orchestrator->streamDeferredBlocks(
-                    sessionId: $sessionId,
-                    pageHandle: $registry['page_handle'],
-                    pageContext: $registry['page_context'],
-                    lastEventId: $lastEventId,
-                    deferredRequestId: $deferredRequestId,
-                    locale: $locale !== '' ? $locale : null,
-                    startLiveLoop: $allowPersistentDeferredSse,
-                    keepChannelOpen: $keepChannelOpen,
-                );
-            } catch (\Throwable $e) {
-                $debugLog('streaming_failed_sync', ['error' => $e->getMessage()]);
-                \Semitexa\Core\Log\StaticLoggerBridge::error('ssr', 'Deferred block streaming failed (sync)', [
-                    'session_id' => $sessionId,
-                    'exception' => $e::class,
-                    'message' => $e->getMessage(),
-                ]);
-                self::deliver($sessionId, [
-                    'type' => 'done',
-                    'live' => false,
-                    'close' => true,
-                    'reconnect' => false,
-                ]);
-            }
         }
     }
 
@@ -1105,79 +1106,20 @@ final class AsyncResourceSseServer
 
     private static function startDemoStreamProducer(string $sessionId, string $demoStream): void
     {
-        if ($demoStream !== 'showcase') {
-            return;
-        }
+        self::demoStreamProducer()->start($sessionId, $demoStream);
+    }
 
-        if (!self::sessionRegistry()->tryStartDemoProducer($sessionId)) {
-            return;
-        }
-
-        $producer = static function () use ($sessionId): void {
-            \Swoole\Coroutine::sleep(0.35);
-
-            if (!self::sessionRegistry()->isOpen($sessionId)) {
-                self::sessionRegistry()->stopDemoProducer($sessionId);
-                return;
-            }
-
-            $utcNow = static fn (): \DateTimeImmutable => new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
-
-            self::deliver($sessionId, [
-                'id' => 'demo_attached_' . substr(md5($sessionId), 0, 8),
-                'event' => 'notification',
-                'level' => 'info',
-                'title' => 'Stream attached',
-                'message' => 'The backend SSE stream is open. A new server-side minute tick will arrive every 60 seconds.',
-                'source' => 'swoole-worker',
-                'sent_at' => $utcNow()->format(DATE_ATOM),
-            ]);
-
-            $tick = 0;
-
-            while (self::sessionRegistry()->isOpen($sessionId)) {
-                $now = microtime(true);
-                $sleepSeconds = 60 - fmod($now, 60.0);
-
-                if ($sleepSeconds < 0.05) {
-                    $sleepSeconds += 60.0;
-                }
-
-                \Swoole\Coroutine::sleep($sleepSeconds);
-
-                if (!self::sessionRegistry()->isOpen($sessionId)) {
-                    self::sessionRegistry()->stopDemoProducer($sessionId);
-                    return;
-                }
-
-                $tick++;
-                $sentAt = $utcNow();
-
-                self::deliver($sessionId, [
-                    'id' => 'demo_minute_' . $tick . '_' . substr(md5($sessionId), 0, 8),
-                    'event' => 'scheduler.tick',
-                    'level' => 'success',
-                    'title' => 'Minute boundary reached',
-                    'message' => sprintf(
-                        'Backend minute tick #%d emitted at %s. The countdown should now restart for the next full minute.',
-                        $tick,
-                        $sentAt->format('H:i:s')
-                    ),
-                    'source' => 'scheduler',
-                    'tick' => $tick,
-                    'sent_at' => $sentAt->format(DATE_ATOM),
-                ]);
-            }
-
-            self::sessionRegistry()->stopDemoProducer($sessionId);
-        };
-
-        if (class_exists(\Swoole\Coroutine::class, false) && \Swoole\Coroutine::getCid() > 0) {
-            self::createSessionCoroutine($producer, $sessionId);
-            return;
-        }
-
-        self::sessionRegistry()->stopDemoProducer($sessionId);
+    private static function demoStreamProducer(): SseDemoStreamProducer
+    {
+        return new SseDemoStreamProducer(
+            self::sessionRegistry(),
+            static function (string $session, array $data): void {
+                self::deliver($session, $data);
+            },
+            static function (callable $task, string $session): void {
+                self::createSessionCoroutine($task, $session);
+            },
+        );
     }
 
     private static function shouldCloseAfterPayload(array $data): bool

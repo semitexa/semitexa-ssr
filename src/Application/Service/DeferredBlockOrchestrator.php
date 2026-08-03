@@ -8,7 +8,7 @@ use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Log\LoggerInterface;
 use Semitexa\Ssr\Application\Service\Async\SseAsyncResultDelivery;
-use Semitexa\Ssr\Application\Service\Component\ComponentRenderer;
+use Semitexa\Ssr\Application\Service\Component\ComponentHtmlRenderer;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Semitexa\Ssr\Domain\Model\DataProviderContext;
 use Semitexa\Ssr\Domain\Model\DeferredBlockPayload;
@@ -28,6 +28,9 @@ final class DeferredBlockOrchestrator
 {
     #[InjectAsReadonly]
     protected DataProviderRegistry $dataProviderRegistry;
+
+    #[InjectAsReadonly]
+    protected ComponentHtmlRenderer $componentRenderer;
 
     #[InjectAsReadonly]
     protected LoggerInterface $logger;
@@ -324,7 +327,7 @@ final class DeferredBlockOrchestrator
             try {
                 $this->applyLocale($locale);
                 $this->applyUiSseSession($uiSseSession);
-                $html = ComponentRenderer::render($name, $props, [], forceImmediateRender: true);
+                $html = $this->componentRenderer->render($name, $props, [], forceImmediateRender: true);
             } catch (\Throwable $e) {
                 $this->logger->error('Deferred component render failed', [
                     'component' => $name,

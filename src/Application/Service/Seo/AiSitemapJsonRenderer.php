@@ -4,23 +4,23 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Seo;
 
+use Semitexa\Core\Auth\PayloadAccessType;
+use Semitexa\Core\Attribute\AsService;
+use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Discovery\AttributeDiscovery;
 use Semitexa\Core\Request;
 use Semitexa\Core\Tenant\TenantContextInterface;
 
+#[AsService]
 final class AiSitemapJsonRenderer
 {
-    private static ?AttributeDiscovery $attributeDiscovery = null;
+    #[InjectAsReadonly]
+    protected AttributeDiscovery $attributeDiscovery;
 
-    public static function setAttributeDiscovery(AttributeDiscovery $attributeDiscovery): void
-    {
-        self::$attributeDiscovery = $attributeDiscovery;
-    }
-
-    public static function render(?Request $request = null, ?TenantContextInterface $tenantContext = null): string
+    public function render(?Request $request = null, ?TenantContextInterface $tenantContext = null): string
     {
         return json_encode(
-            self::buildDocument($request, $tenantContext),
+            $this->buildDocument($request, $tenantContext),
             JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR
         );
     }
@@ -28,36 +28,32 @@ final class AiSitemapJsonRenderer
     /**
      * @return array<string, mixed>
      */
-    public static function buildDocument(?Request $request = null, ?TenantContextInterface $tenantContext = null): array
+    public function buildDocument(?Request $request = null, ?TenantContextInterface $tenantContext = null): array
     {
-        if (self::$attributeDiscovery === null) {
-            throw new \LogicException('AiSitemapJsonRenderer requires AttributeDiscovery instance. Call setAttributeDiscovery() first.');
-        }
-
         $pages = [];
         $endpoints = [];
         $templates = [];
 
-        $routes = self::$attributeDiscovery->getRoutes();
+        $routes = $this->attributeDiscovery->getRoutes();
         usort($routes, static fn (array $a, array $b): int => ($a['path'] ?? '') <=> ($b['path'] ?? ''));
 
         foreach ($routes as $route) {
-            if (!self::isEligibleRoute($route)) {
+            if (!$this->isEligibleRoute($route)) {
                 continue;
             }
 
             $path = (string) $route['path'];
-            $entry = self::buildRouteEntry($route, $path, $request, $tenantContext);
+            $entry = $this->buildRouteEntry($route, $path, $request, $tenantContext);
 
-            if (self::isTemplatedPath($path)) {
+            if ($this->isTemplatedPath($path)) {
                 $templates[] = $entry + [
                     'path_template' => $path,
-                    'parameters' => self::extractPathParameters($path),
+                    'parameters' => $this->extractPathParameters($path),
                 ];
                 continue;
             }
 
-            if (self::isHtmlLikeRoute($route)) {
+            if ($this->isHtmlLikeRoute($route)) {
                 $pages[] = $entry;
                 continue;
             }
@@ -70,8 +66,8 @@ final class AiSitemapJsonRenderer
             'generated_at' => gmdate(DATE_ATOM),
             'site' => [
                 'ai_sitemap' => AiSitemapLocator::absoluteUrl($request, $tenantContext),
-                'robots' => self::absoluteUrl('/robots.txt', $request, $tenantContext),
-                'llms' => self::absoluteUrl('/llms.txt', $request, $tenantContext),
+                'robots' => $this->absoluteUrl('/robots.txt', $request, $tenantContext),
+                'llms' => $this->absoluteUrl('/llms.txt', $request, $tenantContext),
             ],
             'hints' => [
                 'purpose' => 'Crawler-oriented route inventory for LLMs and other machine agents.',
@@ -91,7 +87,7 @@ final class AiSitemapJsonRenderer
      * @param array<string, mixed> $route
      * @return array<string, mixed>
      */
-    private static function buildRouteEntry(
+    private function buildRouteEntry(
         array $route,
         string $path,
         ?Request $request = null,
@@ -100,23 +96,23 @@ final class AiSitemapJsonRenderer
     {
         return [
             'path' => $path,
-            'url' => self::absoluteUrl($path, $request, $tenantContext),
+            'url' => $this->absoluteUrl($path, $request, $tenantContext),
             'route_name' => $route['name'] ?? null,
-            'methods' => self::normalizeMethods($route),
+            'methods' => $this->normalizeMethods($route),
             'payload_class' => $route['class'] ?? null,
             'alternates' => [
-                'json' => self::absoluteUrl($path, $request, $tenantContext) . '?_format=json',
+                'json' => $this->absoluteUrl($path, $request, $tenantContext) . '?_format=json',
             ],
-            'content_types' => self::normalizeProduces($route),
+            'content_types' => $this->normalizeProduces($route),
         ];
     }
 
     /**
      * @param array<string, mixed> $route
      */
-    private static function isEligibleRoute(array $route): bool
+    private function isEligibleRoute(array $route): bool
     {
-        if (($route['public'] ?? false) !== true) {
+        if (self::accessTypeOf($route) !== 'public') {
             return false;
         }
 
@@ -129,15 +125,15 @@ final class AiSitemapJsonRenderer
             return false;
         }
 
-        return in_array('GET', self::normalizeMethods($route), true);
+        return in_array('GET', $this->normalizeMethods($route), true);
     }
 
     /**
      * @param array<string, mixed> $route
      */
-    private static function isHtmlLikeRoute(array $route): bool
+    private function isHtmlLikeRoute(array $route): bool
     {
-        $produces = self::normalizeProduces($route);
+        $produces = $this->normalizeProduces($route);
         if ($produces === []) {
             return true;
         }
@@ -155,7 +151,7 @@ final class AiSitemapJsonRenderer
      * @param array<string, mixed> $route
      * @return list<string>
      */
-    private static function normalizeMethods(array $route): array
+    private function normalizeMethods(array $route): array
     {
         $methods = $route['methods'] ?? [$route['method'] ?? 'GET'];
         $normalized = array_values(array_unique(array_map(
@@ -171,7 +167,7 @@ final class AiSitemapJsonRenderer
      * @param array<string, mixed> $route
      * @return list<string>
      */
-    private static function normalizeProduces(array $route): array
+    private function normalizeProduces(array $route): array
     {
         $produces = $route['produces'] ?? [];
         if (!is_array($produces)) {
@@ -186,7 +182,7 @@ final class AiSitemapJsonRenderer
         return array_values(array_filter($normalized, static fn (string $value): bool => $value !== ''));
     }
 
-    private static function isTemplatedPath(string $path): bool
+    private function isTemplatedPath(string $path): bool
     {
         return str_contains($path, '{') && str_contains($path, '}');
     }
@@ -194,7 +190,7 @@ final class AiSitemapJsonRenderer
     /**
      * @return list<string>
      */
-    private static function extractPathParameters(string $path): array
+    private function extractPathParameters(string $path): array
     {
         preg_match_all('/\{([a-zA-Z0-9_]+\??)\}/', $path, $matches);
 
@@ -204,12 +200,30 @@ final class AiSitemapJsonRenderer
         ));
     }
 
-    private static function absoluteUrl(
+    private function absoluteUrl(
         string $path,
         ?Request $request = null,
         ?TenantContextInterface $tenantContext = null,
     ): string
     {
         return AiSitemapLocator::originUrl($request, $tenantContext) . '/' . ltrim($path, '/');
+    }
+
+    /**
+     * Routes carry accessType, a PayloadAccessType enum (or its string value in
+     * hand-built arrays). A raw route has no 'access' and no 'public' key; both
+     * were assumed at different times and each silently rejected every route.
+     *
+     * @param array<string, mixed> $route
+     */
+    private static function accessTypeOf(array $route): ?string
+    {
+        $value = $route['accessType'] ?? null;
+
+        if ($value instanceof PayloadAccessType) {
+            return $value->value;
+        }
+
+        return is_string($value) && $value !== '' ? $value : null;
     }
 }

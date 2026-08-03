@@ -7,6 +7,7 @@ namespace Semitexa\Ssr\Tests\Unit\Component;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Core\Attribute\TransportType;
 use Semitexa\Core\Discovery\ClassDiscovery;
+use Semitexa\Ssr\Application\Service\Component\ComponentCatalog;
 use Semitexa\Ssr\Application\Service\Component\ComponentRegistry;
 use Semitexa\Ssr\Attribute\AsComponent;
 use Semitexa\Ssr\Attribute\WithDataProvider;
@@ -70,11 +71,7 @@ final class ComponentRegistryCompanionAttributeTest extends TestCase
 
     private function resetRegistry(): void
     {
-        $reflection = new \ReflectionClass(ComponentRegistry::class);
-        $components = $reflection->getProperty('components');
-        $components->setValue(null, []);
-        $initialized = $reflection->getProperty('initialized');
-        $initialized->setValue(null, false);
+        ComponentRegistry::setCatalog(new ComponentCatalog());
     }
 
     private function bootRegistryWith(array $componentClasses): void

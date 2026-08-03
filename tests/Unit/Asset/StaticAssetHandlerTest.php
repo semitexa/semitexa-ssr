@@ -6,7 +6,7 @@ namespace Semitexa\Ssr\Tests\Unit\Asset;
 
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
-use Semitexa\Ssr\Application\Service\Asset\ModuleAssetRegistry;
+use Semitexa\Ssr\Application\Service\Asset\ModuleAssetResolver;
 use Semitexa\Ssr\Application\Service\Asset\StaticAssetHandler;
 
 final class StaticAssetHandlerTest extends TestCase
@@ -25,7 +25,7 @@ final class StaticAssetHandlerTest extends TestCase
         self::assertSame('video/mp4', $map['mp4'] ?? null);
         self::assertSame('video/webm', $map['webm'] ?? null);
 
-        $allowed = new \ReflectionClassConstant(ModuleAssetRegistry::class, 'ALLOWED_EXTENSIONS');
+        $allowed = new \ReflectionClassConstant(ModuleAssetResolver::class, 'ALLOWED_EXTENSIONS');
         $extensions = $allowed->getValue();
         self::assertContains('mp4', $extensions);
         self::assertContains('webm', $extensions);
@@ -41,7 +41,7 @@ final class StaticAssetHandlerTest extends TestCase
     #[Test]
     public function every_allowed_extension_has_a_content_type(): void
     {
-        $extensions = (new \ReflectionClassConstant(ModuleAssetRegistry::class, 'ALLOWED_EXTENSIONS'))->getValue();
+        $extensions = (new \ReflectionClassConstant(ModuleAssetResolver::class, 'ALLOWED_EXTENSIONS'))->getValue();
         $map = (new \ReflectionClassConstant(StaticAssetHandler::class, 'CONTENT_TYPES'))->getValue();
 
         $untyped = array_values(array_diff($extensions, array_keys($map)));
@@ -56,7 +56,7 @@ final class StaticAssetHandlerTest extends TestCase
     #[Test]
     public function video_assets_stay_allow_listed(): void
     {
-        $extensions = (new \ReflectionClassConstant(ModuleAssetRegistry::class, 'ALLOWED_EXTENSIONS'))->getValue();
+        $extensions = (new \ReflectionClassConstant(ModuleAssetResolver::class, 'ALLOWED_EXTENSIONS'))->getValue();
         self::assertContains('mp4', $extensions);
         self::assertContains('webm', $extensions);
     }

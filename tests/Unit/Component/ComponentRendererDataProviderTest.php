@@ -6,9 +6,11 @@ namespace Semitexa\Ssr\Tests\Unit\Component;
 
 use PHPUnit\Framework\TestCase;
 use Semitexa\Core\Attribute\TransportType;
+use Semitexa\Ssr\Application\Service\Component\ComponentCatalog;
 use Semitexa\Ssr\Application\Service\Component\ComponentRegistry;
 use Semitexa\Ssr\Application\Service\Component\ComponentRenderer;
 use Semitexa\Ssr\Application\Service\DataProviderRegistry;
+use Semitexa\Ssr\Application\Service\Template\ModuleTemplateCatalog;
 use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
 use Semitexa\Ssr\Domain\Model\DataProviderContext;
 use Semitexa\Ssr\Domain\Contract\DataProviderInterface;
@@ -47,17 +49,21 @@ final class ComponentRendererDataProviderTest extends TestCase
         ComponentRenderer::setDataProviderRegistry(null);
         ComponentRenderer::setCurrentRequest(null);
         // Drop the stub Twig so subsequent tests rebuild it from real module paths.
-        $reflection = new \ReflectionClass(ModuleTemplateRegistry::class);
-        $reflection->getProperty('twig')->setValue(null, null);
-        $reflection->getProperty('loader')->setValue(null, null);
-        $reflection->getProperty('initialized')->setValue(null, false);
+        $catalog = (new \ReflectionClass(ModuleTemplateRegistry::class))
+            ->getProperty('catalog')->getValue();
+        if (!$catalog instanceof ModuleTemplateCatalog) {
+            $catalog = new ModuleTemplateCatalog();
+            ModuleTemplateRegistry::setCatalog($catalog);
+        }
+        $reflection = new \ReflectionClass($catalog);
+        $reflection->getProperty('twig')->setValue($catalog, null);
+        $reflection->getProperty('loader')->setValue($catalog, null);
+        $reflection->getProperty('initialized')->setValue($catalog, false);
     }
 
     private function resetRegistries(): void
     {
-        $reflection = new \ReflectionClass(ComponentRegistry::class);
-        $reflection->getProperty('components')->setValue(null, []);
-        $reflection->getProperty('initialized')->setValue(null, false);
+        ComponentRegistry::setCatalog(new ComponentCatalog());
     }
 
     /**
@@ -67,8 +73,12 @@ final class ComponentRendererDataProviderTest extends TestCase
      */
     private function markRegistryInitialized(): void
     {
-        $reflection = new \ReflectionClass(ComponentRegistry::class);
-        $reflection->getProperty('initialized')->setValue(null, true);
+        $catalog = (new \ReflectionClass(ComponentRegistry::class))->getProperty('catalog')->getValue();
+        if (!$catalog instanceof ComponentCatalog) {
+            $catalog = new ComponentCatalog();
+            ComponentRegistry::setCatalog($catalog);
+        }
+        (new \ReflectionClass($catalog))->getProperty('initialized')->setValue($catalog, true);
     }
 
     private function installTwigStub(): void
@@ -79,10 +89,16 @@ final class ComponentRendererDataProviderTest extends TestCase
         ]);
         $twig = new TwigEnvironment($loader, ['autoescape' => false, 'cache' => false]);
 
-        $reflection = new \ReflectionClass(ModuleTemplateRegistry::class);
-        $reflection->getProperty('twig')->setValue(null, $twig);
-        $reflection->getProperty('loader')->setValue(null, $loader);
-        $reflection->getProperty('initialized')->setValue(null, true);
+        $catalog = (new \ReflectionClass(ModuleTemplateRegistry::class))
+            ->getProperty('catalog')->getValue();
+        if (!$catalog instanceof ModuleTemplateCatalog) {
+            $catalog = new ModuleTemplateCatalog();
+            ModuleTemplateRegistry::setCatalog($catalog);
+        }
+        $reflection = new \ReflectionClass($catalog);
+        $reflection->getProperty('twig')->setValue($catalog, $twig);
+        $reflection->getProperty('loader')->setValue($catalog, $loader);
+        $reflection->getProperty('initialized')->setValue($catalog, true);
     }
 
     private function registerComponent(?string $providerClass): void

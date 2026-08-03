@@ -5,95 +5,76 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service\Extension;
 
 use Semitexa\Core\Discovery\ClassDiscovery;
-use Semitexa\Ssr\Attribute\AsTwigExtension;
-use Semitexa\Core\Log\StaticLoggerBridge;
-use Twig\TwigFunction;
-use Twig\TwigFilter;
 
+/**
+ * Static entry point for discovered Twig functions and filters.
+ *
+ * Retained while ModuleTemplateRegistry — still static itself — pulls the
+ * registered callables in from a static context, and while modules register
+ * their own extensions without a container to hand. It holds exactly one wired
+ * slot and no logic; discovery lives in {@see TwigExtensionCatalog}, which
+ * container-managed callers inject directly.
+ *
+ * Not documented public API, so this is a full deletion candidate once the
+ * template registry stops being static.
+ */
 final class TwigExtensionRegistry
 {
-    /** @var array<string, array{callback: callable, options: array}> */
-    private static array $functions = [];
+    private static ?TwigExtensionCatalog $catalog = null;
 
-    /** @var array<string, callable> */
-    private static array $filters = [];
-
-    private static bool $initialized = false;
-    private static ?ClassDiscovery $classDiscovery = null;
+    public static function setCatalog(TwigExtensionCatalog $catalog): void
+    {
+        self::$catalog = $catalog;
+    }
 
     public static function setClassDiscovery(ClassDiscovery $classDiscovery): void
     {
-        self::$classDiscovery = $classDiscovery;
+        self::catalog()->setClassDiscovery($classDiscovery);
     }
 
     public static function initialize(): void
     {
-        if (self::$initialized) {
-            return;
-        }
-
-        if (self::$classDiscovery === null) {
-            throw new \LogicException('TwigExtensionRegistry requires ClassDiscovery instance. Call setClassDiscovery() first.');
-        }
-
-        $extensionClasses = self::$classDiscovery->findClassesWithAttribute(AsTwigExtension::class);
-
-        foreach ($extensionClasses as $class) {
-            $reflection = new \ReflectionClass($class);
-            
-            if (!$reflection->isInstantiable()) {
-                continue;
-            }
-
-            try {
-                $extension = $reflection->newInstance();
-                
-                if (method_exists($extension, 'registerFunctions')) {
-                    $extension->registerFunctions();
-                }
-                
-                if (method_exists($extension, 'registerFilters')) {
-                    $extension->registerFilters();
-                }
-            } catch (\Throwable $e) {
-                StaticLoggerBridge::error('ssr', 'Failed to load Twig extension', [
-                    'class' => $class,
-                    'exception' => $e::class,
-                    'message' => $e->getMessage(),
-                ]);
-            }
-        }
-
-        self::$initialized = true;
+        self::catalog()->initialize();
     }
 
+    /**
+     * @param array<string, mixed> $options
+     */
     public static function registerFunction(
         string $name,
         callable $callback,
         array $options = []
     ): void {
-        self::$functions[$name] = [
-            'callback' => $callback,
-            'options' => $options,
-        ];
+        self::catalog()->registerFunction($name, $callback, $options);
     }
 
     public static function registerFilter(string $name, callable $callback): void
     {
-        self::$filters[$name] = $callback;
+        self::catalog()->registerFilter($name, $callback);
     }
 
-    /** @return array<string, array{callback: callable, options: array}> */
+    /**
+     * @return array<string, array{callback: callable, options: array}>
+     */
     public static function getFunctions(): array
     {
-        self::initialize();
-        return self::$functions;
+        return self::catalog()->getFunctions();
     }
 
-    /** @return array<string, callable> */
+    /**
+     * @return array<string, callable>
+     */
     public static function getFilters(): array
     {
-        self::initialize();
-        return self::$filters;
+        return self::catalog()->getFilters();
+    }
+
+    /**
+     * Falls back to an unwired catalog so callers driving the static API
+     * without a container keep working; they set class discovery themselves.
+     */
+    private static function catalog(): TwigExtensionCatalog
+    {
+        return self::$catalog ??= new TwigExtensionCatalog();
     }
 }

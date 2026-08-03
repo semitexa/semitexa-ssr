@@ -86,6 +86,41 @@ final class SseDeferredDoorTest extends TestCase
     }
 
     #[Test]
+    public function an_entry_that_vanishes_between_the_two_lookups_is_abandoned(): void
+    {
+        // The door reads the registry twice: once for the bind token, once for the
+        // page. In production another worker or a TTL sweep can delete the row in
+        // between, and the client must then be told to stop rather than left on a
+        // stream that will never start.
+        //
+        // Both reads go through consume(), so an expiring entry is caught by the
+        // first one — the gap is only reachable by making the SECOND read miss,
+        // which is what the injected reader is for. The entry below really is in
+        // the registry, so the bind-token check genuinely passes.
+        $this->bootRegistry();
+        DeferredRequestRegistry::store('dr_race', 'demo.home', ['k' => 'v'], ['slot-a'], 'tok');
+
+        $reads = 0;
+        $door = $this->door(function (string $id) use (&$reads): ?array {
+            $reads++;
+
+            return null; // gone by the time the page is fetched
+        });
+
+        $opened = $door->open(null, 'sess-race', 'dr_race', 'tok', null, false, false);
+
+        self::assertTrue($opened, 'the bind token was valid, so the door did open');
+        self::assertSame(1, $reads, 'the page lookup ran exactly once');
+        self::assertSame([], $this->streamed, 'nothing may stream for an entry that is gone');
+        self::assertSame(
+            [['sess-race', self::terminalFrame()]],
+            $this->delivered,
+            'the client is told to stop, over the queue rather than the raw response',
+        );
+        self::assertSame([], $this->written, 'the response is not written to on this path');
+    }
+
+    #[Test]
     public function an_id_with_no_registry_entry_is_refused_before_anything_streams(): void
     {
         // Both registry reads go through DeferredRequestRegistry::consume(), so a
@@ -221,7 +256,7 @@ final class SseDeferredDoorTest extends TestCase
         ));
     }
 
-    private function door(): SseDeferredDoor
+    private function door(?\Closure $readRegistry = null): SseDeferredDoor
     {
         return new SseDeferredDoor(
             function (): object {
@@ -250,6 +285,7 @@ final class SseDeferredDoorTest extends TestCase
             function (callable $task, string $session): void {
                 $this->spawned[] = $session;
             },
+            $readRegistry,
         );
     }
 }

@@ -47,8 +47,8 @@ final class SseDemoStreamProducer
     private const BOUNDARY_EPSILON_SECONDS = 0.05;
 
     /**
-     * @param callable(string, array<string, mixed>): void $deliver   push one frame to a session
-     * @param callable(callable, string): void             $spawn     run a callable in a session coroutine
+     * @param \Closure(string, array<string, mixed>): void $deliver   push one frame to a session
+     * @param \Closure(callable, string): void             $spawn     run a callable in a session coroutine
      */
     public function __construct(
         private readonly SseSessionRegistry $sessions,

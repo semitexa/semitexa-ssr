@@ -53,6 +53,29 @@ final class SseStreamRequestTest extends TestCase
     }
 
     #[Test]
+    public function an_array_session_id_is_treated_as_absent(): void
+    {
+        // `?session_id[]=x` hands Swoole an array. Casting it would warn and yield
+        // the literal 'Array' — one queue key shared by every request shaped that
+        // way, so one client could read another's frames.
+        $stream = SseStreamRequest::fromRequest(self::request(['session_id' => ['x']]));
+
+        self::assertStringStartsWith('sse_', $stream->sessionId);
+        self::assertNotSame('Array', $stream->sessionId);
+        self::assertNull($stream->rawSessionId, 'a non-string raw value must not reach the bearer-shape check');
+    }
+
+    #[Test]
+    public function a_minted_session_id_has_the_accepted_channel_shape(): void
+    {
+        // Minted ids must satisfy the same sse_<32hex> shape the server accepts as
+        // a channel id; uniqid() produced a '.' and did not.
+        $stream = SseStreamRequest::fromRequest(self::request([]));
+
+        self::assertMatchesRegularExpression('/\Asse_[a-f0-9]{32}\z/', $stream->sessionId);
+    }
+
+    #[Test]
     public function absent_parameters_read_as_empty_strings(): void
     {
         $stream = SseStreamRequest::fromRequest(self::request([]));

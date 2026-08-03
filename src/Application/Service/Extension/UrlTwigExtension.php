@@ -133,6 +133,16 @@ final class UrlTwigExtension
             return '';
         }
 
+        // `x-forwarded-host` is client-supplied unless a proxy overwrites it, and
+        // this origin ends up in canonical and share links. When the deployment
+        // says what it is — APP_URL or APP_HOST — that is the allowlist: a host
+        // that does not match is discarded here, and origin() falls through to the
+        // configured value. With neither configured (local dev) there is nothing
+        // to check against, so the request is trusted as before.
+        if (!self::isAllowedHost($host)) {
+            return '';
+        }
+
         $scheme = self::firstCsvValue($headers['x-forwarded-proto'] ?? '');
         if ($scheme === '') {
             $https = strtolower($server['https'] ?? '');
@@ -145,9 +155,52 @@ final class UrlTwigExtension
         return sprintf('%s://%s', $scheme, $host);
     }
 
+    /**
+     * Does a request-derived host match what this deployment declares itself to be?
+     *
+     * Compared without port, case-insensitively: a proxy may forward
+     * `example.com:443` for an origin configured as `https://example.com`, and that
+     * is the same host.
+     */
+    private static function isAllowedHost(string $host): bool
+    {
+        $configured = trim((string) (Environment::getEnvValue('APP_URL') ?? ''));
+        if ($configured !== '') {
+            $parsed = parse_url($configured, PHP_URL_HOST);
+            $configured = is_string($parsed) ? $parsed : '';
+        }
+
+        if ($configured === '') {
+            $configured = trim((string) (Environment::getEnvValue('APP_HOST') ?? ''));
+        }
+
+        if ($configured === '') {
+            return true;
+        }
+
+        return self::hostWithoutPort($host) === self::hostWithoutPort($configured);
+    }
+
+    private static function hostWithoutPort(string $host): string
+    {
+        $host = strtolower(trim($host));
+        $colon = strrpos($host, ':');
+
+        // Only strip a trailing `:port`, never a colon inside a bare IPv6 literal.
+        if ($colon !== false && !str_contains(substr($host, $colon + 1), ':') && ctype_digit(substr($host, $colon + 1))) {
+            $host = substr($host, 0, $colon);
+        }
+
+        return trim($host, '[]');
+    }
+
     private static function configuredScheme(): string
     {
-        return trim((string) (Environment::getEnvValue('APP_SCHEME') ?? 'http'));
+        // `?? 'http'` alone only defaults a *missing* entry. An APP_SCHEME that is
+        // present but empty trims to '' and would build `://example.com`.
+        $scheme = trim((string) (Environment::getEnvValue('APP_SCHEME') ?? ''));
+
+        return $scheme !== '' ? $scheme : 'http';
     }
 
     /**

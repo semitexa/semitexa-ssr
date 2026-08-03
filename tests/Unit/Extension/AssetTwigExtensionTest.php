@@ -6,6 +6,7 @@ namespace Semitexa\Ssr\Tests\Unit\Extension;
 
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+use Semitexa\Ssr\Application\Service\Asset\AssetManager;
 use Semitexa\Ssr\Application\Service\Extension\AssetTwigExtension;
 
 /**
@@ -23,13 +24,27 @@ use Semitexa\Ssr\Application\Service\Extension\AssetTwigExtension;
  */
 final class AssetTwigExtensionTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        // AssetManager memoizes per-module versions and file fingerprints in
+        // statics that outlive a single test. Clearing them here keeps these
+        // assertions independent of whatever ran before them in the suite.
+        AssetManager::reset();
+    }
+
     #[Test]
     public function an_asset_url_carries_a_cache_busting_version(): void
     {
         $url = (new AssetTwigExtension())->assetUrl('app.css');
 
+        // Deliberately not pinned to a hex shape: the version is a file
+        // fingerprint only when the file is on disk, and otherwise falls back to
+        // SEMITEXA_ASSET_VERSION / SEMITEXA_RELEASE_VERSION / APP_VERSION, which
+        // are release strings like `2026.07.22.1910`. What has teeth is that a
+        // non-empty version is present at all — without it the framework serves
+        // the asset must-revalidate instead of immutable.
         self::assertMatchesRegularExpression(
-            '/\?v=[0-9a-f]+$/',
+            '/\?v=.+$/',
             $url,
             'asset() lost its fingerprint; every asset silently drops to must-revalidate caching',
         );

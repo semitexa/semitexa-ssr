@@ -258,18 +258,6 @@ final class AsyncResourceSseServer
      * served as a stream (the dispatch is correct, not over-broad).
      */
     /**
-     * Turn an accepted request into a live stream: 200 + SSE headers, the
-     * worker-local session record, the authenticated-session index entry, and
-     * the cross-worker ownership claim.
-     *
-     * Order matters. The session record and its empty queue must exist before
-     * any frame is flushed, or a concurrent deliver() on this worker would judge
-     * the session unknown and route it cross-worker to a socket that is right
-     * here.
-     *
-     * @return string the authenticated user id, or '' for a guest stream.
-     */
-    /**
      * Open the HTTP side of an SSE stream and register the session.
      *
      * Shared by the kiss admit path and by a held-open resource stream: both
@@ -332,6 +320,18 @@ final class AsyncResourceSseServer
         return $close;
     }
 
+    /**
+     * Turn an accepted request into a live stream: 200 + SSE headers, the
+     * worker-local session record, the authenticated-session index entry, and
+     * the cross-worker ownership claim.
+     *
+     * Order matters. The session record and its empty queue must exist before
+     * any frame is flushed, or a concurrent deliver() on this worker would judge
+     * the session unknown and route it cross-worker to a socket that is right
+     * here.
+     *
+     * @return string the authenticated user id, or '' for a guest stream.
+     */
     private static function openSseStream(Request $request, Response $response, string $sessionId): string
     {
         self::beginSseResponse($response, $sessionId);

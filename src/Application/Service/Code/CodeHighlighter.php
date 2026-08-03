@@ -153,7 +153,7 @@ final class CodeHighlighter
 
         try {
             $tokens = token_get_all($syntheticOpenTag ? "<?php\n" . $source : $source, TOKEN_PARSE);
-        } catch (\ParseError) {
+        } catch (\CompileError) {
             // Source is not valid PHP — fall back to plain escaped output
             return new Markup(htmlspecialchars($source, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'), 'UTF-8');
         }
@@ -198,7 +198,7 @@ final class CodeHighlighter
 
         try {
             $tokens = token_get_all($syntheticOpenTag ? "<?php\n" . $source : $source, TOKEN_PARSE);
-        } catch (\ParseError) {
+        } catch (\CompileError) {
             $escaped = htmlspecialchars($source, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
             $html = '';
             foreach (preg_split("/(\r\n|\n|\r)/", $escaped) ?: [$escaped] as $index => $lineText) {

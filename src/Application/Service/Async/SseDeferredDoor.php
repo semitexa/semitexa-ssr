@@ -13,10 +13,15 @@ use Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry;
  * A deferred request is minted during the page render and redeemed moments later
  * over SSE. Two things have to be true for that to be safe: the redeemer must
  * hold the bind token the render issued, and the request must still be in the
- * registry (it is single-use — {@see DeferredRequestRegistry::consume()} takes
- * it). Either check failing ends the exchange politely with a terminal frame
+ * registry. Either check failing ends the exchange politely with a terminal frame
  * rather than an error, because the usual cause is a stale tab or a double
  * redeem, not an attack.
+ *
+ * Note that {@see DeferredRequestRegistry::consume()} does not live up to its
+ * name: it deletes the row only when the TTL has passed and otherwise returns the
+ * entry where it is. Redemption is therefore bounded by that TTL, not by a single
+ * use — which is why the door reads the registry twice rather than holding a
+ * result it believes nobody else can obtain.
  *
  * Every failure path emits the same terminal frame: done, not live, close, do
  * not reconnect. Saying so in one place matters — the client's `close` listener
@@ -33,9 +38,11 @@ final class SseDeferredDoor
     /**
      * The one way this exchange ends when it cannot proceed.
      *
-     * `reconnect: false` is the load-bearing part — a client that retried a
-     * consumed deferred id would loop forever, since the registry entry is gone
-     * for good.
+     * `reconnect: false` is the load-bearing part. A client that retried here has
+     * already failed the bind-token check or found no entry, and neither outcome
+     * changes on a retry: the token is whatever the render issued, and an entry
+     * that is absent only becomes more absent once its TTL passes. Retrying would
+     * loop against a verdict that cannot flip.
      */
     private const TERMINAL_FRAME = [
         'type' => 'done',

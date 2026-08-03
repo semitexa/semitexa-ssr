@@ -86,26 +86,29 @@ final class SseDeferredDoorTest extends TestCase
     }
 
     #[Test]
-    public function an_id_that_vanishes_between_the_two_lookups_is_abandoned(): void
+    public function an_id_with_no_registry_entry_is_refused_before_anything_streams(): void
     {
-        // The door reads the registry twice — once to check the bind token, once
-        // to fetch the page — so an entry can legitimately disappear in between
-        // (TTL expiry, a worker reset). The client must then be told to stop
-        // rather than left waiting on a stream that will never start.
+        // Both registry reads go through DeferredRequestRegistry::consume(), so a
+        // missing or expired entry is caught by the *first* of them: the bind-token
+        // check fails and the door refuses without ever reaching the page lookup.
+        //
+        // This test previously claimed to cover the entry vanishing *between* the
+        // two lookups, and did not: it stored one id and opened with another, so it
+        // failed at the first check like this one does. That race is not reachable
+        // from a unit test as the door stands — open() calls matchesBindToken() and
+        // stream() back to back with no collaborator in between, and TTL expiry is
+        // caught by the first read. Covering it would take a seam in the door.
         $this->bootRegistry();
-        DeferredRequestRegistry::store('dr_3', 'demo.home', ['k' => 'v'], ['slot-a'], 'tok');
 
         $door = new SseDeferredDoor(
             static fn (): object => new class {
                 public function streamDeferredBlocks(...$args): void
                 {
-                    throw new \LogicException('must not stream a vanished entry');
+                    throw new \LogicException('must not stream an entry that is not there');
                 }
             },
             function (string $session, array $data): void {
                 $this->delivered[] = [$session, $data];
-                // Drop the entry the moment the bind-token check has passed,
-                // reproducing the race without reaching into the door.
             },
             function (mixed $response, array $data): void {
                 $this->written[] = $data;
@@ -115,15 +118,15 @@ final class SseDeferredDoorTest extends TestCase
             },
         );
 
-        DeferredRequestRegistry::remove('dr_3_gone');
-        $opened = $door->open(null, 'sess-3', 'dr_3_gone', 'tok', null, false, false);
+        $opened = $door->open(null, 'sess-3', 'dr_never_minted', 'tok', null, false, false);
 
         self::assertFalse($opened, 'an id with no entry cannot satisfy the bind-token check');
         self::assertSame(
             [self::terminalFrame()],
             $this->written,
-            'the never-minted id is refused with the terminal frame',
+            'the unknown id is refused with the terminal frame',
         );
+        self::assertSame([], $this->spawned, 'nothing is spawned for an id that was never minted');
     }
 
     #[Test]

@@ -38,12 +38,26 @@ final class SseStreamRequest
         $header = is_array($request->header ?? null) ? $request->header : [];
 
         $rawSessionId = $get['session_id'] ?? null;
+        // `session_id[]=x` hands Swoole an array for that key. Casting it emits an
+        // "Array to string conversion" warning and yields the literal string
+        // "Array" — which every request shaped that way would then share as one
+        // queue key. Anything that is not a string is no session id at all, so it
+        // takes the minting branch below.
+        if (!is_string($rawSessionId)) {
+            $rawSessionId = null;
+        }
+
         $lastEventId = $header['last-event-id'] ?? null;
 
         return new self(
             // A client may bring its own id (that is how a reconnect rejoins its
             // queue); absent one, mint a fresh session rather than refuse.
-            sessionId: trim((string) ($rawSessionId ?: uniqid('sse_', true))),
+            //
+            // Minted through the server's CSPRNG rather than uniqid(): the id keys
+            // this session's frame queue, and uniqid() is time-derived, guessable
+            // from a neighbouring id, and shaped with a `.` that does not match the
+            // accepted `sse_<32hex>` channel id.
+            sessionId: trim((string) ($rawSessionId ?: AsyncResourceSseServer::mintStreamId())),
             demoStream: isset($get['demo_stream']) ? trim((string) $get['demo_stream']) : '',
             deferredRequestId: trim((string) ($get['deferred_request_id'] ?? '')),
             rawMode: trim((string) ($get['mode'] ?? '')),

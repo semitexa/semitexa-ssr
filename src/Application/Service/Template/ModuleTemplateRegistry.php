@@ -84,7 +84,7 @@ final class ModuleTemplateRegistry
     }
 
     /**
-     * @return array<string, string>
+     * @return array<string, array{aliases: list<string>, path: string, type: string}>
      */
     public static function getModulePaths(): array
     {

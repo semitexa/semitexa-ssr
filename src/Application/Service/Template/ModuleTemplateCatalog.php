@@ -44,6 +44,7 @@ final class ModuleTemplateCatalog
     private ?TwigEnvironment $twig = null;
     private ?LoaderInterface $loader = null;
 
+    /** @var array<string, array{aliases: list<string>, path: string, type: string}> */
     private array $modulePaths = [];
     private bool $initialized = false;
     #[InjectAsReadonly]
@@ -99,6 +100,10 @@ final class ModuleTemplateCatalog
     public function getTwig(): TwigEnvironment
     {
         $this->initialize();
+        if (!($this->twig instanceof TwigEnvironment)) {
+            throw new \LogicException('ModuleTemplateCatalog Twig environment was not initialized.');
+        }
+
         return $this->twig;
     }
 
@@ -106,7 +111,7 @@ final class ModuleTemplateCatalog
     {
         $this->initialize();
         if (!($this->loader instanceof LoaderInterface)) {
-            throw new \LogicException('ModuleTemplateRegistry loader was not initialized.');
+            throw new \LogicException('ModuleTemplateCatalog loader was not initialized.');
         }
 
         return $this->loader;
@@ -149,7 +154,7 @@ final class ModuleTemplateCatalog
         }
 
         if (!isset($this->moduleRegistry)) {
-            throw new \LogicException('ModuleTemplateRegistry requires ModuleRegistry instance. Call setModuleRegistry() first.');
+            throw new \LogicException('ModuleTemplateCatalog requires ModuleRegistry instance. Call setModuleRegistry() first.');
         }
 
         $modules = $this->moduleRegistry->getModules();
@@ -347,113 +352,6 @@ final class ModuleTemplateCatalog
             return;
         }
 
-        // layout_slot() - existing
-        if (class_exists(\Semitexa\Ssr\Application\Service\Layout\LayoutSlotRegistry::class)) {
-            $this->twig->addFunction(new TwigFunction(
-                'layout_slot',
-                function (array $context, string $slot, array $extraContext = []) {
-                    /** @var array<string, mixed> $context */
-                    /** @var array<string, mixed> $extraContext */
-                    $pageHandle = $context['page_handle'] ?? $context['layout_handle'] ?? null;
-                    if ($pageHandle === null || $pageHandle === '') {
-                        return '';
-                    }
-                    $layoutFrame = $context['layout_frame'] ?? null;
-                    $html = \Semitexa\Ssr\Application\Service\Layout\LayoutSlotRegistry::render($pageHandle, $slot, $context, $extraContext, $layoutFrame);
-                    return new \Twig\Markup($html, 'UTF-8');
-                },
-                ['needs_context' => true, 'is_safe' => ['html']]
-            ));
-        }
-
-        // layout_slot_deferred() - renders deferred placeholder or full content
-        if (class_exists(\Semitexa\Ssr\Application\Service\Isomorphic\PlaceholderRenderer::class)) {
-            $this->twig->addFunction(new TwigFunction(
-                'layout_slot_deferred',
-                function (array $context, string $slot, array $extraContext = []) {
-                    /** @var array<string, mixed> $context */
-                    /** @var array<string, mixed> $extraContext */
-                    $deferredSlots = $context['__ssr_deferred_slots'] ?? [];
-                    foreach ($deferredSlots as $slotDef) {
-                        if ($slotDef->slotId === strtolower($slot)) {
-                            $pageHandle = $context['page_handle'] ?? $context['layout_handle'] ?? null;
-                            if ($pageHandle !== null && $pageHandle !== '') {
-                                \Semitexa\Ssr\Application\Service\Layout\SlotAssetCollector::collectModuleRefs(
-                                    \Semitexa\Ssr\Application\Service\Layout\LayoutSlotRegistry::getDeferredClientModulesForSlot(
-                                        $pageHandle,
-                                        $slot,
-                                    )
-                                );
-                            }
-
-                            return new \Twig\Markup(
-                                \Semitexa\Ssr\Application\Service\Isomorphic\PlaceholderRenderer::renderPlaceholder($slotDef),
-                                'UTF-8'
-                            );
-                        }
-                    }
-                    // Not deferred — render normally
-                    $pageHandle = $context['page_handle'] ?? $context['layout_handle'] ?? null;
-                    if ($pageHandle === null || $pageHandle === '') {
-                        return '';
-                    }
-                    $layoutFrame = $context['layout_frame'] ?? null;
-                    $html = \Semitexa\Ssr\Application\Service\Layout\LayoutSlotRegistry::render($pageHandle, $slot, $context, $extraContext, $layoutFrame);
-                    return new \Twig\Markup($html, 'UTF-8');
-                },
-                ['needs_context' => true, 'is_safe' => ['html']]
-            ));
-        }
-
-        // component() - new
-        $this->twig->addFunction(new TwigFunction(
-            'component',
-            function (string $name, array $props = [], array $slots = []) {
-                $html = \Semitexa\Ssr\Application\Service\Component\ComponentRenderer::render($name, $props, $slots);
-                return new \Twig\Markup($html, 'UTF-8');
-            },
-            ['is_safe' => ['html']]
-        ));
-
-        // slot() - for component slots
-        $this->twig->addFunction(new TwigFunction(
-            'slot',
-            function (array $context, string $name) {
-                $html = \Semitexa\Ssr\Application\Service\Component\ComponentSlotRenderer::render($name, $context);
-                return new \Twig\Markup($html, 'UTF-8');
-            },
-            ['needs_context' => true, 'is_safe' => ['html']]
-        ));
-
-        $this->twig->addFunction(new TwigFunction(
-            'component_event_attrs',
-            /**
-             * @param array<array-key, mixed> $context
-             * @param array<array-key, mixed> $payload
-             */
-            function (array $context, string $trigger, array $payload = []) {
-                return new \Twig\Markup(
-                    \Semitexa\Ssr\Application\Service\Component\ComponentEventBridge::renderTriggerAttributes($context, $trigger, $payload),
-                    'UTF-8'
-                );
-            },
-            ['needs_context' => true, 'is_safe' => ['html']]
-        ));
-
-        // SEO functions - page_title, meta
-        if (class_exists(\Semitexa\Ssr\Application\Service\Seo\SeoMeta::class)) {
-            $this->twig->addFunction(new TwigFunction(
-                'page_title',
-                function (?string $title = null) { return \Semitexa\Ssr\Application\Service\Seo\SeoMeta::getTitle($title); }
-            ));
-
-            $this->twig->addFunction(new TwigFunction(
-                'meta',
-                function (string $name, ?string $content = null) { return new \Twig\Markup(\Semitexa\Ssr\Application\Service\Seo\SeoMeta::tag($name, $content), 'UTF-8'); },
-                ['is_safe' => ['html']]
-            ));
-        }
-
         // Custom Twig Extensions from modules
         if (class_exists(\Semitexa\Ssr\Application\Service\Extension\TwigExtensionRegistry::class)) {
             \Semitexa\Ssr\Application\Service\Extension\TwigExtensionRegistry::initialize();
@@ -467,261 +365,6 @@ final class ModuleTemplateCatalog
             }
         }
 
-        // Asset function — asset(path, module) → fingerprinted, immutable-
-        // cacheable URL. (The Laravel-compat mix()/version() functions are
-        // gone: they presupposed a /build/ manifest no build step produces.)
-        if (class_exists(\Semitexa\Ssr\Application\Service\Asset\AssetManager::class)) {
-            $this->twig->addFunction(new TwigFunction(
-                'asset',
-                fn (string $path, ?string $module = null) => \Semitexa\Ssr\Application\Service\Asset\AssetManager::getUrl($path, $module)
-            ));
-        }
-
-        // Unified asset management - asset_head(), asset_body(), asset_require()
-        if (class_exists(\Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore::class)) {
-            $this->twig->addFunction(new TwigFunction(
-                'asset_head',
-                function () {
-                    $collector = \Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore::get();
-                    return new \Twig\Markup(
-                        \Semitexa\Ssr\Application\Service\Asset\AssetRenderer::renderHead($collector),
-                        'UTF-8'
-                    );
-                },
-                ['is_safe' => ['html']]
-            ));
-
-            $this->twig->addFunction(new TwigFunction(
-                'asset_body',
-                function () {
-                    $collector = \Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore::get();
-                    return new \Twig\Markup(
-                        \Semitexa\Ssr\Application\Service\Asset\AssetRenderer::renderBody($collector),
-                        'UTF-8'
-                    );
-                },
-                ['is_safe' => ['html']]
-            ));
-
-            $this->twig->addFunction(new TwigFunction(
-                'asset_require',
-                function (string $key) {
-                    $collector = \Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore::get();
-                    $collector->require($key);
-                    return '';
-                },
-                ['is_safe' => ['html']]
-            ));
-        }
-
-        // URL functions - url()
-        if (class_exists(\Semitexa\Ssr\Application\Service\Routing\UrlGenerator::class)) {
-            $this->twig->addFunction(new TwigFunction(
-                'url',
-                fn (string $route, array $params = []) => \Semitexa\Ssr\Application\Service\Routing\UrlGenerator::to($route, $params)
-            ));
-
-            $this->twig->addFunction(new TwigFunction(
-                'current_url',
-                function (array $overrides = []) {
-                    $ctx = \Semitexa\Core\Server\SwooleBootstrap::getCurrentSwooleRequestResponse();
-                    $path = '/';
-                    if ($ctx !== null) {
-                        $request = $ctx[0];
-                        $server = [];
-                        foreach ((is_array($request->server) ? $request->server : []) as $key => $value) {
-                            if (is_string($key) && (is_scalar($value) || $value === null)) {
-                                $server[$key] = (string) $value;
-                            }
-                        }
-                        $requestUri = $server['request_uri'] ?? '/';
-                        $path = $requestUri !== '' ? $requestUri : '/';
-                    }
-                    if (!empty($overrides)) {
-                        $query = http_build_query($overrides);
-                        $basePath = parse_url($path, PHP_URL_PATH);
-                        $path = (is_string($basePath) && $basePath !== '' ? $basePath : '/') . '?' . $query;
-                    }
-                    return $path;
-                }
-            ));
-
-            $this->twig->addFunction(new TwigFunction(
-                'current_absolute_url',
-                function (array $overrides = []) {
-                    $ctx = \Semitexa\Core\Server\SwooleBootstrap::getCurrentSwooleRequestResponse();
-                    $path = '/';
-                    if ($ctx !== null) {
-                        $request = $ctx[0];
-                        $server = [];
-                        foreach ((is_array($request->server) ? $request->server : []) as $key => $value) {
-                            if (is_string($key) && (is_scalar($value) || $value === null)) {
-                                $server[$key] = (string) $value;
-                            }
-                        }
-                        $requestUri = $server['request_uri'] ?? '/';
-                        $path = $requestUri !== '' ? $requestUri : '/';
-                    }
-                    if (!empty($overrides)) {
-                        $query = http_build_query($overrides);
-                        $basePath = parse_url($path, PHP_URL_PATH);
-                        $path = (is_string($basePath) && $basePath !== '' ? $basePath : '/') . '?' . $query;
-                    }
-
-                    $origin = '';
-                    if ($ctx !== null) {
-                        $request = $ctx[0];
-                        $headers = [];
-                        foreach ((is_array($request->header) ? $request->header : []) as $key => $value) {
-                            if (is_string($key) && (is_scalar($value) || $value === null)) {
-                                $headers[$key] = (string) $value;
-                            }
-                        }
-                        $server = [];
-                        foreach ((is_array($request->server) ? $request->server : []) as $key => $value) {
-                            if (is_string($key) && (is_scalar($value) || $value === null)) {
-                                $server[$key] = (string) $value;
-                            }
-                        }
-
-                        $hostHeader = $headers['x-forwarded-host'] ?? $headers['host'] ?? '';
-                        $hostParts = array_values(array_filter(
-                            array_map(
-                                fn (string $value): string => trim($value),
-                                explode(',', $hostHeader)
-                            ),
-                            fn (string $value): bool => $value !== ''
-                        ));
-                        $host = $hostParts[0] ?? '';
-                        if ($host !== '') {
-                            $schemeHeader = $headers['x-forwarded-proto'] ?? '';
-                            $schemeParts = array_values(array_filter(
-                                array_map(
-                                    fn (string $value): string => trim($value),
-                                    explode(',', $schemeHeader)
-                                ),
-                                fn (string $value): bool => $value !== ''
-                            ));
-                            $scheme = $schemeParts[0] ?? '';
-                            if ($scheme === '') {
-                                $https = strtolower($server['https'] ?? '');
-                                $scheme = ($https === 'on' || $https === '1') ? 'https' : '';
-                            }
-                            if ($scheme === '') {
-                                $scheme = trim((string) (Environment::getEnvValue('APP_SCHEME') ?? 'http'));
-                            }
-                            $origin = sprintf('%s://%s', $scheme, $host);
-                        }
-                    }
-
-                    if ($origin === '') {
-                        $appUrl = trim((string) (Environment::getEnvValue('APP_URL') ?? ''));
-                        if ($appUrl !== '') {
-                            $origin = $appUrl;
-                        } else {
-                            $appHost = trim((string) (Environment::getEnvValue('APP_HOST') ?? ''));
-                            if ($appHost !== '') {
-                                $scheme = trim((string) (Environment::getEnvValue('APP_SCHEME') ?? 'http'));
-                                $origin = sprintf('%s://%s', $scheme, $appHost);
-                            }
-                        }
-                    }
-
-                    return $origin !== '' ? rtrim($origin, '/') . $path : $path;
-                }
-            ));
-        }
-
-        // Locale URL functions - locale_url(), locale_switch_url()
-        if (class_exists(\Semitexa\Locale\Context\LocaleContextStore::class)) {
-            $this->twig->addFunction(new TwigFunction(
-                'locale_url',
-                function (string $path, ?string $locale = null): string {
-                    if (!\Semitexa\Locale\Context\LocaleContextStore::isUrlPrefixEnabled()) {
-                        return $path;
-                    }
-                    $locale ??= \Semitexa\Locale\Context\LocaleContextStore::getLocale();
-                    $default = \Semitexa\Locale\Context\LocaleContextStore::getDefaultLocale();
-                    if ($locale === $default) {
-                        return $path;
-                    }
-                    return '/' . $locale . '/' . ltrim($path, '/');
-                }
-            ));
-
-            $localeConfig = \Semitexa\Locale\Configuration\LocaleConfig::fromEnvironment();
-            $this->twig->addFunction(new TwigFunction(
-                'locale_switch_url',
-                function (string $targetLocale) use ($localeConfig): string {
-                    $ctx = \Semitexa\Core\Server\SwooleBootstrap::getCurrentSwooleRequestResponse();
-                    $path = '/';
-                    if ($ctx !== null) {
-                        $request = $ctx[0];
-                        $server = [];
-                        foreach ((is_array($request->server) ? $request->server : []) as $key => $value) {
-                            if (is_string($key) && (is_scalar($value) || $value === null)) {
-                                $server[$key] = (string) $value;
-                            }
-                        }
-                        $requestUri = $server['request_uri'] ?? '/';
-                        $path = $requestUri !== '' ? $requestUri : '/';
-                    }
-
-                    // Strip query string
-                    $basePath = parse_url($path, PHP_URL_PATH);
-                    $path = is_string($basePath) && $basePath !== '' ? $basePath : '/';
-
-                    // Strip existing locale prefix if present — against the
-                    // EFFECTIVE (per-tenant) set stored for this request; the
-                    // boot-frozen global set is only the pre-resolution fallback.
-                    $supported = \Semitexa\Locale\Context\LocaleContextStore::getSupportedLocales();
-                    if ($supported === []) {
-                        $supported = $localeConfig->supportedLocales;
-                    }
-                    $trimmed = ltrim($path, '/');
-                    $segments = explode('/', $trimmed, 2);
-                    if (in_array($segments[0], $supported, true)) {
-                        $path = '/' . ($segments[1] ?? '');
-                    }
-
-                    if (!\Semitexa\Locale\Context\LocaleContextStore::isUrlPrefixEnabled()) {
-                        return $path;
-                    }
-                    $default = \Semitexa\Locale\Context\LocaleContextStore::getDefaultLocale();
-                    if ($targetLocale === $default) {
-                        return $path;
-                    }
-                    return '/' . $targetLocale . '/' . ltrim($path, '/');
-                }
-            ));
-        }
-
-        // Translation functions - trans()
-        if (class_exists(\Semitexa\Ssr\Application\Service\I18n\Translator::class)) {
-            $this->twig->addFunction(new TwigFunction(
-                'trans',
-                fn (string $key, array $params = []) => \Semitexa\Ssr\Application\Service\I18n\Translator::trans($key, $params)
-            ));
-
-            $this->twig->addFunction(new TwigFunction(
-                'trans_choice',
-                fn (string $key, int $count, array $params = []) => \Semitexa\Ssr\Application\Service\I18n\Translator::transChoice($key, $count, $params)
-            ));
-
-            $this->twig->addFunction(new TwigFunction(
-                'locale',
-                fn () => \Semitexa\Ssr\Application\Service\I18n\Translator::getLocale()
-            ));
-        }
-
-        // Semantic/JSON-LD for AI agents
-        if (class_exists(\Semitexa\Ssr\Application\Service\Seo\SemanticRenderer::class)) {
-            $this->twig->addFunction(new TwigFunction(
-                'semantic_head',
-                function () { return new \Twig\Markup(\Semitexa\Ssr\Application\Service\Seo\SemanticRenderer::render(), 'UTF-8'); },
-                ['is_safe' => ['html']]
-            ));
-        }
     }
 
     /**
@@ -751,6 +394,9 @@ final class ModuleTemplateCatalog
         $this->chainResolver = null;
     }
 
+    /**
+     * @return array<string, array{aliases: list<string>, path: string, type: string}>
+     */
     public function getModulePaths(): array
     {
         $this->initialize();

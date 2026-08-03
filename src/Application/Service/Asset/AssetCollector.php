@@ -27,11 +27,25 @@ final class AssetCollector
     /** @var array<string, AssetEntry> Per-request required assets keyed by canonical key */
     private array $required = [];
 
-    private AssetManifestRegistry $registry;
+    private ?AssetManifestRegistry $registry;
 
     public function __construct(?AssetManifestRegistry $registry = null)
     {
-        $this->registry = $registry ?? self::manifests();
+        $this->registry = $registry;
+    }
+
+    /**
+     * Resolved on each read rather than captured in the constructor.
+     *
+     * A collector built before {@see WireCoreInstancesListener} runs would
+     * otherwise pin the self-created fallback registry for its entire lifetime,
+     * and {@see AssetCollectorStore}'s non-coroutine fallback collector lives for
+     * the whole process — so that pin would outlast boot and serve an empty
+     * manifest set forever. An explicitly injected registry still wins.
+     */
+    private function registry(): AssetManifestRegistry
+    {
+        return $this->registry ?? self::manifests();
     }
 
     public static function setManifestRegistry(AssetManifestRegistry $registry): void
@@ -64,7 +78,7 @@ final class AssetCollector
             return $this; // Deduplication
         }
 
-        $entry = $this->registry->get($key) ?? AssetEntry::fromKey($key);
+        $entry = $this->registry()->get($key) ?? AssetEntry::fromKey($key);
 
         if ($overrides !== []) {
             $entry = $entry->withOverrides($overrides);
@@ -85,7 +99,7 @@ final class AssetCollector
      */
     public function requireModule(string $module): self
     {
-        foreach ($this->registry->getDeclarations() as $key => $entry) {
+        foreach ($this->registry()->getDeclarations() as $key => $entry) {
             if ($entry->module === $module && $entry->scope === 'module') {
                 $this->require($key);
             }
@@ -98,7 +112,7 @@ final class AssetCollector
      */
     public function requireGlobals(): self
     {
-        foreach ($this->registry->getDeclarations() as $key => $entry) {
+        foreach ($this->registry()->getDeclarations() as $key => $entry) {
             if ($entry->scope === 'global') {
                 $this->require($key);
             }

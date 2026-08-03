@@ -37,10 +37,17 @@ final class TwigExtensionCatalog
         }
 
         if (!isset($this->classDiscovery)) {
-            throw new \LogicException('TwigExtensionRegistry requires ClassDiscovery instance. Call setClassDiscovery() first.');
+            throw new \LogicException('TwigExtensionCatalog requires ClassDiscovery instance. Call setClassDiscovery() first.');
         }
 
         $extensionClasses = $this->classDiscovery->findClassesWithAttribute(AsTwigExtension::class);
+
+        // Set before the loop, not after: discovered extensions register through
+        // the TwigExtensionRegistry facade, and any of them that also *reads*
+        // getFunctions()/getFilters() while registering re-enters initialize().
+        // With the flag still false at that point the guard above would not hold
+        // and discovery would restart underneath the running loop.
+        $this->initialized = true;
 
         foreach ($extensionClasses as $class) {
             $reflection = new \ReflectionClass($class);
@@ -67,8 +74,6 @@ final class TwigExtensionCatalog
                 ]);
             }
         }
-
-        $this->initialized = true;
     }
 
     public function registerFunction(

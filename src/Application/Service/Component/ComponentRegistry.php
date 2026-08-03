@@ -74,6 +74,12 @@ final class ComponentRegistry
     /**
      * Falls back to an unwired catalog so test bootstraps that drive the static
      * API without a container keep working: they set class discovery by hand.
+     *
+     * In a worker this fallback must never be the instance that receives state:
+     * setCatalog() replaces it outright, so components registered on a fallback
+     * before {@see WireCoreInstancesListener} runs are dropped. That listener holds
+     * the ordering contract — see its docblock for the phases this was verified
+     * against — and a new boot-time caller of this facade has to keep it.
      */
     private static function catalog(): ComponentCatalog
     {

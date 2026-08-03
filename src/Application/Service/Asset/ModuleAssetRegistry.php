@@ -64,6 +64,12 @@ class ModuleAssetRegistry
      * Falls back to an unwired resolver so test bootstraps driving the static
      * API without a container keep working: they supply the module registry
      * themselves through setModuleRegistry().
+     *
+     * In a worker this fallback must never be the instance that receives state:
+     * setResolver() replaces it outright, so anything registered on a fallback
+     * before {@see WireCoreInstancesListener} runs is dropped. That listener holds
+     * the ordering contract — see its docblock for the phases this was verified
+     * against — and a new boot-time caller of this facade has to keep it.
      */
     private static function resolver(): ModuleAssetResolver
     {

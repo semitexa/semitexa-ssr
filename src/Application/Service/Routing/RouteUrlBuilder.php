@@ -57,9 +57,13 @@ final class RouteUrlBuilder
      */
     private function buildPath(string $path, array $params): string
     {
+        // Only the braced token forms are substituted. A bare `str_replace($key, ...)`
+        // used to run as a second pass here, which rewrote the parameter name wherever
+        // it appeared as a substring of a static segment: `/id-cards/{id}` with id=7
+        // came back as `/7-cards/7`.
         foreach ($params as $key => $value) {
-            $path = str_replace("{{$key}}", urlencode((string) $value), $path);
-            $path = str_replace("{$key}", urlencode((string) $value), $path);
+            $encoded = urlencode((string) $value);
+            $path = str_replace(['{' . $key . '}', '{' . $key . '?}'], $encoded, $path);
         }
 
         return preg_replace('/\{(\w+)\?\}/', '', $path) ?? $path;

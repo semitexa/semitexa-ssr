@@ -170,7 +170,7 @@ final class AssetManifestRegistry
         }
 
         $schema = $data['$schema'] ?? '';
-        if (!str_contains($schema, 'asset-manifest/v2')) {
+        if (!is_string($schema) || !str_contains($schema, 'asset-manifest/v2')) {
             StaticLoggerBridge::warning('ssr', 'Asset manifest is not v2 format, skipping', ['path' => $manifestPath]);
             return;
         }

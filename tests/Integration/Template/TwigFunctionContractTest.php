@@ -99,6 +99,62 @@ final class TwigFunctionContractTest extends TestCase
         );
     }
 
+    /**
+     * Names contributed by packages an app may or may not install.
+     *
+     * The always-on list above can demand every name unconditionally because the
+     * packages behind it are part of every app. These are not: `semitexa/demo`
+     * and `semitexa/showcase-kit` are optional, and the surface they add appears
+     * only where they are required. Declaring them in the list above would fail
+     * the per-name check in every app without them — declaring them nowhere let
+     * six functions register unwritten-down, which is what the release clone
+     * (which does install the demo) caught.
+     *
+     * Keyed by the extension that owns each name, so the per-name check can ask
+     * whether the owner is installed before demanding its functions, and so a
+     * name that outlives its extension is visible here rather than mysterious.
+     *
+     * @return array<string, list<string>>
+     */
+    public static function optionalContractFunctions(): array
+    {
+        return [
+            // Written as strings, not ::class — these classes are absent from the
+            // apps where the packages are not installed, and a ::class constant
+            // would make static analysis of this package chase a class it cannot
+            // see.
+            'Semitexa\\Demo\\Application\\Service\\Twig\\CodeHighlightTwigExtension' => [
+                'highlight_php',
+                'highlight_php_lines',
+                'highlight_snippet',
+            ],
+            'Semitexa\\Demo\\Application\\Service\\Twig\\DemoTitleIconTwigExtension' => [
+                'demo_title_icon',
+            ],
+            'App\\Modules\\ShowcaseKit\\Application\\Service\\ShowcaseKitAssetsTwigExtension' => [
+                'require_module',
+            ],
+            'App\\Modules\\ShowcaseKit\\Application\\Service\\ShowcaseKitCodeTwigExtension' => [
+                'sk_code_block',
+            ],
+        ];
+    }
+
+    /**
+     * @return list<array{string, string}>
+     */
+    public static function optionalContractRows(): array
+    {
+        $rows = [];
+        foreach (self::optionalContractFunctions() as $owner => $names) {
+            foreach ($names as $name) {
+                $rows[] = [$name, $owner];
+            }
+        }
+
+        return $rows;
+    }
+
     #[\PHPUnit\Framework\Attributes\DataProvider('contractFunctions')]
     #[Test]
     public function the_template_contract_still_offers(string $function): void
@@ -116,6 +172,26 @@ final class TwigFunctionContractTest extends TestCase
         );
     }
 
+    #[\PHPUnit\Framework\Attributes\DataProvider('optionalContractRows')]
+    #[Test]
+    public function the_optional_contract_still_offers(string $function, string $owner): void
+    {
+        // Same demand as the check above, conditioned on the owner being here.
+        // Skipping when it is not keeps this honest in both directions: the app
+        // that installs the package still has its functions pinned, and the app
+        // that does not is not asked for a surface it never claimed.
+        if (!class_exists($owner)) {
+            self::markTestSkipped("{$owner} is not installed in this app; '{$function}' is not expected.");
+        }
+
+        self::assertInstanceOf(
+            \Twig\TwigFunction::class,
+            self::bootedTwig()->getFunction($function),
+            "Twig function '{$function}' is no longer registered, but {$owner} is installed. Every .twig "
+            . 'calling it now fails at render time — restore it, or drop it from this contract in the same commit.',
+        );
+    }
+
     #[Test]
     public function the_contract_list_matches_what_is_actually_registered(): void
     {
@@ -124,6 +200,11 @@ final class TwigFunctionContractTest extends TestCase
         // fine — it just has to be declared here so the contract stays the one
         // place that says what templates may call.
         $declared = array_map(static fn (array $row): string => $row[0], self::contractFunctions());
+        foreach (self::optionalContractFunctions() as $names) {
+            foreach ($names as $name) {
+                $declared[] = $name;
+            }
+        }
 
         $undeclared = [];
         foreach (self::frameworkFunctionNames() as $name) {

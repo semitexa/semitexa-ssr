@@ -584,6 +584,24 @@ final class AsyncResourceSseServer
             ),
         );
         if ($rejection !== null) {
+            // The status and the reason, not just the fact of a refusal: a trace
+            // saying only "not admitted" leaves the reader with the same question
+            // they opened it to answer, and 401 and 403 arrive here for entirely
+            // different causes.
+            $reason = $rejection['message'];
+            if ($reason === '' && $rejection['status'] === 403) {
+                // SseRequestGuard::resolveRejection blanks the message for a
+                // cross-origin refusal on purpose - the client is not told why.
+                // The trace is not the client, and a developer staring at a bare
+                // 403 has no other way to learn which gate closed.
+                $reason = 'cross-origin (message withheld from the client by design)';
+            }
+
+            self::tracer()?->mark('sse.rejected', [
+                'status' => $rejection['status'],
+                'reason' => $reason,
+            ]);
+
             if ($rejection['status'] === 401) {
                 self::rejectUnauthorized($response, $rejection['message']);
 

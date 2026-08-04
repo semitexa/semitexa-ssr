@@ -104,6 +104,15 @@ final class SseDeferredDoor
             // Written straight to the response rather than queued: the caller
             // closes the connection immediately after, so a queued frame might
             // never be flushed.
+            // The decision that ends the exchange, so it belongs in the trace.
+            // Without it a developer sees a connection that opened, said done and
+            // closed, with nothing saying which check refused it.
+            AsyncResourceSseServer::traceMark('deferred.refused', [
+                'reason' => 'bind token did not match, or no registry entry',
+                'deferred_request_id' => $deferredRequestId,
+                'had_token' => $bindToken !== '',
+            ]);
+
             ($this->writeFrame)($response, self::TERMINAL_FRAME);
 
             return false;
@@ -132,11 +141,14 @@ final class SseDeferredDoor
         if ($registry === null) {
             // Already redeemed, expired, or never minted — or deleted between the
             // bind-token check and this read. Nothing to stream either way.
+            AsyncResourceSseServer::traceMark('deferred.entry_gone', ['deferred_request_id' => $deferredRequestId]);
             self::debug('registry_null', ['deferred_request_id' => $deferredRequestId]);
             ($this->deliver)($sessionId, self::TERMINAL_FRAME);
 
             return;
         }
+
+        AsyncResourceSseServer::traceMark('deferred.admitted', ['page' => $registry['page_handle']]);
 
         self::debug('registry_found', [
             'deferred_request_id' => $deferredRequestId,

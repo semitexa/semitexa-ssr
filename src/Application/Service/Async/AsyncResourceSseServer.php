@@ -7,6 +7,7 @@ namespace Semitexa\Ssr\Application\Service\Async;
 use Semitexa\Core\HttpResponse;
 use Semitexa\Core\Pipeline\ReRun\ReRunContext;
 use Semitexa\Core\Pipeline\ReRun\ReRunnerInterface;
+use Semitexa\Core\Pipeline\RequestTracerInterface;
 use Semitexa\Core\Redis\RedisConnectionPool;
 use Semitexa\Core\Server\SseFrame;
 use Semitexa\Core\Server\SseTransportInterface;
@@ -442,8 +443,39 @@ final class AsyncResourceSseServer
     {
         $stream = SseStreamRequest::fromRequest($request);
 
+        // An SSE connection is its own trace, not a continuation of the page that
+        // minted the deferred id - that request has usually finished, and reading
+        // a finished coroutine context yields nothing. The two are related through
+        // the ids recorded below, not through shared span structure.
+        //
+        // Traced unconditionally in dev, with no marker: the browser builds this
+        // URL, so a query parameter can never be on it, and a developer cannot
+        // mark the connection after the fact.
+        $tracer = self::tracer();
+        $tracer?->begin('sse', [
+            'sse' => true,
+            // Swoole\Http\Request, not the framework Request - it has no getPath().
+            'path' => self::requestPath($request),
+            'session' => $stream->sessionId,
+            'deferred_request_id' => $stream->deferredRequestId,
+            'mode' => $stream->rawMode,
+        ]);
+
+        try {
+            self::handleSseTraced($request, $response, $stream);
+        } finally {
+            // finally, because this method leaves through several early returns
+            // and the held-open loop can throw; a root span closed on only some
+            // paths writes a trace that stops mid-sentence.
+            $tracer?->end('sse');
+        }
+    }
+
+    private static function handleSseTraced(Request $request, Response $response, SseStreamRequest $stream): void
+    {
         $resolvedMode = self::admitStream($request, $response, $stream);
         if ($resolvedMode === null) {
+            self::tracer()?->mark('sse.not_admitted');
             return;
         }
 
@@ -1250,6 +1282,11 @@ final class AsyncResourceSseServer
 
     public static function createSessionCoroutine(callable $callback, string $sessionId): int|false
     {
+        // Recorded as a point, not a span: the spawn returns immediately and the
+        // work happens in the new coroutine, which records its own spans and finds
+        // this trace by walking its parent chain.
+        self::tracer()?->mark('sse.spawn', ['session' => $sessionId]);
+
         return self::sessionCoroutines()->create($callback, $sessionId);
     }
 
@@ -1286,6 +1323,51 @@ final class AsyncResourceSseServer
     public static function setDeferredBlockOrchestrator(?DeferredBlockOrchestrator $orchestrator): void
     {
         self::runtime()->deferredBlockOrchestrator = $orchestrator;
+    }
+
+    /**
+     * Wire the optional development tracer. Null in production, where nothing
+     * registers one, and every call site below is null-safe.
+     */
+    public static function setRequestTracer(?RequestTracerInterface $tracer): void
+    {
+        self::runtime()->requestTracer = $tracer;
+    }
+
+    /**
+     * The tracer, or null. SSE work runs in spawned coroutines, so this is read
+     * per call site rather than captured once - a captured null would stay null
+     * for the worker's life if wiring happened to land later.
+     */
+    /**
+     * Path of a raw Swoole request. `$request->server` is untyped, so it is
+     * narrowed here rather than indexed blind.
+     */
+    private static function requestPath(Request $request): string
+    {
+        $server = is_array($request->server) ? $request->server : [];
+        $uri = $server['request_uri'] ?? '/';
+
+        return is_string($uri) ? $uri : '/';
+    }
+
+    private static function tracer(): ?RequestTracerInterface
+    {
+        return self::runtime()->requestTracer;
+    }
+
+    /**
+     * Record a point on the SSE trace from anywhere in the streaming machinery.
+     *
+     * Public because the work happens in collaborators - the deferred block
+     * orchestrator above all - and threading a tracer through them would mean
+     * changing signatures that have nothing else to do with diagnostics.
+     *
+     * @param array<string, mixed> $context
+     */
+    public static function traceMark(string $name, array $context = []): void
+    {
+        self::tracer()?->mark($name, $context);
     }
 
     /**

@@ -51,18 +51,35 @@ final class SseDeferredDoor
         'reconnect' => false,
     ];
 
+    /** @var \Closure(string): ?array{page_handle: string, page_context: mixed, locale: string, slots: mixed} */
+    private readonly \Closure $readRegistry;
+
     /**
      * @param \Closure(): DeferredBlockOrchestrator          $orchestrator resolved lazily; throws if unwired
      * @param \Closure(string, array<string, mixed>): void   $deliver      queue a frame for a session
      * @param \Closure(mixed, array<string, mixed>): void    $writeFrame   write a frame straight to a response
      * @param \Closure(callable, string): void               $spawn        run a callable in a session coroutine
+     * @param null|\Closure(string): ?array{page_handle: string, page_context: mixed, locale: string, slots: mixed} $readRegistry the page lookup; see below
      */
     public function __construct(
         private readonly \Closure $orchestrator,
         private readonly \Closure $deliver,
         private readonly \Closure $writeFrame,
         private readonly \Closure $spawn,
+        ?\Closure $readRegistry = null,
     ) {
+        // The second of the door's two registry reads, injectable purely so the
+        // race between them can be exercised.
+        //
+        // open() checks the bind token and then streams, and both paths go through
+        // DeferredRequestRegistry::consume(), so an entry that expires is caught by
+        // the FIRST read — which means the interesting case, an entry that survives
+        // the token check and is gone by the page lookup, was unreachable from a
+        // test. It is reachable in production: another worker or a TTL sweep can
+        // delete the row between the two calls. Defaults to the real registry, so
+        // production behaviour is unchanged.
+        $this->readRegistry = $readRegistry
+            ?? static fn (string $id): ?array => DeferredRequestRegistry::consume($id);
     }
 
     /**
@@ -87,6 +104,15 @@ final class SseDeferredDoor
             // Written straight to the response rather than queued: the caller
             // closes the connection immediately after, so a queued frame might
             // never be flushed.
+            // The decision that ends the exchange, so it belongs in the trace.
+            // Without it a developer sees a connection that opened, said done and
+            // closed, with nothing saying which check refused it.
+            AsyncResourceSseServer::traceMark('deferred.refused', [
+                'reason' => 'bind token did not match, or no registry entry',
+                'deferred_request_id' => $deferredRequestId,
+                'had_token' => $bindToken !== '',
+            ]);
+
             ($this->writeFrame)($response, self::TERMINAL_FRAME);
 
             return false;
@@ -110,15 +136,19 @@ final class SseDeferredDoor
         bool $allowPersistentDeferredSse,
         bool $keepChannelOpen,
     ): void {
-        $registry = DeferredRequestRegistry::consume($deferredRequestId);
+        $registry = ($this->readRegistry)($deferredRequestId);
 
         if ($registry === null) {
-            // Already redeemed, expired, or never minted. Nothing to stream.
+            // Already redeemed, expired, or never minted — or deleted between the
+            // bind-token check and this read. Nothing to stream either way.
+            AsyncResourceSseServer::traceMark('deferred.entry_gone', ['deferred_request_id' => $deferredRequestId]);
             self::debug('registry_null', ['deferred_request_id' => $deferredRequestId]);
             ($this->deliver)($sessionId, self::TERMINAL_FRAME);
 
             return;
         }
+
+        AsyncResourceSseServer::traceMark('deferred.admitted', ['page' => $registry['page_handle']]);
 
         self::debug('registry_found', [
             'deferred_request_id' => $deferredRequestId,

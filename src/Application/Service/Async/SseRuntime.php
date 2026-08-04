@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service\Async;
 
 use Semitexa\Core\Pipeline\ReRun\ReRunnerInterface;
+use Semitexa\Core\Pipeline\RequestTracerInterface;
 use Semitexa\Core\Server\SseTransportInterface;
 use Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator;
 use Semitexa\Ssr\Domain\Contract\SubscriptionFactoryInterface;
@@ -62,6 +63,12 @@ final class SseRuntime
 
     /** Renders the deferred blocks a page requested. */
     public ?DeferredBlockOrchestrator $deferredBlockOrchestrator = null;
+
+    /**
+     * Development-only observer of the SSE path, or null - which it is in
+     * production, where nothing registers one.
+     */
+    public ?RequestTracerInterface $requestTracer = null;
 
     /**
      * Track R · R8a — request paths served by the SSE intercept, keyed for O(1)

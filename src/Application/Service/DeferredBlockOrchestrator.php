@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service;
 
+use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Log\LoggerInterface;
@@ -61,6 +62,15 @@ final class DeferredBlockOrchestrator
             'page_handle' => $pageHandle,
             'slot_count' => count($slots),
             'slots' => array_map(static fn ($s) => $s->slotId, $slots),
+        ]);
+
+        // Recorded from whichever coroutine is streaming; it finds the SSE trace
+        // by walking its parent chain, so no id has to be threaded through here.
+        AsyncResourceSseServer::traceMark('deferred.stream_start', [
+            'page' => $pageHandle,
+            'slots' => count($slots),
+            'live_slots' => count($liveSlots),
+            'session' => $sessionId,
         ]);
 
         // Originating page's live SSE session id, captured into the

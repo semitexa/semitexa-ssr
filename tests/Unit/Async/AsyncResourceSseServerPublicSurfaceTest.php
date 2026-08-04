@@ -60,6 +60,7 @@ final class AsyncResourceSseServerPublicSurfaceTest extends TestCase
         'setConnectCoordinator' => 'static function(?Semitexa\Ssr\Application\Service\Async\ConnectCoordinator $coordinator): void',
         'setDeferredBlockOrchestrator' => 'static function(?Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator $orchestrator): void',
         'setReRunner' => 'static function(?Semitexa\Core\Pipeline\ReRun\ReRunnerInterface $reRunner): void',
+        'setRequestTracer' => 'static function(?Semitexa\Core\Pipeline\RequestTracerInterface $tracer): void',
         'setRerunCoalescer' => 'static function(?Semitexa\Ssr\Application\Service\Async\RerunCoalescer $coalescer): void',
         'setServer' => 'static function(Swoole\Http\Server $server): void',
         'setSseServedPaths' => 'static function(array $paths): void',
@@ -69,6 +70,7 @@ final class AsyncResourceSseServerPublicSurfaceTest extends TestCase
         'submitSubscribe' => 'static function(string $sessionId, string $streamingId, string $routePath, string $routeMethod, array $requestSnapshot): bool',
         'submitUnsubscribe' => 'static function(string $sessionId, string $streamingId): bool',
         'submitViewChange' => 'static function(string $sessionId, array $params, ?string $streamingId=): bool',
+        'traceMark' => 'static function(string $name, array $context=): void',
     ];
 
     /**

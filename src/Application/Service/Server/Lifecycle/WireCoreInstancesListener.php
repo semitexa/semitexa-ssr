@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service\Server\Lifecycle;
 
 use Semitexa\Core\Attribute\AsServerLifecycleListener;
+use Psr\Container\ContainerInterface;
 use Semitexa\Core\Attribute\InjectAsReadonly;
+use Semitexa\Core\Pipeline\RequestTracerInterface;
 use Semitexa\Core\Discovery\ClassDiscovery;
 use Semitexa\Core\Server\Lifecycle\ServerLifecycleContext;
 use Semitexa\Core\Server\Lifecycle\ServerLifecycleListenerInterface;
@@ -74,6 +76,9 @@ final class WireCoreInstancesListener implements ServerLifecycleListenerInterfac
     protected ClassDiscovery $classDiscovery;
 
     #[InjectAsReadonly]
+    protected ContainerInterface $container;
+
+    #[InjectAsReadonly]
     protected RouteUrlBuilder $routeUrlBuilder;
 
     #[InjectAsReadonly]
@@ -107,5 +112,14 @@ final class WireCoreInstancesListener implements ServerLifecycleListenerInterfac
         AssetCollector::setManifestRegistry($this->assetManifestRegistry);
         UrlGenerator::setBuilder($this->routeUrlBuilder);
         AsyncResourceSseServer::setDeferredBlockOrchestrator($this->deferredBlockOrchestrator);
+
+        // Optional, and absent in production. Resolved through has()/get() rather
+        // than injected as a property, because an injected optional service is a
+        // container error when nothing provides it.
+        /** @var RequestTracerInterface|null $tracer */
+        $tracer = $this->container->has(RequestTracerInterface::class)
+            ? $this->container->get(RequestTracerInterface::class)
+            : null;
+        AsyncResourceSseServer::setRequestTracer($tracer);
     }
 }

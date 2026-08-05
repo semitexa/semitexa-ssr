@@ -10,6 +10,7 @@ use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Log\LoggerInterface;
 use Semitexa\Ssr\Application\Service\Async\SseAsyncResultDelivery;
 use Semitexa\Ssr\Application\Service\Component\ComponentHtmlRenderer;
+use Semitexa\Ssr\Application\Service\UiEvent\UiSseSessionState;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Semitexa\Ssr\Domain\Model\DataProviderContext;
 use Semitexa\Ssr\Domain\Model\DeferredBlockPayload;
@@ -607,12 +608,11 @@ final class DeferredBlockOrchestrator
     }
 
     /**
-     * Re-establish the originating page's canonical platform-ui SSE
-     * session id (captured into the deferred page context as
-     * `__ui_sse_session` by DeferredRequestRegistry::store()) before a
-     * deferred component / slot renders. This makes the component's
-     * `ui_event_manifest()` `sub` claim — and any
-     * PlatformUiSseSessionState::mintIfAbsent() its data provider calls —
+     * Re-establish the originating page's canonical UI SSE session id
+     * (captured into the deferred page context as `__ui_sse_session` by
+     * DeferredRequestRegistry::store()) before a deferred component / slot
+     * renders. This makes the component's `ui_event_manifest()` `sub` claim —
+     * and any {@see UiSseSessionState::mintIfAbsent()} its data provider calls —
      * resolve to the page's LIVE stream session instead of a fresh
      * per-deferred-request id no EventSource subscribes to.
      *
@@ -634,9 +634,7 @@ final class DeferredBlockOrchestrator
             return;
         }
 
-        if (class_exists(\Semitexa\PlatformUi\Application\Service\Event\PlatformUiSseSessionState::class)) {
-            \Semitexa\PlatformUi\Application\Service\Event\PlatformUiSseSessionState::restore($sessionId);
-        }
+        UiSseSessionState::restore($sessionId);
     }
 
     /** @param array<string, mixed> $data */

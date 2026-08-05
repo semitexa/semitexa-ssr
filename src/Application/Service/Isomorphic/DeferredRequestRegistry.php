@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Isomorphic;
 
+use Semitexa\Ssr\Application\Service\UiEvent\UiSseSessionState;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Semitexa\Ssr\Domain\Exception\DeferredRenderingException;
 use Swoole\Table;
@@ -108,16 +109,15 @@ final class DeferredRequestRegistry
         $pageContext = self::sanitizeContext($pageContext);
         self::validateContext($pageContext);
 
-        // Capture the originating page's canonical platform-ui SSE session
-        // id (the live `sub` channel minted by ui_page_sse_session_meta() /
-        // the page resource) so the deferred-render pipeline can RESTORE it
-        // before rendering deferred components. Without this, a deferred
-        // component renders in a separate `/__semitexa_kiss` request where
-        // PlatformUiSseSessionState was reset, mints a FRESH session id, and
-        // bakes it into its `sub` claim — so the dispatcher publishes frames
-        // to a channel no live EventSource subscribes to. Soft dependency
-        // via class_exists, mirroring how the orchestrator applies locale.
-        // Skipped when platform-ui is absent or the page minted no session.
+        // Capture the originating page's canonical UI SSE session id (the live
+        // `sub` channel minted by ui_page_sse_session_meta() / the page
+        // resource) so the deferred-render pipeline can RESTORE it before
+        // rendering deferred components. Without this, a deferred component
+        // renders in a separate `/__semitexa_kiss` request where
+        // UiSseSessionState was reset, mints a FRESH session id, and bakes it
+        // into its `sub` claim — so the dispatcher publishes frames to a channel
+        // no live EventSource subscribes to. Skipped when the page minted no
+        // session.
         //
         // TODO(known-limitation): in the LayoutRenderer path store() runs
         // BEFORE the page template renders, so current() is only set here if
@@ -127,10 +127,8 @@ final class DeferredRequestRegistry
         // ui_page_sse_session_meta() helper AND defers a component would not
         // be captured. If such a page appears, hoist the session mint into
         // its resource, or capture post-render alongside storeComponentInstances().
-        if (!array_key_exists('__ui_sse_session', $pageContext)
-            && class_exists(\Semitexa\PlatformUi\Application\Service\Event\PlatformUiSseSessionState::class)
-        ) {
-            $uiSseSession = \Semitexa\PlatformUi\Application\Service\Event\PlatformUiSseSessionState::current();
+        if (!array_key_exists('__ui_sse_session', $pageContext)) {
+            $uiSseSession = UiSseSessionState::current();
             if (is_string($uiSseSession) && $uiSseSession !== '') {
                 $pageContext['__ui_sse_session'] = $uiSseSession;
             }
@@ -242,23 +240,16 @@ final class DeferredRequestRegistry
      *
      * {@see self::store()} captures `__ui_sse_session` pre-render, but a page
      * that mints its session ONLY via the in-template ui_page_sse_session_meta()
-     * helper has no {@see PlatformUiSseSessionState::current()} id at that point
-     * (see the known-limitation note in store()). By the time the page has
+     * helper has no {@see UiSseSessionState::current()} id at that point (see
+     * the known-limitation note in store()). By the time the page has
      * rendered — this method's caller — the id IS set, so we backfill it here
      * so the orchestrator can restore the live `sub` channel for deferred
-     * components. Soft dependency on platform-ui via class_exists, mirroring
-     * store(). Returns the input untouched when platform-ui is absent, no
-     * session was minted, the context already carries the key, or the JSON
-     * cannot be decoded/re-encoded.
+     * components. Returns the input untouched when no session was minted, the
+     * context already carries the key, or the JSON cannot be decoded/re-encoded.
      */
     private static function backfillUiSseSession(string $serializedContext): string
     {
-        $stateClass = \Semitexa\PlatformUi\Application\Service\Event\PlatformUiSseSessionState::class;
-        if (!class_exists($stateClass)) {
-            return $serializedContext;
-        }
-
-        $current = $stateClass::current();
+        $current = UiSseSessionState::current();
         if (!is_string($current) || $current === '') {
             return $serializedContext;
         }

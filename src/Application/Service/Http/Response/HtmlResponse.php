@@ -8,6 +8,7 @@ use Semitexa\Core\Attribute\AsResource;
 use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\HttpResponse as CoreResponse;
 use Semitexa\Core\Server\SwooleBootstrap;
+use Semitexa\Ssr\Application\Service\UiEvent\UiSseSessionState;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Semitexa\Ssr\Context\IsomorphicContextStore;
 use Semitexa\Ssr\Context\PageRenderContextStore;
@@ -477,21 +478,15 @@ class HtmlResponse extends ResourceResponse
     }
 
     /**
-     * Resolve the page's canonical live platform-ui SSE session id, when one
-     * was minted this request. Soft dependency on platform-ui via class_exists
-     * (mirrors DeferredBlockOrchestrator::applyUiSseSession()). Only a
-     * canonical bearer-shaped id (`sse_` + 32 hex) is adopted so the converged
-     * deferred stream id stays admit-safe on the KISS endpoint; any other shape
-     * is ignored and the caller falls back to a fresh mint.
+     * Resolve the page's canonical live UI SSE session id, when one was minted
+     * this request. Only a canonical bearer-shaped id (`sse_` + 32 hex) is
+     * adopted so the converged deferred stream id stays admit-safe on the KISS
+     * endpoint; any other shape is ignored and the caller falls back to a fresh
+     * mint.
      */
     private static function resolveLiveUiSessionId(): string
     {
-        $stateClass = \Semitexa\PlatformUi\Application\Service\Event\PlatformUiSseSessionState::class;
-        if (!class_exists($stateClass)) {
-            return '';
-        }
-
-        $current = $stateClass::current();
+        $current = UiSseSessionState::current();
         if (!is_string($current) || preg_match('/\Asse_[a-f0-9]{32}\z/', $current) !== 1) {
             return '';
         }

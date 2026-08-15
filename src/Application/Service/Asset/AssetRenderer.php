@@ -121,7 +121,7 @@ final class AssetRenderer
 
         $json = json_encode(['imports' => $imports], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
 
-        return '<script type="importmap">' . str_ireplace('</script', '<\/script', $json) . '</script>' . "\n";
+        return '<script type="importmap"' . ScriptNonceSource::attribute() . '>' . str_ireplace('</script', '<\/script', $json) . '</script>' . "\n";
     }
 
     private static function renderCssLink(AssetEntry $entry): string
@@ -178,7 +178,7 @@ final class AssetRenderer
 
         $attrs = self::buildAttributes($entry->attributes);
         $safeContent = str_ireplace('</script', '<\/script', $content);
-        return '<script' . $attrs . '>' . $safeContent . '</script>' . "\n";
+        return '<script' . $attrs . ScriptNonceSource::attribute() . '>' . $safeContent . '</script>' . "\n";
     }
 
     /**

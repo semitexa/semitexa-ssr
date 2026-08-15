@@ -121,7 +121,7 @@ final class AssetRenderer
 
         $json = json_encode(['imports' => $imports], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
 
-        return '<script type="importmap">' . str_ireplace('</script', '<\/script', $json) . '</script>' . "\n";
+        return '<script type="importmap"' . ScriptNonceSource::attribute() . '>' . str_ireplace('</script', '<\/script', $json) . '</script>' . "\n";
     }
 
     private static function renderCssLink(AssetEntry $entry): string
@@ -169,6 +169,24 @@ final class AssetRenderer
         return '<style' . $attrs . '>' . $safeContent . '</style>' . "\n";
     }
 
+    /**
+     * Attribute string for an inline <script>, provider nonce included. The
+     * provider's nonce must be the ONLY nonce: with a manifest-declared one
+     * also present the browser honours whichever comes first, and a stale
+     * manifest value would lose to the CSP header every time.
+     *
+     * @param array<string, string> $attributes
+     */
+    private static function inlineScriptAttributes(array $attributes): string
+    {
+        $nonceAttr = ScriptNonceSource::attribute();
+        if ($nonceAttr !== '') {
+            unset($attributes['nonce']);
+        }
+
+        return self::buildAttributes($attributes) . $nonceAttr;
+    }
+
     private static function renderInlineScript(AssetEntry $entry): string
     {
         $content = self::readInlineContent($entry);
@@ -176,9 +194,8 @@ final class AssetRenderer
             return '';
         }
 
-        $attrs = self::buildAttributes($entry->attributes);
         $safeContent = str_ireplace('</script', '<\/script', $content);
-        return '<script' . $attrs . '>' . $safeContent . '</script>' . "\n";
+        return '<script' . self::inlineScriptAttributes($entry->attributes) . '>' . $safeContent . '</script>' . "\n";
     }
 
     /**

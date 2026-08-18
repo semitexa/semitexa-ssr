@@ -12,6 +12,8 @@ use Semitexa\Ssr\Application\Service\UiEvent\UiSseSessionState;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Semitexa\Ssr\Context\IsomorphicContextStore;
 use Semitexa\Ssr\Context\PageRenderContextStore;
+use Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore;
+use Semitexa\Ssr\Application\Service\Asset\AssetRenderer;
 use Semitexa\Ssr\Application\Service\Component\ComponentInstanceStore;
 use Semitexa\Ssr\Application\Service\Component\ComponentRegistry;
 use Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry;
@@ -152,6 +154,7 @@ class HtmlResponse extends ResourceResponse
         try {
             $html = ModuleTemplateRegistry::getTwig()->render($tmpl, $context);
             $html = $this->finalizeIsomorphicHtml($html, $context);
+            $html = AssetRenderer::finalizeDynamicCss($html, AssetCollectorStore::get());
             $this->setContent($html);
         } finally {
             PageRenderContextStore::reset();
@@ -176,6 +179,7 @@ class HtmlResponse extends ResourceResponse
         $template = $twig->createTemplate($templateSource);
         $html = $template->render($context);
         $html = $this->finalizeIsomorphicHtml($html, $context);
+        $html = AssetRenderer::finalizeDynamicCss($html, AssetCollectorStore::get());
         $this->setContent($html);
         return $this;
     }

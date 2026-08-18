@@ -22,9 +22,21 @@ final class TwigExtensionRegistry
 {
     private static ?TwigExtensionCatalog $catalog = null;
 
-    public static function setCatalog(TwigExtensionCatalog $catalog): void
+    public static function setCatalog(?TwigExtensionCatalog $catalog): void
     {
         self::$catalog = $catalog;
+    }
+
+    /**
+     * The wired slot as it currently stands — null when nothing wired it yet.
+     * Callers that must read the catalog without leaving their own discovery
+     * behind (docs' TruthIndexBuilder) swap a fresh catalog in, read, and
+     * restore this value; without it a read-only consumer cannot avoid
+     * mutating process-wide state.
+     */
+    public static function getCatalog(): ?TwigExtensionCatalog
+    {
+        return self::$catalog;
     }
 
     public static function setClassDiscovery(ClassDiscovery $classDiscovery): void

@@ -178,6 +178,13 @@ class LayoutRenderer
                 }
             }
 
+            if (class_exists(\Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore::class)) {
+                $html = \Semitexa\Ssr\Application\Service\Asset\AssetRenderer::finalizeDynamicCss(
+                    $html,
+                    \Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore::get(),
+                );
+            }
+
             return $html;
         } catch (\Throwable $e) {
             $debugEnabled = filter_var(\Semitexa\Core\Environment::getEnvValue('APP_DEBUG', '0'), FILTER_VALIDATE_BOOLEAN);

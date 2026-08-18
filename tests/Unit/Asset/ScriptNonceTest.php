@@ -52,6 +52,23 @@ final class ScriptNonceTest extends TestCase
         self::assertStringContainsString('<script type="importmap" nonce="abc123=="', $this->importMap());
     }
 
+    public function testProviderNonceReplacesAManifestDeclaredOne(): void
+    {
+        $m = new \ReflectionMethod(AssetRenderer::class, 'inlineScriptAttributes');
+
+        // Without a provider the manifest's own attribute is kept as-is.
+        $attrs = (string) $m->invoke(null, ['nonce' => 'stale-manifest-value', 'defer' => 'defer']);
+        self::assertSame(1, substr_count($attrs, 'nonce='));
+        self::assertStringContainsString('stale-manifest-value', $attrs);
+
+        ScriptNonceSource::register(static fn (): string => 'live-nonce');
+        $attrs = (string) $m->invoke(null, ['nonce' => 'stale-manifest-value', 'defer' => 'defer']);
+        self::assertSame(1, substr_count($attrs, 'nonce='));
+        self::assertStringContainsString('nonce="live-nonce"', $attrs);
+        self::assertStringNotContainsString('stale-manifest-value', $attrs);
+        self::assertStringContainsString('defer', $attrs);
+    }
+
     public function testNonceIsEscapedAndEmptyNonceIsOmitted(): void
     {
         ScriptNonceSource::register(static fn (): string => '"><script>');

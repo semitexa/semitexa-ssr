@@ -16,6 +16,14 @@ namespace Semitexa\Ssr\Application\Service\Asset;
 final class AssetRenderer
 {
     /**
+     * Placeholder {@see renderHead()} leaves in the head for CSS registered
+     * after the head has already rendered (Twig renders <head> before <body>,
+     * so usage-driven CSS compiled from body content always arrives late).
+     * {@see finalizeDynamicCss()} resolves it once the page render completes.
+     */
+    public const DYNAMIC_CSS_MARKER = '<!--__SSR_DYNAMIC_CSS__-->';
+
+    /**
      * Render all head-positioned assets as HTML.
      *
      * When any collected asset declares an import-map `specifier`, a single
@@ -56,6 +64,63 @@ final class AssetRenderer
                 'inline-js'  => self::renderInlineScript($entry),
                 default      => '',
             };
+        }
+
+        // Raw inline CSS registered before the head rendered goes out now;
+        // the marker stands in for whatever the rest of the render registers.
+        $html .= self::renderRawInlineCss($collector->takeRawInlineCss());
+        $html .= self::DYNAMIC_CSS_MARKER;
+
+        return $html;
+    }
+
+    /**
+     * The post-render half of the raw inline CSS pipeline. Call with the fully
+     * rendered page HTML: runs the collector's finalize callbacks (the seam
+     * where usage-collected CSS gets compiled and registered), then resolves
+     * the marker {@see renderHead()} left — replacing it with the pending
+     * <style> blocks, or with nothing when none were registered. Idempotent:
+     * both the callbacks and the pending entries drain on first use, so a
+     * nested render finalizing twice emits nothing twice.
+     *
+     * When the page never rendered asset_head() (no marker), pending styles
+     * fall back to injection before </head>, or prepend on a headless fragment.
+     */
+    public static function finalizeDynamicCss(string $html, AssetCollector $collector): string
+    {
+        $collector->runFinalizeCallbacks($html);
+        $styles = self::renderRawInlineCss($collector->takeRawInlineCss());
+
+        if (str_contains($html, self::DYNAMIC_CSS_MARKER)) {
+            return str_replace(self::DYNAMIC_CSS_MARKER, $styles, $html);
+        }
+
+        if ($styles === '') {
+            return $html;
+        }
+
+        $headClose = stripos($html, '</head>');
+        if ($headClose !== false) {
+            return substr_replace($html, $styles, $headClose, 0);
+        }
+
+        return $styles . $html;
+    }
+
+    /**
+     * @param list<array{key: string, css: string, priority: int}> $entries
+     */
+    private static function renderRawInlineCss(array $entries): string
+    {
+        $html = '';
+        foreach ($entries as $entry) {
+            // A literal "</style" in the content would close the tag early and
+            // spill the rest into markup; neutralize it the way inline scripts
+            // neutralize "</script". No such sequence occurs in valid CSS.
+            $safeCss = str_ireplace('</style', '<\/style', $entry['css']);
+            $html .= '<style data-asset-key="'
+                . htmlspecialchars($entry['key'], ENT_QUOTES, 'UTF-8')
+                . '">' . $safeCss . '</style>' . "\n";
         }
 
         return $html;

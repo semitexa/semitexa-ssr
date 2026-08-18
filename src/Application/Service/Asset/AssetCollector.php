@@ -27,6 +27,26 @@ final class AssetCollector
     /** @var array<string, AssetEntry> Per-request required assets keyed by canonical key */
     private array $required = [];
 
+    /**
+     * Raw inline CSS registered for this request, keyed by caller-chosen key.
+     * Unlike inline-css entries, these carry their content directly — no
+     * physical file behind ModuleAssetRegistry::resolve() — so a module can
+     * compile CSS from what this request actually rendered.
+     *
+     * @var array<string, array{css: string, priority: int}>
+     */
+    private array $rawInlineCss = [];
+
+    /**
+     * Callbacks to run once, right after the page's Twig render completes and
+     * before the dynamic-CSS marker is resolved. This is the post-render seam:
+     * a Twig extension that accumulated usage during render registers one of
+     * these, and inside it compiles + registers via {@see inlineCss()}.
+     *
+     * @var list<callable(self, string): void> receives (collector, rendered html)
+     */
+    private array $finalizeCallbacks = [];
+
     private ?AssetManifestRegistry $registry;
 
     public function __construct(?AssetManifestRegistry $registry = null)
@@ -131,11 +151,78 @@ final class AssetCollector
     }
 
     /**
+     * Register raw CSS content for this request's <head>.
+     *
+     * Registered before the layout renders {{ asset_head() }}, it is emitted
+     * there; registered later (typically from an onFinalize() callback, after
+     * the page body has rendered), it lands where asset_head() left the
+     * dynamic-CSS marker. Re-registering a key overwrites its content — last
+     * write wins, so a compiler can refine what an earlier pass registered.
+     */
+    public function inlineCss(string $key, string $css, int $priority = 100): self
+    {
+        $this->rawInlineCss[$key] = ['css' => $css, 'priority' => $priority];
+
+        return $this;
+    }
+
+    /**
+     * Register a callback for the post-render seam. It runs exactly once, when
+     * the rendered page HTML is finalized ({@see AssetRenderer::finalizeDynamicCss()}),
+     * receiving this collector and the rendered HTML — scan the HTML, compile,
+     * and register the result via {@see inlineCss()}.
+     */
+    public function onFinalize(callable $callback): self
+    {
+        $this->finalizeCallbacks[] = $callback;
+
+        return $this;
+    }
+
+    /**
+     * Drain the finalize callbacks: run each exactly once against the rendered
+     * HTML. Draining (rather than iterating in place) keeps a second finalize
+     * pass over the same request — a layout render nested in a response
+     * render — from running them again.
+     */
+    public function runFinalizeCallbacks(string $html): void
+    {
+        $callbacks = $this->finalizeCallbacks;
+        $this->finalizeCallbacks = [];
+
+        foreach ($callbacks as $callback) {
+            $callback($this, $html);
+        }
+    }
+
+    /**
+     * Drain the raw inline CSS registered so far: priority-sorted (stable for
+     * equal priorities), emptied on read so each entry renders exactly once no
+     * matter how many render or finalize passes touch this request.
+     *
+     * @return list<array{key: string, css: string, priority: int}>
+     */
+    public function takeRawInlineCss(): array
+    {
+        $out = [];
+        foreach ($this->rawInlineCss as $key => $entry) {
+            $out[] = ['key' => $key, 'css' => $entry['css'], 'priority' => $entry['priority']];
+        }
+        $this->rawInlineCss = [];
+
+        usort($out, static fn (array $a, array $b): int => $a['priority'] <=> $b['priority']);
+
+        return $out;
+    }
+
+    /**
      * Reset per-request state. Called between requests in Swoole mode.
      */
     public function reset(): void
     {
         $this->required = [];
+        $this->rawInlineCss = [];
+        $this->finalizeCallbacks = [];
     }
 
     /**

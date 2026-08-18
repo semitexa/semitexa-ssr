@@ -136,6 +136,7 @@ final class TwigFunctionContractTest extends TestCase
             ],
             'App\\Modules\\ShowcaseKit\\Application\\Service\\ShowcaseKitCodeTwigExtension' => [
                 'sk_code_block',
+                'sk_code_tabs',
             ],
         ];
     }

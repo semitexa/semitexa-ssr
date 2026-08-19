@@ -33,11 +33,18 @@ final class ThemeAwareTwigLoader implements LoaderInterface
     /** @var \Closure(): list<string> */
     private readonly \Closure $chainResolver;
 
+    /** @var \Closure(): ?\Semitexa\Core\Pipeline\RequestTracerInterface */
+    private readonly \Closure $tracerResolver;
+
     public function __construct(
         private readonly FilesystemLoader $delegate,
         \Closure $chainResolver,
+        ?\Closure $tracerResolver = null,
     ) {
         $this->chainResolver = $chainResolver;
+        // Same late-binding shape as the chain resolver: the loader lives for
+        // the worker, the tracer is per-environment and optional.
+        $this->tracerResolver = $tracerResolver ?? static fn (): ?\Semitexa\Core\Pipeline\RequestTracerInterface => null;
     }
 
     public function getSourceContext(string $name): Source
@@ -49,13 +56,41 @@ final class ThemeAwareTwigLoader implements LoaderInterface
                 throw new LoaderError(sprintf('Unable to read template override "%s".', $override));
             }
 
+            $this->traceResolution($name, $override, true);
+
             return new Source(
                 $source,
                 $name,
                 $override,
             );
         }
-        return $this->delegate->getSourceContext($name);
+
+        $resolved = $this->delegate->getSourceContext($name);
+        $this->traceResolution($name, $resolved->getPath(), false);
+
+        return $resolved;
+    }
+
+    /**
+     * Tell the dev tracer which FILE a logical template name compiled from and
+     * whether a theme override intervened — the question override debugging
+     * opens a trace to answer, and one the rendered page cannot.
+     *
+     * Compile-time only by nature: Twig consults the loader on cache miss, so a
+     * warm worker shows no template marks. That is acceptable — the marks are
+     * needed exactly when templates just changed, which is when they recompile.
+     */
+    private function traceResolution(string $name, string $file, bool $override): void
+    {
+        try {
+            ($this->tracerResolver)()?->mark('template.resolve', [
+                'template' => $name,
+                'file' => $file,
+                'override' => $override,
+            ]);
+        } catch (\Throwable) {
+            // Rendering must never fail because observing it did.
+        }
     }
 
     public function getCacheKey(string $name): string

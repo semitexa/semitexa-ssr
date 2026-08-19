@@ -474,11 +474,18 @@ final class ModuleTemplateCatalog
      */
     private function resolveOptionalTracer(): ?RequestTracerInterface
     {
-        if (!$this->container->has(RequestTracerInterface::class)) {
+        // Wrapped whole: get() can throw even after has() said true, and an
+        // optional observer failing to RESOLVE must degrade to no observer —
+        // never fail the template compile it wanted to watch.
+        try {
+            if (!$this->container->has(RequestTracerInterface::class)) {
+                return null;
+            }
+            $resolved = $this->container->get(RequestTracerInterface::class);
+
+            return $resolved instanceof RequestTracerInterface ? $resolved : null;
+        } catch (\Throwable) {
             return null;
         }
-        $resolved = $this->container->get(RequestTracerInterface::class);
-
-        return $resolved instanceof RequestTracerInterface ? $resolved : null;
     }
 }

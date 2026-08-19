@@ -7,7 +7,10 @@ namespace Semitexa\Ssr\Application\Service\Template;
 use Semitexa\Core\Environment;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
+use Psr\Container\ContainerInterface;
 use Semitexa\Core\ModuleRegistry;
+use Semitexa\Core\Pipeline\RequestTracerInterface;
+use Semitexa\Core\Pipeline\SafeRequestTracer;
 use Semitexa\Core\Support\ProjectRoot;
 use Twig\Environment as TwigEnvironment;
 use Twig\Loader\FilesystemLoader;
@@ -49,6 +52,9 @@ final class ModuleTemplateCatalog
     private bool $initialized = false;
     #[InjectAsReadonly]
     protected ModuleRegistry $moduleRegistry;
+
+    #[InjectAsReadonly]
+    protected ContainerInterface $container;
 
     /**
      * Per-request active theme chain resolver (leaf-first). Null = legacy
@@ -227,6 +233,12 @@ final class ModuleTemplateCatalog
             fn (): array => $this->chainResolver === null
                 ? []
                 : $this->normalizeChain(($this->chainResolver)()),
+            // Optional dev tracer, resolved lazily per template compile — the
+            // loader outlives requests, so binding an instance here would
+            // freeze whatever was resolvable at catalog build time.
+            fn (): ?RequestTracerInterface => SafeRequestTracer::wrap(
+                $this->resolveOptionalTracer(),
+            ),
         );
         $this->loader = $effectiveLoader;
 
@@ -454,5 +466,19 @@ final class ModuleTemplateCatalog
         }
 
         return null;
+    }
+
+    /**
+     * The dev tracer when the container carries one, properly narrowed —
+     * a PSR container's get() promises only `object`.
+     */
+    private function resolveOptionalTracer(): ?RequestTracerInterface
+    {
+        if (!$this->container->has(RequestTracerInterface::class)) {
+            return null;
+        }
+        $resolved = $this->container->get(RequestTracerInterface::class);
+
+        return $resolved instanceof RequestTracerInterface ? $resolved : null;
     }
 }

@@ -27,7 +27,7 @@ use Swoole\Http\Response;
  * {@see AsyncResourceSseServer} static facade with every `static` dropped —
  * per-worker state (session registries, worker tables, connection caps) now
  * lives on this one instance, wired into the facade slot at worker boot by
- * {@see \Semitexa\Ssr\Application\Service\Server\Lifecycle\BindSseServerInstanceListener}.
+ * {@see \Semitexa\Ssr\Application\Service\Server\Lifecycle\WireCoreInstancesListener}.
  * Inject it with `#[InjectAsReadonly]` instead of calling the facade statics;
  * the facade remains only for static-context callers.
  *

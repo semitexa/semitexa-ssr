@@ -1003,7 +1003,7 @@ final class SseServer
     private function deferredBlockOrchestrator(): DeferredBlockOrchestrator
     {
         if ($this->runtime()->deferredBlockOrchestrator === null) {
-            throw new \RuntimeException('DeferredBlockOrchestrator is not wired for AsyncResourceSseServer.');
+            throw new \RuntimeException('DeferredBlockOrchestrator is not wired for SseServer.');
         }
 
         return $this->runtime()->deferredBlockOrchestrator;
@@ -1711,7 +1711,7 @@ final class SseServer
      *
      * @internal FENCED FAIL-CLOSED until Track R. This non-owner-request-scoped
      *           writer does zero content-vs-recipient authorization (it merely
-     *           loops owner-scoped {@see $this->deliver()} over a recipient list),
+     *           loops owner-scoped {@see self::deliver()} over a recipient list),
      *           so private content could ride it to non-entitled sessions. It is
      *           latent (zero callers); the throw fires BEFORE any deliver()/socket
      *           write so no frame can leak even partially. Track R replaces this

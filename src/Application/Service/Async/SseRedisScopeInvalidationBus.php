@@ -12,7 +12,7 @@ use Semitexa\Ssr\Domain\Contract\ScopeInvalidationBusInterface;
 /**
  * Default {@see ScopeInvalidationBusInterface} binding. Forwards a data-less
  * PUBLISH to the canonical KISS transport's Redis bus
- * ({@see $this->sseServer->publishScopeInvalidation()}), reusing the
+ * ({@see \Semitexa\Ssr\Application\Service\Async\SseServer::publishScopeInvalidation()}), reusing the
  * existing size-1 SSE pool (a non-blocking request/reply PUBLISH is safe on
  * the pooled connection — only the subscriber's blocking loop needs a
  * dedicated connection, design §C.3). No new SSE endpoint, queue, or stream

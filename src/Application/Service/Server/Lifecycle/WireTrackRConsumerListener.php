@@ -44,9 +44,9 @@ use Semitexa\Ssr\Domain\Contract\SubscriptionFactoryInterface;
  *  - R2 re-runner ({@see RouteReRunner} over {@see RouteExecutor::reExecute()}) — the
  *    auth-first full-chain re-run R4 calls on each `{__ctrl:rerun}` tick.
  *
- * It then hands R4 its collaborators ({@see $this->sseServer->setReRunner()} /
- * {@see $this->sseServer->setRerunCoalescer()}) and the held-open serve its
- * coordinator ({@see $this->sseServer->setConnectCoordinator()}). After this
+ * It then hands R4 its collaborators ({@see \Semitexa\Ssr\Application\Service\Async\SseServer::setReRunner()} /
+ * {@see \Semitexa\Ssr\Application\Service\Async\SseServer::setRerunCoalescer()}) and the held-open serve its
+ * coordinator ({@see \Semitexa\Ssr\Application\Service\Async\SseServer::setConnectCoordinator()}). After this
  * runs, a `{__ctrl:rerun}` is no longer a safe no-op — it re-runs the chain and
  * writes a fresh frame.
  *

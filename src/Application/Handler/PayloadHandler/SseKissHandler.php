@@ -5,16 +5,20 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Handler\PayloadHandler;
 
 use Semitexa\Core\Attribute\AsPayloadHandler;
+use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Contract\TypedHandlerInterface;
 use Semitexa\Core\Exception\NotFoundException;
 use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Server\SwooleBootstrap;
 use Semitexa\Ssr\Application\Payload\Request\SseKissPayload;
-use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Async\SseServer;
 
 #[AsPayloadHandler(payload: SseKissPayload::class, resource: ResourceResponse::class)]
 final class SseKissHandler implements TypedHandlerInterface
 {
+    #[InjectAsReadonly]
+    protected SseServer $sseServer;
+
     public function handle(SseKissPayload $payload, ResourceResponse $resource): ResourceResponse
     {
         $context = SwooleBootstrap::getCurrentSwooleRequestResponse();
@@ -24,14 +28,10 @@ final class SseKissHandler implements TypedHandlerInterface
 
         [$swooleRequest, $swooleResponse, $server] = $context;
 
-        if (!class_exists(AsyncResourceSseServer::class)) {
-            throw new NotFoundException('SSE', 'not available');
-        }
+        $this->sseServer->setServer($server);
+        $this->sseServer->handle($swooleRequest, $swooleResponse);
 
-        AsyncResourceSseServer::setServer($server);
-        AsyncResourceSseServer::handle($swooleRequest, $swooleResponse);
-
-        // AsyncResourceSseServer owns the raw Swoole Response end-to-end
+        // The injected SseServer owns the raw Swoole Response end-to-end
         // (status, headers, chunked frames, end()). The framework emitter
         // must not touch it again — a second status/header/end pass on the
         // same Swoole Response SIGSEGVs Swoole 6.2.1 workers.

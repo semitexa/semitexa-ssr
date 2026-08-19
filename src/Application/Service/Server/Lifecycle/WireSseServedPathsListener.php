@@ -11,12 +11,12 @@ use Semitexa\Core\Discovery\RouteRegistry;
 use Semitexa\Core\Server\Lifecycle\ServerLifecycleContext;
 use Semitexa\Core\Server\Lifecycle\ServerLifecycleListenerInterface;
 use Semitexa\Core\Server\Lifecycle\ServerLifecyclePhase;
-use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Async\SseServer;
 
 /**
  * Track R · R8a — generalize SSE serving to `transport === Sse`.
  *
- * The SSE serve dispatch ({@see AsyncResourceSseServer::handle()}) was hardcoded
+ * The SSE serve dispatch ({@see SseServer::handle()}) was hardcoded
  * to the single `/__semitexa_kiss` path. This listener removes that coupling: it
  * reads every discovered route's declared transport and registers the paths of
  * the ones declaring {@see TransportType::Sse} into the server, so the intercept
@@ -29,7 +29,7 @@ use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
  * Runs at {@see ServerLifecyclePhase::WorkerStartAfterContainer} (requiresContainer:
  * true) — AFTER `$container->build()`, so the {@see RouteRegistry} is populated and
  * resolvable. Mirrors the orm `WireDefaultEventDispatcherListener` wiring pattern.
- * The served-path set is per-worker static state ({@see AsyncResourceSseServer}), so
+ * The served-path set is per-worker singleton state ({@see SseServer}), so
  * it is re-established in every worker.
  *
  * This is purely additive plumbing: it ENABLES own-route SSE serving but switches
@@ -46,9 +46,12 @@ final class WireSseServedPathsListener implements ServerLifecycleListenerInterfa
     #[InjectAsReadonly]
     protected RouteRegistry $routeRegistry;
 
+    #[InjectAsReadonly]
+    protected SseServer $sseServer;
+
     public function handle(ServerLifecycleContext $context): void
     {
-        AsyncResourceSseServer::setSseServedPaths(self::collectSsePaths($this->routeRegistry));
+        $this->sseServer->setSseServedPaths(self::collectSsePaths($this->routeRegistry));
     }
 
     /**

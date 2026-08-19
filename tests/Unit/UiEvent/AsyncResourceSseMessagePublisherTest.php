@@ -7,6 +7,7 @@ namespace Semitexa\Ssr\Tests\Unit\UiEvent;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Async\SseServer;
 use Semitexa\Ssr\Application\Service\Async\SseSessionRegistry;
 use Semitexa\Ssr\Application\Service\UiEvent\AsyncResourceSseMessagePublisher;
 use Semitexa\Ssr\Application\Service\UiEvent\CanonicalUiMessagePublisherInterface;
@@ -24,6 +25,21 @@ use Semitexa\Ssr\Application\Service\UiEvent\UiPatchMessage;
 final class AsyncResourceSseMessagePublisherTest extends TestCase
 {
     private ?string $previousRedisHost = null;
+
+    /**
+     * The publisher is container-built in production, where `$sseServer` is
+     * injected; a bare `new` here leaves the typed property uninitialized, so
+     * hand it the same instance the facade delegates to.
+     */
+    private static function publisher(): AsyncResourceSseMessagePublisher
+    {
+        $publisher = new AsyncResourceSseMessagePublisher();
+        $slot = new \ReflectionProperty(AsyncResourceSseMessagePublisher::class, 'sseServer');
+        $slot->setAccessible(true);
+        $slot->setValue($publisher, AsyncResourceSseServer::instance());
+
+        return $publisher;
+    }
 
     protected function setUp(): void
     {
@@ -52,14 +68,14 @@ final class AsyncResourceSseMessagePublisherTest extends TestCase
     {
         self::assertInstanceOf(
             CanonicalUiMessagePublisherInterface::class,
-            new AsyncResourceSseMessagePublisher(),
+            self::publisher(),
         );
     }
 
     #[Test]
     public function publish_forwards_typed_payload_to_async_resource_sse_server(): void
     {
-        $publisher = new AsyncResourceSseMessagePublisher();
+        $publisher = self::publisher();
         $publisher->publish('sess-1', new UiPatchMessage('cmp-1', ['v' => 1], 'corr-x'));
 
         $bufferedForSession = $this->bufferedFor('sess-1');
@@ -78,7 +94,7 @@ final class AsyncResourceSseMessagePublisherTest extends TestCase
     #[Test]
     public function publisher_only_emits_allow_listed_types(): void
     {
-        $publisher = new AsyncResourceSseMessagePublisher();
+        $publisher = self::publisher();
         $publisher->publish('sess-1', new UiErrorMessage('reason_x', 'Operator-safe message.'));
 
         $bufferedForSession = $this->bufferedFor('sess-1');
@@ -111,9 +127,9 @@ final class AsyncResourceSseMessagePublisherTest extends TestCase
             'authSessionMap',
         ];
         foreach ($nullableProperties as $name) {
-            $property = new \ReflectionProperty(AsyncResourceSseServer::class, $name);
+            $property = new \ReflectionProperty(SseServer::class, $name);
             $property->setAccessible(true);
-            $property->setValue(null, null);
+            $property->setValue(AsyncResourceSseServer::instance(), null);
         }
 
         \putenv('REDIS_HOST=');
@@ -128,12 +144,12 @@ final class AsyncResourceSseMessagePublisherTest extends TestCase
      */
     private static function serverSessionRegistry(): SseSessionRegistry
     {
-        $slot = new \ReflectionProperty(AsyncResourceSseServer::class, 'sessionRegistry');
+        $slot = new \ReflectionProperty(SseServer::class, 'sessionRegistry');
         $slot->setAccessible(true);
-        $registry = $slot->getValue();
+        $registry = $slot->getValue(AsyncResourceSseServer::instance());
         if (!$registry instanceof SseSessionRegistry) {
             $registry = new SseSessionRegistry();
-            $slot->setValue(null, $registry);
+            $slot->setValue(AsyncResourceSseServer::instance(), $registry);
         }
 
         return $registry;
@@ -141,9 +157,9 @@ final class AsyncResourceSseMessagePublisherTest extends TestCase
 
     private static function resetServerSessionRegistry(): void
     {
-        $slot = new \ReflectionProperty(AsyncResourceSseServer::class, 'sessionRegistry');
+        $slot = new \ReflectionProperty(SseServer::class, 'sessionRegistry');
         $slot->setAccessible(true);
-        $slot->setValue(null, null);
+        $slot->setValue(AsyncResourceSseServer::instance(), null);
     }
 
     /**

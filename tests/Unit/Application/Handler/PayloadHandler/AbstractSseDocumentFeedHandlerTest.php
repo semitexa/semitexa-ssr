@@ -230,16 +230,16 @@ final class AbstractSseDocumentFeedHandlerTest extends TestCase
      */
     private static function resetReRunScope(): void
     {
-        $slot = new \ReflectionProperty(AsyncResourceSseServer::class, 'reRunScope');
+        $slot = new \ReflectionProperty(\Semitexa\Ssr\Application\Service\Async\SseServer::class, 'reRunScope');
         $slot->setAccessible(true);
-        $slot->setValue(null, null);
+        $slot->setValue(AsyncResourceSseServer::instance(), null);
     }
 
     private static function invokeFacadeScope(string $method): void
     {
-        $m = new \ReflectionMethod(AsyncResourceSseServer::class, $method);
+        $m = new \ReflectionMethod(\Semitexa\Ssr\Application\Service\Async\SseServer::class, $method);
         $m->setAccessible(true);
-        $m->invoke(null);
+        $m->invoke(AsyncResourceSseServer::instance());
     }
 
     private static function subscribeRequest(): Request

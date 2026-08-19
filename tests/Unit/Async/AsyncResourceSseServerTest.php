@@ -8,6 +8,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Async\SseServer;
 use Semitexa\Ssr\Application\Service\Async\SseRedisSessionQueue;
 use Semitexa\Ssr\Application\Service\Async\SseRequestGuard;
 use Semitexa\Ssr\Application\Service\Async\SseSessionCoroutines;
@@ -579,10 +580,10 @@ final class AsyncResourceSseServerTest extends TestCase
         // poking a raw array. It must be the FACADE's instance: registration
         // happens through AsyncResourceSseServer::createSessionCoroutine(), so a
         // freshly built tracker would see nothing.
-        $slot = new \ReflectionProperty(AsyncResourceSseServer::class, 'sessionCoroutines');
+        $slot = new \ReflectionProperty(SseServer::class, 'sessionCoroutines');
         $slot->setAccessible(true);
-        $slot->setValue(null, null);
-        $cancelMethod = new \ReflectionMethod(AsyncResourceSseServer::class, 'cancelSessionCoroutines');
+        $slot->setValue(AsyncResourceSseServer::instance(), null);
+        $cancelMethod = new \ReflectionMethod(SseServer::class, 'cancelSessionCoroutines');
         $cancelMethod->setAccessible(true);
 
         try {
@@ -602,21 +603,21 @@ final class AsyncResourceSseServerTest extends TestCase
                 self::assertTrue($started->pop(1.0));
 
                 /** @var SseSessionCoroutines $tracker */
-                $tracker = $slot->getValue();
+                $tracker = $slot->getValue(AsyncResourceSseServer::instance());
                 self::assertTrue($tracker->hasAny($sessionId));
                 self::assertContains($cid, $tracker->idsFor($sessionId));
 
-                $cancelMethod->invoke(null, $sessionId);
+                $cancelMethod->invoke(AsyncResourceSseServer::instance(), $sessionId);
 
                 self::assertTrue($finished->pop(1.0));
 
                 \Swoole\Coroutine::sleep(0.02);
                 /** @var SseSessionCoroutines $tracker */
-                $tracker = $slot->getValue();
+                $tracker = $slot->getValue(AsyncResourceSseServer::instance());
                 self::assertSame([], $tracker->idsFor($sessionId), 'the cancelled coroutine deregisters itself');
             });
         } finally {
-            $slot->setValue(null, null);
+            $slot->setValue(AsyncResourceSseServer::instance(), null);
         }
     }
 
@@ -651,10 +652,10 @@ final class AsyncResourceSseServerTest extends TestCase
 
     private function shouldServeAsSse(string $path): bool
     {
-        $method = new \ReflectionMethod(AsyncResourceSseServer::class, 'shouldServeAsSse');
+        $method = new \ReflectionMethod(SseServer::class, 'shouldServeAsSse');
         $method->setAccessible(true);
 
-        return (bool) $method->invoke(null, $path);
+        return (bool) $method->invoke(AsyncResourceSseServer::instance(), $path);
     }
 
     private function shouldSendHeartbeat(int $now, int $lastWriteAt, int $intervalSeconds): bool

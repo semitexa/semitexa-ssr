@@ -44,6 +44,20 @@ use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
  * touches them earlier in boot — a property this listener owns, and which anything
  * adding a new boot-time writer must preserve.
  *
+ * `tk-facades-retire-wiring` (2026-08-19): this is now the SINGLE facade-wiring
+ * listener — every facade-slot push in the framework happens in the eight lines
+ * below, including `AsyncResourceSseServer::setInstance()`. SSE *collaborator*
+ * wiring no longer rides the facade at all: {@see WireTrackRConsumerListener}
+ * (-20) and {@see WireSseServedPathsListener} (0) inject {@see \Semitexa\Ssr\Application\Service\Async\SseServer}
+ * and mutate the container singleton directly, so their ordering relative to the
+ * slot push stopped mattering — both talk to the same instance either way. The
+ * only facade writers left outside this listener are the two deliberately
+ * container-independent ones ({@see BindAsyncResourceSseServerListener},
+ * {@see ReapStaleSubscriptionsListener} — `requiresContainer: false`), which run
+ * in later phases where the slot already holds the container singleton, and in
+ * containerless boots operate the facade's process-local fallback exactly as
+ * before. `semitexa.staticFacadeAccess` (PHPStan) pins this shape.
+ *
  * Verified 2026-08-03 for the eight facades below:
  *
  * - Listeners run phase-by-phase in enum order, and ascending `priority` within a
@@ -102,6 +116,9 @@ final class WireCoreInstancesListener implements ServerLifecycleListenerInterfac
     #[InjectAsReadonly]
     protected ComponentCatalog $componentCatalog;
 
+    #[InjectAsReadonly]
+    protected \Semitexa\Ssr\Application\Service\Async\SseServer $sseServer;
+
     public function handle(ServerLifecycleContext $context): void
     {
         ComponentRegistry::setCatalog($this->componentCatalog);
@@ -111,7 +128,8 @@ final class WireCoreInstancesListener implements ServerLifecycleListenerInterfac
         ModuleAssetRegistry::setResolver($this->moduleAssetResolver);
         AssetCollector::setManifestRegistry($this->assetManifestRegistry);
         UrlGenerator::setBuilder($this->routeUrlBuilder);
-        AsyncResourceSseServer::setDeferredBlockOrchestrator($this->deferredBlockOrchestrator);
+        AsyncResourceSseServer::setInstance($this->sseServer);
+        $this->sseServer->setDeferredBlockOrchestrator($this->deferredBlockOrchestrator);
 
         // Optional, and absent in production. Resolved through has()/get() rather
         // than injected as a property, because an injected optional service is a
@@ -120,6 +138,6 @@ final class WireCoreInstancesListener implements ServerLifecycleListenerInterfac
         $tracer = $this->container->has(RequestTracerInterface::class)
             ? $this->container->get(RequestTracerInterface::class)
             : null;
-        AsyncResourceSseServer::setRequestTracer($tracer);
+        $this->sseServer->setRequestTracer($tracer);
     }
 }

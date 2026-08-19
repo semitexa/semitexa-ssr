@@ -50,6 +50,11 @@ final class AsyncResourceSseServerPublicSurfaceTest extends TestCase
         'deliverToUser' => 'static function(string $userId, array $data): int',
         'detachSubscription' => 'static function(string $streamingId): void',
         'handle' => 'static function(Swoole\Http\Request $request, Swoole\Http\Response $response): bool',
+        // tk-facades-sse-server: the facade became a thin delegate over one
+        // wired SseServer slot. `setInstance` is how worker boot pushes the
+        // container singleton in; `instance` is how tests (and migrations)
+        // reach the state that used to live in private statics here.
+        'instance' => 'static function(): Semitexa\Ssr\Application\Service\Async\SseServer',
         'isReRunInProgress' => 'static function(): bool',
         'isSessionActive' => 'static function(string $sessionId): bool',
         'maxConnectionAgeSeconds' => 'static function(): int',
@@ -59,6 +64,7 @@ final class AsyncResourceSseServerPublicSurfaceTest extends TestCase
         'serveResourceStream' => 'static function(Swoole\Http\Request $request, Swoole\Http\Response $response, string $sessionId, array $initialFrameData, ?Semitexa\Ssr\Domain\Model\SubscriptionRecord $record=, ?Semitexa\Core\Pipeline\ReRun\ReRunContext $context=, string $serverStreamId=): void',
         'setConnectCoordinator' => 'static function(?Semitexa\Ssr\Application\Service\Async\ConnectCoordinator $coordinator): void',
         'setDeferredBlockOrchestrator' => 'static function(?Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator $orchestrator): void',
+        'setInstance' => 'static function(Semitexa\Ssr\Application\Service\Async\SseServer $server): void',
         'setReRunner' => 'static function(?Semitexa\Core\Pipeline\ReRun\ReRunnerInterface $reRunner): void',
         'setRequestTracer' => 'static function(?Semitexa\Core\Pipeline\RequestTracerInterface $tracer): void',
         'setRerunCoalescer' => 'static function(?Semitexa\Ssr\Application\Service\Async\RerunCoalescer $coalescer): void',

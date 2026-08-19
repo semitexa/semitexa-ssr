@@ -17,6 +17,7 @@ use Semitexa\Core\Resource\JsonResourceResponse;
 use Semitexa\Core\Tenant\TenantContextInterface;
 use Semitexa\Core\Server\SwooleBootstrap;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Async\SseServer;
 use Semitexa\Ssr\Application\Service\UiEvent\UiSseEventType;
 use Semitexa\Ssr\Domain\Contract\DynamicallyScopedFeedInterface;
 use Semitexa\Ssr\Domain\Contract\SseFeedPayloadInterface;
@@ -30,9 +31,9 @@ use Semitexa\Ssr\Domain\Model\SubscriptionRecord;
  * machinery, not UI).
  *
  * The choreography — server-minted stream id + `ui.stream.id` first frame, the
- * held-open serve handed to {@see AsyncResourceSseServer::serveResourceStream()},
+ * held-open serve handed to {@see SseServer::serveResourceStream()},
  * the `X-Semitexa-Stream-Rehydrate` re-hydrate intake via
- * {@see AsyncResourceSseServer::submitViewChange()}, the SSE-vs-JSON content
+ * {@see SseServer::submitViewChange()}, the SSE-vs-JSON content
  * negotiation, and the JSON degrade — is identical across feed shapes. The
  * feed's own route path/method come from the payload class's route attribute
  * (via {@see PayloadMetadataReflector}), and the held-open subscription's
@@ -56,6 +57,20 @@ use Semitexa\Ssr\Domain\Model\SubscriptionRecord;
  */
 abstract class AbstractSseFeedHandler
 {
+    #[InjectAsReadonly]
+    protected SseServer $sseServer;
+
+    /**
+     * Container-injected in production; falls back to the facade's wired
+     * instance so a subclass constructed bare (fixtures, scripts) still talks
+     * to the same per-worker SSE state instead of exploding on an
+     * uninitialized typed property.
+     */
+    private function sse(): SseServer
+    {
+        return $this->sseServer ??= AsyncResourceSseServer::instance();
+    }
+
     /**
      * One-URL re-hydrate intake header. A PURE intent flag: its presence
      * routes the POST to the view-change branch; the stream id + new view
@@ -163,7 +178,7 @@ abstract class AbstractSseFeedHandler
         // its per-subscription callback (the data frame would silently never
         // reach the grid/collab runtime). Plain pulls (not a re-run, no SSE
         // Accept) still pass through untouched.
-        if (!$this->prefersSse($payload) && !AsyncResourceSseServer::isReRunInProgress()) {
+        if (!$this->prefersSse($payload) && !$this->sse()->isReRunInProgress()) {
             // Plain pull — byte-identical: the builder's response (and its
             // typed 400 exceptions) pass through untouched.
             return $this->buildResponse($payload, $response);
@@ -174,7 +189,7 @@ abstract class AbstractSseFeedHandler
         // RE-RUN TICK: a `{__ctrl:rerun|viewchange}` re-ran this chain (the
         // live fd is already held + being streamed on) — produce the framed
         // BODY as JSON; the held-open loop writes it as the fresh frame.
-        if (AsyncResourceSseServer::isReRunInProgress()) {
+        if ($this->sse()->isReRunInProgress()) {
             return $this->jsonResponse($response, $success ? 200 : 400, $this->frame($envelope, $success));
         }
 
@@ -245,7 +260,7 @@ abstract class AbstractSseFeedHandler
     /**
      * The absorbed view-change command body: enqueue the view change onto the
      * held stream and ACK ONLY (never rows). Reuses
-     * {@see AsyncResourceSseServer::submitViewChange()} VERBATIM — it
+     * {@see SseServer::submitViewChange()} VERBATIM — it
      * validates the stream-id shape, coalesces (latest-view-wins), and
      * enqueues a `{__ctrl:viewchange}` control onto that stream's
      * session-addressed queue; the owning worker re-runs the feed chain and
@@ -266,7 +281,7 @@ abstract class AbstractSseFeedHandler
             // the right one of N subscriptions on that one connection re-runs.
             // Both coordinates are required — a half-supplied pair is rejected.
             $accepted = $kissSession !== '' && $subscriptionId !== ''
-                && AsyncResourceSseServer::submitViewChange(
+                && $this->sse()->submitViewChange(
                     $kissSession,
                     $payload->toViewParams(),
                     $subscriptionId,
@@ -274,7 +289,7 @@ abstract class AbstractSseFeedHandler
         } else {
             // Standalone own-route stream: streaming_id == session_id, addressed
             // by the adopted server stream id the payload carries.
-            $accepted = AsyncResourceSseServer::submitViewChange(
+            $accepted = $this->sse()->submitViewChange(
                 (string) $payload->getStreamId(),
                 $payload->toViewParams(),
             );
@@ -333,7 +348,7 @@ abstract class AbstractSseFeedHandler
         $kissSession = trim((string) ($request?->getHeader(self::KISS_SESSION_HEADER) ?? ''));
         $subscriptionId = trim((string) ($request?->getHeader(self::SUBSCRIPTION_ID_HEADER) ?? ''));
 
-        $accepted = AsyncResourceSseServer::submitSubscribe(
+        $accepted = $this->sse()->submitSubscribe(
             $kissSession,
             $subscriptionId,
             $this->feedRoutePath($payload),
@@ -359,7 +374,7 @@ abstract class AbstractSseFeedHandler
         $kissSession = trim((string) ($request?->getHeader(self::KISS_SESSION_HEADER) ?? ''));
         $subscriptionId = trim((string) ($request?->getHeader(self::SUBSCRIPTION_ID_HEADER) ?? ''));
 
-        $accepted = AsyncResourceSseServer::submitUnsubscribe($kissSession, $subscriptionId);
+        $accepted = $this->sse()->submitUnsubscribe($kissSession, $subscriptionId);
 
         return $this->jsonResponse(
             $response,
@@ -435,7 +450,7 @@ abstract class AbstractSseFeedHandler
      * Convert the one-shot serve into a HELD-OPEN stream serviced by the
      * framework drain loop. Grabs the raw Swoole socket (the same way
      * {@see SseKissHandler} does), then hands it to
-     * {@see AsyncResourceSseServer::serveResourceStream()} with the
+     * {@see SseServer::serveResourceStream()} with the
      * consumer-half inputs. Returns the already-sent response on success, or
      * null when no live socket is available so the caller degrades to JSON.
      *
@@ -463,7 +478,7 @@ abstract class AbstractSseFeedHandler
         }
         [$swooleRequest, $swooleResponse, $server] = $context;
 
-        $serverStreamId = AsyncResourceSseServer::mintStreamId();
+        $serverStreamId = $this->sse()->mintStreamId();
         $sessionId = $serverStreamId;
         $reRunContext = $this->buildReRunContext($payload, $sessionId);
         // The record + context share streaming_id (= sessionId); if the route
@@ -471,8 +486,8 @@ abstract class AbstractSseFeedHandler
         // open, just without a live re-run source (passed as null/null).
         $record = $reRunContext === null ? null : $this->buildSubscriptionRecord($payload, $sessionId);
 
-        AsyncResourceSseServer::setServer($server);
-        AsyncResourceSseServer::serveResourceStream(
+        $this->sse()->setServer($server);
+        $this->sse()->serveResourceStream(
             $swooleRequest,
             $swooleResponse,
             $sessionId,

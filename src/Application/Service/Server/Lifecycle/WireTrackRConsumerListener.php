@@ -15,7 +15,7 @@ use Semitexa\Core\Pipeline\RouteExecutor;
 use Semitexa\Core\Server\Lifecycle\ServerLifecycleContext;
 use Semitexa\Core\Server\Lifecycle\ServerLifecycleListenerInterface;
 use Semitexa\Core\Server\Lifecycle\ServerLifecyclePhase;
-use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Async\SseServer;
 use Semitexa\Ssr\Application\Service\Async\ConnectCoordinator;
 use Semitexa\Ssr\Application\Service\Async\LivePubSubChannelController;
 use Semitexa\Ssr\Application\Service\Async\RedisSubscribeConnectionFactory;
@@ -44,9 +44,9 @@ use Semitexa\Ssr\Domain\Contract\SubscriptionFactoryInterface;
  *  - R2 re-runner ({@see RouteReRunner} over {@see RouteExecutor::reExecute()}) — the
  *    auth-first full-chain re-run R4 calls on each `{__ctrl:rerun}` tick.
  *
- * It then hands R4 its collaborators ({@see AsyncResourceSseServer::setReRunner()} /
- * {@see AsyncResourceSseServer::setRerunCoalescer()}) and the held-open serve its
- * coordinator ({@see AsyncResourceSseServer::setConnectCoordinator()}). After this
+ * It then hands R4 its collaborators ({@see \Semitexa\Ssr\Application\Service\Async\SseServer::setReRunner()} /
+ * {@see \Semitexa\Ssr\Application\Service\Async\SseServer::setRerunCoalescer()}) and the held-open serve its
+ * coordinator ({@see \Semitexa\Ssr\Application\Service\Async\SseServer::setConnectCoordinator()}). After this
  * runs, a `{__ctrl:rerun}` is no longer a safe no-op — it re-runs the chain and
  * writes a fresh frame.
  *
@@ -71,6 +71,15 @@ final class WireTrackRConsumerListener implements ServerLifecycleListenerInterfa
     #[InjectAsReadonly]
     protected ContainerInterface $container;
 
+    /**
+     * The worker singleton itself, not the static facade: wiring the instance
+     * directly makes this listener order-independent of the facade-slot push
+     * in {@see WireCoreInstancesListener} — both talk to the same container
+     * singleton either way.
+     */
+    #[InjectAsReadonly]
+    protected SseServer $sseServer;
+
     public function handle(ServerLifecycleContext $context): void
     {
         $tables = $context->bootstrapState?->get(SsrBootstrapStateKey::TRACK_R_SHARED_TABLES);
@@ -86,7 +95,7 @@ final class WireTrackRConsumerListener implements ServerLifecycleListenerInterfa
         // THIS deployment; the control rides the session-addressed queue, which falls
         // back to the Swoole deliver-table when Redis is absent), so the view-change
         // intake must work even single-server with no cross-instance bus.
-        AsyncResourceSseServer::setViewChangeCoalescer($tables->viewChangeCoalescer);
+        $this->sseServer->setViewChangeCoalescer($tables->viewChangeCoalescer);
 
         $connectionFactory = RedisSubscribeConnectionFactory::fromEnvironment();
         if ($connectionFactory === null) {
@@ -132,9 +141,9 @@ final class WireTrackRConsumerListener implements ServerLifecycleListenerInterfa
             $container,
         );
 
-        AsyncResourceSseServer::setConnectCoordinator($coordinator);
-        AsyncResourceSseServer::setRerunCoalescer($tables->coalescer);
-        AsyncResourceSseServer::setReRunner($reRunner);
+        $this->sseServer->setConnectCoordinator($coordinator);
+        $this->sseServer->setRerunCoalescer($tables->coalescer);
+        $this->sseServer->setReRunner($reRunner);
 
         // SSE transport unification · Phase 1 — the subscribe-control branch's
         // factory: builds a multiplexed subscription (record + re-run context) on
@@ -144,7 +153,7 @@ final class WireTrackRConsumerListener implements ServerLifecycleListenerInterfa
         if ($container->has(SubscriptionFactoryInterface::class)) {
             $factory = $container->get(SubscriptionFactoryInterface::class);
             if ($factory instanceof SubscriptionFactoryInterface) {
-                AsyncResourceSseServer::setSubscriptionFactory($factory);
+                $this->sseServer->setSubscriptionFactory($factory);
             }
         }
 

@@ -14,6 +14,7 @@ use Semitexa\Core\Pipeline\ReRun\ReRunResult;
 use Semitexa\Core\Server\SseFrame;
 use Semitexa\Core\Server\SseTransportInterface;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Async\SseServer;
 use Semitexa\Ssr\Application\Service\Async\SseRuntime;
 use Semitexa\Ssr\Application\Service\Async\ConnectCoordinator;
 use Semitexa\Ssr\Application\Service\Async\RedisSubscribeConnectionFactory;
@@ -186,10 +187,10 @@ final class ViewChangeControlFrameTest extends TestCase
      */
     private function drain(string $sessionId, array $data): int
     {
-        $method = new \ReflectionMethod(AsyncResourceSseServer::class, 'handleControlFrame');
+        $method = new \ReflectionMethod(SseServer::class, 'handleControlFrame');
         $method->setAccessible(true);
 
-        return (int) $method->invoke(null, $sessionId, null, $data);
+        return (int) $method->invoke(AsyncResourceSseServer::instance(), $sessionId, null, $data);
     }
 
     private function connect(string $streamingId, string $sessionId): void
@@ -261,12 +262,12 @@ final class ViewChangeControlFrameTest extends TestCase
      */
     private function setTransport(?SseTransportInterface $transport): void
     {
-        $slot = new \ReflectionProperty(AsyncResourceSseServer::class, 'runtime');
+        $slot = new \ReflectionProperty(SseServer::class, 'runtime');
         $slot->setAccessible(true);
-        $runtime = $slot->getValue();
+        $runtime = $slot->getValue(AsyncResourceSseServer::instance());
         if (!$runtime instanceof SseRuntime) {
             $runtime = new SseRuntime();
-            $slot->setValue(null, $runtime);
+            $slot->setValue(AsyncResourceSseServer::instance(), $runtime);
         }
         $runtime->transport = $transport;
     }

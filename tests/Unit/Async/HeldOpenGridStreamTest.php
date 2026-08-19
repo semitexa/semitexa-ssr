@@ -14,6 +14,7 @@ use Semitexa\Core\Pipeline\ReRun\ReRunResult;
 use Semitexa\Core\Server\SseFrame;
 use Semitexa\Core\Server\SseTransportInterface;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Async\SseServer;
 use Semitexa\Ssr\Application\Service\Async\SseRuntime;
 use Semitexa\Ssr\Application\Service\Async\SseSessionRegistry;
 use Semitexa\Ssr\Application\Service\Async\ConnectCoordinator;
@@ -281,12 +282,12 @@ final class HeldOpenGridStreamTest extends TestCase
         $items = $this->queuedFor($sessionId);
         $this->setQueue($sessionId, []);
 
-        $method = new \ReflectionMethod(AsyncResourceSseServer::class, 'handleControlFrame');
+        $method = new \ReflectionMethod(SseServer::class, 'handleControlFrame');
         $method->setAccessible(true);
 
         $outcomes = [];
         foreach ($items as $data) {
-            $outcomes[] = (int) $method->invoke(null, $sessionId, $fd, $data);
+            $outcomes[] = (int) $method->invoke(AsyncResourceSseServer::instance(), $sessionId, $fd, $data);
         }
 
         return $outcomes;
@@ -300,12 +301,12 @@ final class HeldOpenGridStreamTest extends TestCase
      */
     private static function serverSessionRegistry(): SseSessionRegistry
     {
-        $slot = new \ReflectionProperty(AsyncResourceSseServer::class, 'sessionRegistry');
+        $slot = new \ReflectionProperty(SseServer::class, 'sessionRegistry');
         $slot->setAccessible(true);
-        $registry = $slot->getValue();
+        $registry = $slot->getValue(AsyncResourceSseServer::instance());
         if (!$registry instanceof SseSessionRegistry) {
             $registry = new SseSessionRegistry();
-            $slot->setValue(null, $registry);
+            $slot->setValue(AsyncResourceSseServer::instance(), $registry);
         }
 
         return $registry;
@@ -313,9 +314,9 @@ final class HeldOpenGridStreamTest extends TestCase
 
     private static function resetServerSessionRegistry(): void
     {
-        $slot = new \ReflectionProperty(AsyncResourceSseServer::class, 'sessionRegistry');
+        $slot = new \ReflectionProperty(SseServer::class, 'sessionRegistry');
         $slot->setAccessible(true);
-        $slot->setValue(null, null);
+        $slot->setValue(AsyncResourceSseServer::instance(), null);
     }
 
     private function registerSession(string $sessionId, mixed $fd): void
@@ -347,19 +348,19 @@ final class HeldOpenGridStreamTest extends TestCase
 
     private function readStatic(string $name): array
     {
-        $p = new \ReflectionProperty(AsyncResourceSseServer::class, $name);
+        $p = new \ReflectionProperty(SseServer::class, $name);
         $p->setAccessible(true);
         /** @var array $value */
-        $value = $p->getValue();
+        $value = $p->getValue(AsyncResourceSseServer::instance());
 
         return $value;
     }
 
     private function writeStatic(string $name, array $value): void
     {
-        $p = new \ReflectionProperty(AsyncResourceSseServer::class, $name);
+        $p = new \ReflectionProperty(SseServer::class, $name);
         $p->setAccessible(true);
-        $p->setValue(null, $value);
+        $p->setValue(AsyncResourceSseServer::instance(), $value);
     }
 
     private function freshFrameReRunner(): ReRunnerInterface
@@ -429,12 +430,12 @@ final class HeldOpenGridStreamTest extends TestCase
      */
     private function setTransport(?SseTransportInterface $transport): void
     {
-        $slot = new \ReflectionProperty(AsyncResourceSseServer::class, 'runtime');
+        $slot = new \ReflectionProperty(SseServer::class, 'runtime');
         $slot->setAccessible(true);
-        $runtime = $slot->getValue();
+        $runtime = $slot->getValue(AsyncResourceSseServer::instance());
         if (!$runtime instanceof SseRuntime) {
             $runtime = new SseRuntime();
-            $slot->setValue(null, $runtime);
+            $slot->setValue(AsyncResourceSseServer::instance(), $runtime);
         }
         $runtime->transport = $transport;
     }

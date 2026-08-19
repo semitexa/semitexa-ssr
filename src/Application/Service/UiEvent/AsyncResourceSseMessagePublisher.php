@@ -5,7 +5,8 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service\UiEvent;
 
 use Semitexa\Core\Attribute\SatisfiesServiceContract;
-use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
+use Semitexa\Core\Attribute\InjectAsReadonly;
+use Semitexa\Ssr\Application\Service\Async\SseServer;
 use Semitexa\Ssr\Application\Service\Async\FanOutNotYetGatedException;
 
 /**
@@ -23,15 +24,18 @@ use Semitexa\Ssr\Application\Service\Async\FanOutNotYetGatedException;
 #[SatisfiesServiceContract(of: CanonicalUiMessagePublisherInterface::class)]
 final class AsyncResourceSseMessagePublisher implements CanonicalUiMessagePublisherInterface
 {
+    #[InjectAsReadonly]
+    protected SseServer $sseServer;
+
     public function publish(string $sessionId, UiSseMessageInterface $message): void
     {
-        AsyncResourceSseServer::deliver($sessionId, $message->toSsePayload());
+        $this->sseServer->deliver($sessionId, $message->toSsePayload());
     }
 
     /**
      * @internal FENCED FAIL-CLOSED until Track R. This is the non-owner-request-scoped
      *           fan-out wrapper; it forwards to the fenced
-     *           {@see AsyncResourceSseServer::deliverToUser()}, which does zero
+     *           {@see $this->sseServer->deliverToUser()}, which does zero
      *           content-vs-recipient authorization. Throws BEFORE building/forwarding any
      *           payload so no frame can leak. Track R restores the real forward once the
      *           per-recipient entitlement filter exists. Owner-scoped {@see self::publish()}
@@ -41,6 +45,6 @@ final class AsyncResourceSseMessagePublisher implements CanonicalUiMessagePublis
     {
         throw FanOutNotYetGatedException::forFanOut(__METHOD__);
 
-        // Track R restores: return AsyncResourceSseServer::deliverToUser($userId, $message->toSsePayload());
+        // Track R restores: return $this->sseServer->deliverToUser($userId, $message->toSsePayload());
     }
 }

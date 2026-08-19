@@ -14,6 +14,7 @@ use Semitexa\Core\Pipeline\ReRun\ReRunResult;
 use Semitexa\Core\Server\SseFrame;
 use Semitexa\Core\Server\SseTransportInterface;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Async\SseServer;
 use Semitexa\Ssr\Application\Service\Async\SseRuntime;
 use Semitexa\Ssr\Application\Service\Async\SseSessionRegistry;
 use Semitexa\Ssr\Application\Service\Async\ConnectCoordinator;
@@ -548,10 +549,10 @@ final class ControlFrameReRunTest extends TestCase
 
     private function drain(string $sessionId, array $data): int
     {
-        $method = new \ReflectionMethod(AsyncResourceSseServer::class, 'handleControlFrame');
+        $method = new \ReflectionMethod(SseServer::class, 'handleControlFrame');
         $method->setAccessible(true);
 
-        return (int) $method->invoke(null, $sessionId, null, $data);
+        return (int) $method->invoke(AsyncResourceSseServer::instance(), $sessionId, null, $data);
     }
 
     /**
@@ -604,12 +605,12 @@ final class ControlFrameReRunTest extends TestCase
      */
     private static function serverSessionRegistry(): SseSessionRegistry
     {
-        $slot = new \ReflectionProperty(AsyncResourceSseServer::class, 'sessionRegistry');
+        $slot = new \ReflectionProperty(SseServer::class, 'sessionRegistry');
         $slot->setAccessible(true);
-        $registry = $slot->getValue();
+        $registry = $slot->getValue(AsyncResourceSseServer::instance());
         if (!$registry instanceof SseSessionRegistry) {
             $registry = new SseSessionRegistry();
-            $slot->setValue(null, $registry);
+            $slot->setValue(AsyncResourceSseServer::instance(), $registry);
         }
 
         return $registry;
@@ -617,9 +618,9 @@ final class ControlFrameReRunTest extends TestCase
 
     private static function resetServerSessionRegistry(): void
     {
-        $slot = new \ReflectionProperty(AsyncResourceSseServer::class, 'sessionRegistry');
+        $slot = new \ReflectionProperty(SseServer::class, 'sessionRegistry');
         $slot->setAccessible(true);
-        $slot->setValue(null, null);
+        $slot->setValue(AsyncResourceSseServer::instance(), null);
     }
 
     /** Seed the worker-local per-session state the KISS connect captures at admit
@@ -788,12 +789,12 @@ final class ControlFrameReRunTest extends TestCase
      */
     private function setTransport(?SseTransportInterface $transport): void
     {
-        $slot = new \ReflectionProperty(AsyncResourceSseServer::class, 'runtime');
+        $slot = new \ReflectionProperty(SseServer::class, 'runtime');
         $slot->setAccessible(true);
-        $runtime = $slot->getValue();
+        $runtime = $slot->getValue(AsyncResourceSseServer::instance());
         if (!$runtime instanceof SseRuntime) {
             $runtime = new SseRuntime();
-            $slot->setValue(null, $runtime);
+            $slot->setValue(AsyncResourceSseServer::instance(), $runtime);
         }
         $runtime->transport = $transport;
     }

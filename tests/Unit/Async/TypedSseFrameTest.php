@@ -7,6 +7,7 @@ namespace Semitexa\Ssr\Tests\Unit\Async;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Async\SseServer;
 use Semitexa\Ssr\Application\Service\UiEvent\UiComponentStateMessage;
 use Semitexa\Ssr\Application\Service\UiEvent\UiErrorMessage;
 use Semitexa\Ssr\Application\Service\UiEvent\UiPatchMessage;
@@ -29,9 +30,9 @@ final class TypedSseFrameTest extends TestCase
      */
     private static function compose(array $data): string
     {
-        $method = new \ReflectionMethod(AsyncResourceSseServer::class, 'buildFrame');
+        $method = new \ReflectionMethod(SseServer::class, 'buildFrame');
         $method->setAccessible(true);
-        $frame = $method->invoke(null, $data);
+        $frame = $method->invoke(AsyncResourceSseServer::instance(), $data);
         self::assertInstanceOf(\Semitexa\Core\Server\SseFrame::class, $frame);
         return $frame->toWire();
     }

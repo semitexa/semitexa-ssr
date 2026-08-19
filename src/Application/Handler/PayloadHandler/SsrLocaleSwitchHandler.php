@@ -14,13 +14,16 @@ use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Request;
 use Semitexa\Ssr\Application\Payload\Request\SsrLocaleSwitchPayload;
 use Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator;
-use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Async\SseServer;
 use Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry;
 use Swoole\Coroutine;
 
 #[AsPayloadHandler(payload: SsrLocaleSwitchPayload::class, resource: ResourceResponse::class)]
 final class SsrLocaleSwitchHandler implements TypedHandlerInterface
 {
+    #[InjectAsReadonly]
+    protected SseServer $sseServer;
+
     #[InjectAsReadonly]
     protected DeferredBlockOrchestrator $orchestrator;
 
@@ -53,7 +56,7 @@ final class SsrLocaleSwitchHandler implements TypedHandlerInterface
         if ($sessionId === '') {
             throw new NotFoundException('SSE session', '(empty)');
         }
-        if (!AsyncResourceSseServer::isSessionActive($sessionId)) {
+        if (!$this->sseServer->isSessionActive($sessionId)) {
             throw new NotFoundException('SSE session', $sessionId);
         }
 
@@ -75,7 +78,7 @@ final class SsrLocaleSwitchHandler implements TypedHandlerInterface
         $pageContext = $entry['page_context'];
 
         if (class_exists(Coroutine::class, false) && Coroutine::getCid() > 0) {
-            AsyncResourceSseServer::createSessionCoroutine(function () use ($sessionId, $pageHandle, $pageContext, $locale): void {
+            $this->sseServer->createSessionCoroutine(function () use ($sessionId, $pageHandle, $pageContext, $locale): void {
                 try {
                     $this->orchestrator->streamDeferredBlocks(
                         sessionId: $sessionId,

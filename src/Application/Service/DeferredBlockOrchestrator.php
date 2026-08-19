@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service;
 
-use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Async\SseServer;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Log\LoggerInterface;
@@ -28,6 +28,9 @@ use Swoole\Coroutine;
 #[AsService]
 final class DeferredBlockOrchestrator
 {
+    #[InjectAsReadonly]
+    protected SseServer $sseServer;
+
     #[InjectAsReadonly]
     protected DataProviderRegistry $dataProviderRegistry;
 
@@ -67,7 +70,7 @@ final class DeferredBlockOrchestrator
 
         // Recorded from whichever coroutine is streaming; it finds the SSE trace
         // by walking its parent chain, so no id has to be threaded through here.
-        AsyncResourceSseServer::traceMark('deferred.stream_start', [
+        $this->sseServer->traceMark('deferred.stream_start', [
             'page' => $pageHandle,
             'slots' => count($slots),
             'live_slots' => count($liveSlots),
@@ -206,8 +209,8 @@ final class DeferredBlockOrchestrator
                 continue;
             }
 
-            \Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::createSessionCoroutine(function () use ($sessionId, $slot, $pageContext, $pageHandle, &$results, $channel, $locale, $requestSnapshot): void {
-                if (!\Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+            $this->sseServer->createSessionCoroutine(function () use ($sessionId, $slot, $pageContext, $pageHandle, &$results, $channel, $locale, $requestSnapshot): void {
+                if (!$this->sseServer->isSessionActive($sessionId)) {
                     return;
                 }
                 $data = [];
@@ -222,7 +225,7 @@ final class DeferredBlockOrchestrator
                         'message' => $e->getMessage(),
                     ]);
                 } finally {
-                    if ($channel !== null && \Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+                    if ($channel !== null && $this->sseServer->isSessionActive($sessionId)) {
                         $channel->push([$slot, $data]);
                     } else {
                         $results[] = [$slot, $data];
@@ -235,7 +238,7 @@ final class DeferredBlockOrchestrator
         if ($channel !== null) {
             $received = 0;
             while ($received < $slotCount) {
-                if (!\Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+                if (!$this->sseServer->isSessionActive($sessionId)) {
                     break;
                 }
                 $item = $channel->pop();
@@ -249,7 +252,7 @@ final class DeferredBlockOrchestrator
                 $sseData = $payload->toArray();
                 $sseData['id'] = $eventId;
 
-                if (!\Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+                if (!$this->sseServer->isSessionActive($sessionId)) {
                     break;
                 }
                 SseAsyncResultDelivery::deliverRaw($sessionId, $sseData);
@@ -260,7 +263,7 @@ final class DeferredBlockOrchestrator
             }
         } else {
             foreach ($results as [$slot, $data]) {
-                if (!\Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+                if (!$this->sseServer->isSessionActive($sessionId)) {
                     break;
                 }
                 $eventId++;
@@ -289,7 +292,7 @@ final class DeferredBlockOrchestrator
         // See the empty-slots branch: $channelStaysOpen keeps a unified live
         // channel open past the deferred drain; runLiveLoop stays on $liveEnabled.
         $channelStaysOpen = $keepChannelOpen || $liveEnabled;
-        if (\Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+        if ($this->sseServer->isSessionActive($sessionId)) {
             SseAsyncResultDelivery::deliverRaw($sessionId, [
                 'type' => 'done',
                 'live' => $channelStaysOpen,
@@ -322,7 +325,7 @@ final class DeferredBlockOrchestrator
         }
 
         foreach ($instances as $instance) {
-            if (!\Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+            if (!$this->sseServer->isSessionActive($sessionId)) {
                 break;
             }
 
@@ -465,7 +468,7 @@ final class DeferredBlockOrchestrator
             $lastDelivered[$slot->slotId] = $now;
         }
 
-        while (\Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+        while ($this->sseServer->isSessionActive($sessionId)) {
             // Sleep 1 second ticks — fine-grained enough for any reasonable interval
             if (class_exists(Coroutine::class, false) && Coroutine::getCid() > 0) {
                 Coroutine::sleep(1.0);
@@ -473,7 +476,7 @@ final class DeferredBlockOrchestrator
                 usleep(1_000_000);
             }
 
-            if (!\Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer::isSessionActive($sessionId)) {
+            if (!$this->sseServer->isSessionActive($sessionId)) {
                 break;
             }
 

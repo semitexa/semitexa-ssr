@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Seo\Sitemap\Provider;
 
+use Semitexa\Ssr\Application\Service\Seo\Sitemap\NotInSitemap;
+
 use Semitexa\Core\Auth\PayloadAccessType;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
@@ -133,11 +135,20 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
         }
 
         $path = $this->stringValue($route['path'] ?? '');
-        if ($path === '' || str_starts_with($path, '/__semitexa')) {
+        // Any '/__' path is framework-internal by convention, not just '/__semitexa'.
+        // The narrower guard let semitexa/dev's debug surfaces — /__observatory, /__trace
+        // and their sub-paths — into the public sitemap of every project with the dev
+        // module installed. Those routes are dev-only, so production answered 404 and the
+        // sitemap was actively advertising broken URLs to search engines.
+        if ($path === '' || str_starts_with($path, '/__')) {
             return false;
         }
 
         if (in_array($path, self::EXCLUDED_PATHS, true)) {
+            return false;
+        }
+
+        if ($this->isOptedOut($route)) {
             return false;
         }
 
@@ -150,6 +161,26 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
         }
 
         return $this->isHtmlLikeRoute($route);
+    }
+
+    /**
+     * Whether the payload behind this route asked to stay out — see {@see NotInSitemap}.
+     *
+     * Read by reflection off the route's own class rather than threaded through route
+     * discovery: sitemap membership is an SSR concern, and core has no reason to learn
+     * about it. Generation happens on a schedule or on demand, never per request, so the
+     * reflection cost is paid once per sitemap rather than once per visitor.
+     *
+     * @param array<string, mixed> $route
+     */
+    private function isOptedOut(array $route): bool
+    {
+        $class = $this->stringValue($route['class'] ?? '');
+        if ($class === '' || !class_exists($class)) {
+            return false;
+        }
+
+        return (new \ReflectionClass($class))->getAttributes(NotInSitemap::class) !== [];
     }
 
     private function normalizeTransport(mixed $transport): string

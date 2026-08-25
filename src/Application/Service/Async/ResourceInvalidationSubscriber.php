@@ -265,12 +265,16 @@ final class ResourceInvalidationSubscriber
 
         // Guarded: isCanceled() landed in Swoole 4.7. On an older runtime the
         // explicit stop() seam is the only teardown signal, which is the pre-Gap-C-3
-        // behaviour rather than a new failure mode.
+        // behaviour rather than a new failure mode. The stubs describe the Swoole
+        // we develop against, not the oldest one we run on, so static analysis
+        // reads this guard as dead — at runtime it is the only thing standing
+        // between an old extension and a fatal.
+        /** @phpstan-ignore function.alreadyNarrowedType */
         if (!method_exists(\Swoole\Coroutine::class, 'isCanceled')) {
             return false;
         }
 
-        return \Swoole\Coroutine::isCanceled();
+        return (bool) \Swoole\Coroutine::isCanceled();
     }
 
     /**

@@ -180,6 +180,20 @@ final class ConnectCoordinator
     }
 
     /**
+     * Track R · Gap C-3 — graceful worker teardown (`server:restart`, `server:stop`,
+     * worker recycle). Tells R3's blocking loop that the drop it is about to see is
+     * EXPECTED, so it returns silently instead of logging a failure and reconnecting
+     * into a worker that is going away — the shape that made three ordinary restarts
+     * produce 40 ERROR lines and 40 operator alerts (issue #100).
+     *
+     * Idempotent and safe to call when no loop is running.
+     */
+    public function shutdown(): void
+    {
+        $this->subscriber->stop();
+    }
+
+    /**
      * Apply R3's channel diff to the live Pub/Sub loop and re-sync the local
      * current-channel set to the store's desired set.
      *

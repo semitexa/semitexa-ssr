@@ -6,6 +6,9 @@ namespace Semitexa\Ssr\Tests\Unit\Async;
 
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+use Semitexa\Core\Log\LoggerInterface;
+use Semitexa\Core\Log\StaticLoggerBridge;
+use Semitexa\Ssr\Application\Service\Async\ReconnectAlarmPolicy;
 use Semitexa\Ssr\Application\Service\Async\RedisSubscribeConnectionFactory;
 use Semitexa\Ssr\Application\Service\Async\RerunCoalescer;
 use Semitexa\Ssr\Application\Service\Async\ResourceInvalidationPublisher;
@@ -37,6 +40,11 @@ final class ResourceInvalidationSubscriberTest extends TestCase
         if (!class_exists(\Swoole\Table::class, false)) {
             self::markTestSkipped('Swoole extension not loaded.');
         }
+    }
+
+    protected function tearDown(): void
+    {
+        StaticLoggerBridge::reset();
     }
 
     /** A capturing control-delivery double: records (sessionId, control) tuples. */
@@ -402,5 +410,327 @@ final class ResourceInvalidationSubscriberTest extends TestCase
         $subscriber->interrupt();
 
         self::assertFalse($subscriber->isSubscribedTo(['ui.invalidate.default.anything']));
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap C-3 (issue #100) — a self-healing reconnect must not raise an incident
+    //
+    // The loop itself only runs inside a Swoole coroutine, so its drop-handling
+    // is driven here through the public onDropped() seam, exactly as the routing
+    // half is driven through handleMessage().
+    // -----------------------------------------------------------------------
+
+    /** A capturing logger double, installed over the static bridge. */
+    private function captureLog(): LoggerInterface
+    {
+        $logger = new class implements LoggerInterface {
+            /** @var list<array{level: string, message: string, context: array<string, mixed>}> */
+            public array $lines = [];
+
+            public function error(string $message, array $context = []): void
+            {
+                $this->lines[] = ['level' => 'error', 'message' => $message, 'context' => $context];
+            }
+
+            public function critical(string $message, array $context = []): void
+            {
+                $this->lines[] = ['level' => 'critical', 'message' => $message, 'context' => $context];
+            }
+
+            public function warning(string $message, array $context = []): void
+            {
+                $this->lines[] = ['level' => 'warning', 'message' => $message, 'context' => $context];
+            }
+
+            public function info(string $message, array $context = []): void
+            {
+                $this->lines[] = ['level' => 'info', 'message' => $message, 'context' => $context];
+            }
+
+            public function notice(string $message, array $context = []): void
+            {
+                $this->lines[] = ['level' => 'notice', 'message' => $message, 'context' => $context];
+            }
+
+            public function debug(string $message, array $context = []): void
+            {
+                $this->lines[] = ['level' => 'debug', 'message' => $message, 'context' => $context];
+            }
+        };
+
+        StaticLoggerBridge::set($logger);
+
+        return $logger;
+    }
+
+    /**
+     * @param list<array{level: string, message: string, context: array<string, mixed>}> $lines
+     * @return list<string>
+     */
+    private function levels(array $lines): array
+    {
+        return array_map(static fn (array $line): string => $line['level'], $lines);
+    }
+
+    private function dropped(): \Throwable
+    {
+        // The exception the report carried, verbatim in shape: Predis raises this
+        // both when Redis dies AND when Swoole cancels the parked read.
+        return new \RuntimeException('Error while reading line from the server. [tcp://redis:6379]');
+    }
+
+    #[Test]
+    public function a_cancelled_coroutine_is_teardown_not_failure_and_reports_nothing(): void
+    {
+        // The #100 root cause: `server:restart` drains via reload_async, and
+        // SwooleBootstrap's onWorkerExit cancels every parked coroutine. The read
+        // then fails exactly as it would on a Redis outage — the ONLY thing that
+        // tells them apart is the cancellation flag.
+        [$subscriber] = $this->subscriber();
+        $log = $this->captureLog();
+
+        $subscriber->onDropped($this->dropped(), 3_600.0, cancelled: true);
+
+        self::assertSame([], $log->lines, 'a cancelled read must not produce any log line');
+        self::assertTrue($subscriber->isStopping(), 'cancellation must latch teardown so the loop exits');
+    }
+
+    #[Test]
+    public function forty_self_healed_drops_produce_no_alertable_line(): void
+    {
+        // The literal evidence in the report: 40 occurrences across three
+        // restarts, every one of them level=error, every one of them an alert.
+        [$subscriber] = $this->subscriber();
+        $log = $this->captureLog();
+
+        for ($i = 0; $i < 40; $i++) {
+            // Each drop follows a connection that had been up and healthy, and
+            // each is followed by a reconnect that holds — the self-heal working.
+            $subscriber->onDropped($this->dropped(), 600.0);
+        }
+
+        $levels = $this->levels($log->lines);
+        self::assertNotContains('error', $levels);
+        self::assertNotContains('warning', $levels);
+        self::assertNotContains('critical', $levels);
+        self::assertCount(40, $levels, 'the drops are still recorded — at debug, where alerting cannot see them');
+    }
+
+    #[Test]
+    public function a_streak_of_failed_reconnects_warns_exactly_once(): void
+    {
+        [$subscriber] = $this->subscriber();
+        $log = $this->captureLog();
+
+        // Zero dwell: every reconnect attempt fails immediately.
+        for ($i = 0; $i < ReconnectAlarmPolicy::ESCALATE_TO_WARNING_AFTER + 3; $i++) {
+            $subscriber->onDropped($this->dropped(), 0.0);
+        }
+
+        $levels = $this->levels($log->lines);
+        self::assertSame(1, count(array_keys($levels, 'warning', true)), 'the crossing warns once, not every attempt');
+        self::assertNotContains('error', $levels);
+    }
+
+    #[Test]
+    public function a_sustained_outage_escalates_to_error(): void
+    {
+        [$subscriber] = $this->subscriber();
+        $log = $this->captureLog();
+
+        for ($i = 0; $i < ReconnectAlarmPolicy::ESCALATE_TO_ERROR_AFTER; $i++) {
+            $subscriber->onDropped($this->dropped(), 0.0);
+        }
+
+        $levels = $this->levels($log->lines);
+        self::assertSame(1, count(array_keys($levels, 'error', true)));
+
+        // The ERROR line must name the state, not the event — this is the line an
+        // operator is woken for, so "cannot reconnect" is the whole point.
+        $error = $log->lines[array_keys($levels, 'error', true)[0]];
+        self::assertStringContainsString('cannot reconnect', $error['message']);
+        self::assertSame(
+            ReconnectAlarmPolicy::ESCALATE_TO_ERROR_AFTER,
+            $error['context']['consecutive_failures'],
+        );
+    }
+
+    #[Test]
+    public function recovery_closes_the_incident_while_the_loop_is_still_up(): void
+    {
+        // The point of markHealthy(): recovery must be announced WHILE the loop is
+        // healthy, not on its next failure. A loop that recovers and then stays up
+        // for weeks would otherwise leave the warned operator with an incident that
+        // never visibly closes.
+        [$subscriber] = $this->subscriber();
+        $log = $this->captureLog();
+
+        for ($i = 0; $i < ReconnectAlarmPolicy::ESCALATE_TO_WARNING_AFTER; $i++) {
+            $subscriber->onDropped($this->dropped(), 0.0);
+        }
+
+        // What the armed timer does once the new connection has held the dwell.
+        $subscriber->markHealthy();
+
+        $info = array_values(array_filter(
+            $log->lines,
+            static fn (array $line): bool => $line['level'] === 'info',
+        ));
+
+        self::assertCount(1, $info);
+        self::assertSame(
+            ReconnectAlarmPolicy::ESCALATE_TO_WARNING_AFTER,
+            $info[0]['context']['recovered_after_failed_reconnects'],
+        );
+
+        // Idempotent: the streak is clear, so nothing re-announces.
+        $subscriber->markHealthy();
+        self::assertCount(1, array_filter(
+            $log->lines,
+            static fn (array $line): bool => $line['level'] === 'info',
+        ));
+    }
+
+    #[Test]
+    public function a_drop_after_a_healthy_dwell_still_closes_the_incident(): void
+    {
+        // Belt and braces: if the timer never got to fire (worker without a
+        // reactor, a drop racing the dwell), the drop path still closes it.
+        [$subscriber] = $this->subscriber();
+        $log = $this->captureLog();
+
+        for ($i = 0; $i < ReconnectAlarmPolicy::ESCALATE_TO_WARNING_AFTER; $i++) {
+            $subscriber->onDropped($this->dropped(), 0.0);
+        }
+
+        $subscriber->onDropped($this->dropped(), 600.0);
+
+        self::assertContains('info', $this->levels($log->lines));
+    }
+
+    #[Test]
+    public function markHealthy_is_silent_after_teardown(): void
+    {
+        [$subscriber] = $this->subscriber();
+        $log = $this->captureLog();
+
+        $subscriber->onDropped($this->dropped(), 0.0); // one legitimate debug line
+        $subscriber->stop();
+
+        $before = count($log->lines);
+        $subscriber->markHealthy();
+
+        self::assertCount($before, $log->lines, 'a stopped loop has no incident left to close');
+        self::assertNotContains('info', $this->levels($log->lines));
+    }
+
+    #[Test]
+    public function a_recovered_drop_that_never_escalated_announces_nothing(): void
+    {
+        // Symmetry with the rule above: only an incident gets a closing line.
+        [$subscriber] = $this->subscriber();
+        $log = $this->captureLog();
+
+        $subscriber->onDropped($this->dropped(), 600.0);
+        $subscriber->onDropped($this->dropped(), 600.0);
+
+        self::assertNotContains('info', $this->levels($log->lines));
+    }
+
+    #[Test]
+    public function stop_latches_teardown_and_is_a_safe_noop_without_a_live_connection(): void
+    {
+        [$subscriber] = $this->subscriber();
+        $log = $this->captureLog();
+
+        self::assertFalse($subscriber->isStopping());
+
+        $subscriber->stop();
+        self::assertTrue($subscriber->isStopping());
+
+        // Idempotent, and a drop arriving after the announcement stays silent.
+        $subscriber->stop();
+        $subscriber->onDropped($this->dropped(), 0.0);
+
+        self::assertSame([], $log->lines);
+    }
+
+    #[Test]
+    public function the_drop_path_reads_swooles_cancellation_flag(): void
+    {
+        // Structural, and deliberately so: the cancellation flag is the ONLY
+        // signal that separates a restart from an outage, and it can only be read
+        // from inside the coroutine — SwooleBootstrap cancels parked coroutines
+        // BEFORE it invokes the WorkerExit phase, and WorkerStop runs only after
+        // the event loop has exited. A refactor that moves this probe out to a
+        // lifecycle listener would silently restore issue #100.
+        $code = $this->codeWithoutComments(ResourceInvalidationSubscriber::class);
+
+        self::assertStringContainsString('isCanceled', $code);
+        self::assertStringContainsString('$this->stopping', $code);
+    }
+
+    #[Test]
+    public function a_cancelled_drop_clears_the_failure_streak(): void
+    {
+        // Teardown is not a failure, so nothing about it may survive into the next
+        // worker: an escalated streak left behind would make the FIRST ordinary
+        // drop after a restart report at the severity the previous worker had
+        // earned.
+        [$subscriber] = $this->subscriber();
+        $log = $this->captureLog();
+
+        for ($i = 0; $i < ReconnectAlarmPolicy::ESCALATE_TO_ERROR_AFTER; $i++) {
+            $subscriber->onDropped($this->dropped(), 0.0);
+        }
+
+        $subscriber->onDropped($this->dropped(), 0.0, cancelled: true);
+        self::assertTrue($subscriber->isStopping());
+
+        // Drive one more drop past the teardown latch to read the streak back out:
+        // a fresh policy reports the first drop at debug, an uncleared one at error.
+        $reopened = $this->subscriber()[0];
+        $before = count($log->lines);
+        $reopened->onDropped($this->dropped(), 0.0);
+
+        $tail = $this->levels(array_slice($log->lines, $before));
+        self::assertSame(['debug'], $tail, 'a teardown must not carry a streak forward');
+    }
+
+    #[Test]
+    public function the_backoff_sleep_is_followed_by_a_cancellation_check(): void
+    {
+        // The second place a teardown lands. `Swoole\Coroutine::cancel()` resumes a
+        // sleeping coroutine WITHOUT throwing, so a loop cancelled while backing off
+        // (Redis already down when the operator restarted) would otherwise walk back
+        // to the top and re-subscribe inside the drain window — the "worker exit
+        // timeout, forced termination" shape the read-path guard exists to avoid.
+        $code = $this->codeWithoutComments(ResourceInvalidationSubscriber::class);
+
+        $sleepAt = strpos($code, 'Coroutine::sleep(');
+        self::assertIsInt($sleepAt, 'the reconnect backoff sleep is gone — this pin needs rewriting');
+
+        $afterSleep = substr($code, $sleepAt, 400);
+        self::assertStringContainsString(
+            'wasCancelled()',
+            $afterSleep,
+            'a cancellation landing in the backoff window must end the loop, not start a new subscribe',
+        );
+    }
+
+    #[Test]
+    public function the_loop_never_logs_a_drop_at_error_without_consulting_the_policy(): void
+    {
+        // The exact regression: an unconditional StaticLoggerBridge::error() in the
+        // reconnect path. Every severity now has to come from the alarm ladder.
+        $code = $this->codeWithoutComments(ResourceInvalidationSubscriber::class);
+
+        self::assertStringNotContainsString(
+            "'Resource-invalidation subscribe loop failed; reconnecting'",
+            $code,
+            'the unconditional per-drop ERROR line must not come back',
+        );
+        self::assertStringContainsString('ReconnectAlarmLevel::Error', $code);
+        self::assertStringContainsString('ReconnectAlarmLevel::Warning', $code);
     }
 }

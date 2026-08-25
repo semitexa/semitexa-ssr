@@ -51,15 +51,6 @@ final class ResourceInvalidationSubscriber
     public const CTRL_RERUN = SseControlFrame::RERUN;
 
     /**
-     * Track R · Gap C — backoff between reconnect attempts after a dropped
-     * subscribe connection (Redis restart / network blip), so a hard-down Redis
-     * cannot spin a tight reconnect loop. Idle no longer drops the connection
-     * (read_write_timeout: -1 in {@see RedisSubscribeConnectionFactory}); this
-     * covers the remaining real-failure case.
-     */
-    private const RECONNECT_BACKOFF_SECONDS = 1.0;
-
-    /**
      * One Way Phase 4 — the live loop's CURRENT subscription snapshot, exposed
      * so the channel controller can detect when a NEW distinct scope appeared
      * after launch (the formerly-deferred multi-scope case) and interrupt the
@@ -75,13 +66,56 @@ final class ResourceInvalidationSubscriber
     /** Set by interrupt(): the next loop turn resubscribes WITHOUT backoff. */
     private bool $interrupted = false;
 
+    /**
+     * Track R · Gap C-3 — the loop is being TORN DOWN, not failing.
+     *
+     * Set either explicitly ({@see self::stop()}, driven from the WorkerExit
+     * lifecycle) or, in the case that actually happens in production, by the loop
+     * noticing that its own coroutine was cancelled ({@see self::wasCancelled()}).
+     * Both mean the same thing: the drop is an operator action, so the loop
+     * returns silently instead of logging a failure and re-parking on a fresh
+     * connection inside a worker the manager is trying to drain.
+     */
+    private bool $stopping = false;
+
+    /**
+     * Track R · Gap C-3 — reconnect backoff AND log severity are both derived from
+     * the consecutive-failure streak this policy holds. The old flat
+     * `RECONNECT_BACKOFF_SECONDS = 1.0` constant is now
+     * {@see ReconnectAlarmPolicy::BASE_BACKOFF_SECONDS}, doubling to a 30s cap so a
+     * hard-down Redis cannot spin one attempt per second for a whole outage. Idle
+     * no longer drops the connection (read_write_timeout: -1 in
+     * {@see RedisSubscribeConnectionFactory}); this path is real failures only.
+     */
+    private readonly ReconnectAlarmPolicy $alarm;
+
+    /**
+     * Track R · Gap C-3 — the one-shot timer that closes an open incident.
+     *
+     * Recovery cannot be observed from the drop path alone: the loop is parked
+     * inside `pubSubLoop`, so "this connection has held" only becomes true while
+     * nothing is happening. Announcing it on the NEXT drop would mean an operator
+     * who was warned might never see it clear — the loop could stay healthy for
+     * weeks. So a successful subscribe arms a timer for
+     * {@see ReconnectAlarmPolicy::HEALTHY_DWELL_SECONDS}; if the connection is
+     * still up when it fires, the incident closes. Cleared when the turn ends, so
+     * a connection that dropped before the dwell never announces recovery.
+     */
+    private ?int $recoveryTimerId = null;
+
     public function __construct(
         private readonly SubscriberIndexInterface $index,
         private readonly SubscriptionTable $subscriptions,
         private readonly RerunCoalescer $coalescer,
         private readonly RedisSubscribeConnectionFactory $connectionFactory,
         private readonly SessionControlDeliveryInterface $delivery,
-    ) {}
+        ?ReconnectAlarmPolicy $alarm = null,
+    ) {
+        // Optional so every existing construction site (the R8c wiring listener,
+        // the R3 tests) keeps working unchanged, injectable so the escalation
+        // ladder can be driven deterministically from a test.
+        $this->alarm = $alarm ?? new ReconnectAlarmPolicy();
+    }
 
     /**
      * The blocking subscribe loop — the per-worker coroutine entry (C1). R5
@@ -111,6 +145,10 @@ final class ResourceInvalidationSubscriber
         // re-subscribes. (read_write_timeout: -1 means idle no longer drops it at all,
         // so this path is reached only on a genuine connection failure.)
         while (true) {
+            if ($this->stopping) {
+                return; // worker teardown — not a failure, nothing to report.
+            }
+
             $channels = $this->desiredChannels();
             if ($channels === []) {
                 return; // no local subscribers → nothing to subscribe to (C2).
@@ -125,22 +163,32 @@ final class ResourceInvalidationSubscriber
             $this->activeConnection = $connection;
             $this->interrupted = false;
 
+            $subscribedAt = hrtime(true);
+
             try {
                 /** @var \Predis\PubSub\Consumer $pubsub */
                 $pubsub = $connection->pubSubLoop(['subscribe' => $channels]);
+
+                // The subscribe succeeded. If an incident is open, start the clock
+                // that closes it — see self::$recoveryTimerId.
+                $this->armRecoveryNotice();
+
                 foreach ($pubsub as $message) {
                     if (($message->kind ?? null) === 'message') {
                         $this->handleMessage((string) $message->channel);
                     }
                 }
             } catch (\Throwable $e) {
-                if (!$this->interrupted) {
-                    StaticLoggerBridge::error('ssr', 'Resource-invalidation subscribe loop failed; reconnecting', [
-                        'exception' => $e::class,
-                        'message' => $e->getMessage(),
-                    ]);
-                }
+                // FIRST, before anything that could yield: was this coroutine
+                // cancelled? That answer is the difference between "Redis died"
+                // and "this worker is going down" (see self::wasCancelled()).
+                $this->onDropped(
+                    $e,
+                    (hrtime(true) - $subscribedAt) / 1_000_000_000,
+                    self::wasCancelled(),
+                );
             } finally {
+                $this->disarmRecoveryNotice();
                 $this->activeConnection = null;
                 $this->activeChannels = [];
                 try {
@@ -148,6 +196,14 @@ final class ResourceInvalidationSubscriber
                 } catch (\Throwable) {
                     // Best-effort close of the dedicated connection.
                 }
+            }
+
+            // TEARDOWN ends the loop immediately: no log line, no backoff, and —
+            // just as important — no fresh subscribe. Re-parking on a new socket
+            // inside the reload_async drain window is what turns a cancelled
+            // coroutine into "worker exit timeout, forced termination".
+            if ($this->stopping) {
+                return; // latchTeardown() already cleared the streak and the notice.
             }
 
             // An INTERRUPT (a new distinct scope appeared — see interrupt()) is
@@ -158,10 +214,257 @@ final class ResourceInvalidationSubscriber
                 continue;
             }
 
-            // Back off before re-subscribing so a hard-down Redis can't spin a tight
-            // loop. desiredChannels() is re-evaluated at the top of the next iteration.
-            \Swoole\Coroutine::sleep(self::RECONNECT_BACKOFF_SECONDS);
+            // Back off before re-subscribing so a hard-down Redis can't spin a
+            // tight loop — exponential in the current streak, capped (Gap C-3).
+            // desiredChannels() is re-evaluated at the top of the next iteration.
+            \Swoole\Coroutine::sleep($this->alarm->backoffSeconds());
+
+            // The SECOND place a teardown can land. `onWorkerExit` cancels parked
+            // coroutines, and a cancelled sleep does NOT throw — it just returns
+            // early — so without this check a loop that happened to be backing off
+            // (i.e. Redis was already down when the operator restarted) would walk
+            // straight back to the top and re-subscribe inside the drain window.
+            // Read immediately after the yield, for the reason given in
+            // {@see self::wasCancelled()}.
+            if (self::wasCancelled()) {
+                $this->latchTeardown();
+
+                return;
+            }
         }
+    }
+
+    /**
+     * Track R · Gap C-3 — was THIS coroutine cancelled out from under its blocking
+     * read? That is the production teardown signal, and it is the one the loop was
+     * missing (issue #100).
+     *
+     * `SwooleBootstrap`'s `onWorkerExit` handler clears every timer and calls
+     * `Swoole\Coroutine::cancel()` on every parked coroutine, on the stated
+     * principle that "cancellation turns an immortal wait into a catchable failure
+     * on code that already handles transport errors". This loop is exactly such
+     * code — but it handled the cancellation as a Redis FAILURE, logged ERROR, and
+     * reconnected. With `reload_async` + `max_wait_time: 3` that happens on every
+     * `server:restart`, once per worker, which is where the reporter's 40 ERROR
+     * lines came from.
+     *
+     * NOTE ON PLACEMENT: this cannot be a lifecycle listener. `onWorkerExit`
+     * cancels coroutines BEFORE it invokes the WorkerExit phase, and the WorkerStop
+     * phase runs only after the event loop has already exited — by then this loop
+     * has long since caught, logged and reconnected. The signal has to be read from
+     * inside the coroutine, at the moment it is resumed.
+     *
+     * Read once, first thing in the catch: Swoole clears the flag on the next
+     * successful yield, so anything that suspends first would lose it.
+     */
+    private static function wasCancelled(): bool
+    {
+        if (!class_exists(\Swoole\Coroutine::class, false)) {
+            return false;
+        }
+
+        // Guarded: isCanceled() landed in Swoole 4.7. On an older runtime the
+        // explicit stop() seam is the only teardown signal, which is the pre-Gap-C-3
+        // behaviour rather than a new failure mode. The stubs describe the Swoole
+        // we develop against, not the oldest one we run on, so static analysis
+        // reads this guard as dead — at runtime it is the only thing standing
+        // between an old extension and a fatal.
+        /** @phpstan-ignore function.alreadyNarrowedType */
+        if (!method_exists(\Swoole\Coroutine::class, 'isCanceled')) {
+            return false;
+        }
+
+        return (bool) \Swoole\Coroutine::isCanceled();
+    }
+
+    /**
+     * Arm the recovery notice ({@see self::$recoveryTimerId}) for the connection
+     * that just subscribed. No-op unless an incident is actually open — in steady
+     * state there is nothing to close and no timer worth creating.
+     */
+    private function armRecoveryNotice(): void
+    {
+        $this->disarmRecoveryNotice();
+
+        if ($this->alarm->consecutiveFailures() === 0) {
+            return;
+        }
+
+        if (!class_exists(\Swoole\Timer::class, false)) {
+            return; // no reactor (CLI/test): markHealthy() is driven directly.
+        }
+
+        $this->recoveryTimerId = \Swoole\Timer::after(
+            (int) (ReconnectAlarmPolicy::HEALTHY_DWELL_SECONDS * 1000),
+            function (): void {
+                $this->recoveryTimerId = null;
+                $this->markHealthy();
+            },
+        );
+    }
+
+    /** Drop the pending recovery notice — this turn's connection did not hold. */
+    private function disarmRecoveryNotice(): void
+    {
+        if ($this->recoveryTimerId === null) {
+            return;
+        }
+
+        if (class_exists(\Swoole\Timer::class, false)) {
+            \Swoole\Timer::clear($this->recoveryTimerId);
+        }
+
+        $this->recoveryTimerId = null;
+    }
+
+    /**
+     * The live connection has held for the full dwell: clear the failure streak
+     * and, if an incident had been announced, close it.
+     *
+     * PUBLIC as a test seam, like {@see self::onDropped()} — the timer that calls
+     * it only exists inside a worker reactor.
+     */
+    public function markHealthy(): void
+    {
+        if ($this->stopping) {
+            return;
+        }
+
+        $recoveredFrom = $this->alarm->recordDwell(ReconnectAlarmPolicy::HEALTHY_DWELL_SECONDS);
+        if ($recoveredFrom === null) {
+            return;
+        }
+
+        StaticLoggerBridge::info('ssr', 'Resource-invalidation subscribe loop recovered', [
+            'recovered_after_failed_reconnects' => $recoveredFrom,
+        ]);
+    }
+
+    /**
+     * Track R · Gap C-3 — handle ONE dropped connection turn: decide whether it was
+     * a teardown or a failure, and report a failure at the severity the STREAK
+     * deserves rather than the severity the event feels like (issue #100).
+     *
+     * A drop the loop recovers from is DEBUG: it is the self-heal working, and
+     * routing it to WARNING+ turns every transient blip into an ops incident.
+     * WARNING and ERROR are reserved for the state the message actually wants to
+     * report — "this loop cannot get back on" — and are emitted at the crossings
+     * (plus a throttled ERROR re-assert), never once per attempt.
+     *
+     * PUBLIC as a test seam, for the same reason {@see self::handleMessage()} is:
+     * the loop that calls it only runs inside a Swoole coroutine, so the decision
+     * has to be drivable from outside one. `$cancelled` is passed IN rather than
+     * probed here so a test can exercise the teardown branch without cancelling a
+     * real coroutine.
+     *
+     * @param bool $cancelled the coroutine was cancelled out from under the read —
+     *                        worker teardown, NOT a Redis failure
+     *                        ({@see self::wasCancelled()})
+     */
+    public function onDropped(\Throwable $e, float $uptimeSeconds, bool $cancelled = false): void
+    {
+        if ($cancelled) {
+            // Latch teardown: the loop returns on its next check, silently.
+            $this->latchTeardown();
+
+            return;
+        }
+
+        if ($this->interrupted || $this->stopping) {
+            return; // an announced transition, not a failure.
+        }
+
+        // A connection that HELD before dropping closes any open incident first.
+        $recoveredFrom = $this->alarm->recordDwell($uptimeSeconds);
+        if ($recoveredFrom !== null) {
+            StaticLoggerBridge::info('ssr', 'Resource-invalidation subscribe loop recovered', [
+                'recovered_after_failed_reconnects' => $recoveredFrom,
+                'uptime_seconds' => round($uptimeSeconds, 3),
+            ]);
+        }
+
+        $level = $this->alarm->recordDrop();
+        $context = [
+            'exception' => $e::class,
+            'message' => $e->getMessage(),
+            'consecutive_failures' => $this->alarm->consecutiveFailures(),
+            'uptime_seconds' => round($uptimeSeconds, 3),
+            'next_retry_in_seconds' => $this->alarm->backoffSeconds(),
+        ];
+
+        match ($level) {
+            ReconnectAlarmLevel::Error => StaticLoggerBridge::error(
+                'ssr',
+                'Resource-invalidation subscribe loop cannot reconnect; invalidations are not being received',
+                $context,
+            ),
+            ReconnectAlarmLevel::Warning => StaticLoggerBridge::warning(
+                'ssr',
+                'Resource-invalidation subscribe loop has failed several reconnects; still retrying',
+                $context,
+            ),
+            ReconnectAlarmLevel::Debug => StaticLoggerBridge::debug(
+                'ssr',
+                'Resource-invalidation subscribe loop dropped; reconnecting',
+                $context,
+            ),
+            ReconnectAlarmLevel::Silent => null,
+        };
+    }
+
+    /**
+     * Track R · Gap C-3 — mark the loop as torn down, from either of the two places
+     * a cancellation can land: out of the blocking read ({@see self::onDropped()})
+     * or out of the backoff sleep. Clearing the streak and the pending recovery
+     * notice here means neither survives into the next worker's state.
+     *
+     * Idempotent, and deliberately does NOT touch {@see self::$activeConnection} —
+     * on the read path the `finally` already closed it, and on the backoff path
+     * there is nothing open. {@see self::stop()} is the variant that also has to
+     * break a live connection.
+     */
+    private function latchTeardown(): void
+    {
+        $this->stopping = true;
+        $this->alarm->reset();
+        $this->disarmRecoveryNotice();
+    }
+
+    /**
+     * Track R · Gap C-3 — end the loop for teardown (worker exit, worker recycle,
+     * an explicit shutdown). Mirror of {@see self::interrupt()}: it closes the
+     * dedicated connection out from under the blocking read, but marks the
+     * resulting failure as EXPECTED, so the loop returns without logging it and
+     * without reconnecting into a worker that is going away.
+     *
+     * Driven by {@see ConnectCoordinator::shutdown()} from the WorkerExit phase.
+     * That listener is a SECOND line of defence, not the primary one — see
+     * {@see self::wasCancelled()} for why the primary signal has to be read from
+     * inside the coroutine. Idempotent and safe with no live loop.
+     */
+    public function stop(): void
+    {
+        $this->latchTeardown();
+
+        $connection = $this->activeConnection;
+        if ($connection === null) {
+            return;
+        }
+
+        try {
+            $connection->disconnect();
+        } catch (\Throwable) {
+            // Best-effort: the worker is going down either way.
+        }
+    }
+
+    /**
+     * Has this subscriber been told to tear down? Exposed so the teardown seam is
+     * assertable without a live coroutine (the loop itself is not).
+     */
+    public function isStopping(): bool
+    {
+        return $this->stopping;
     }
 
     /**

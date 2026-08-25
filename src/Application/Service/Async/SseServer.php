@@ -1645,6 +1645,21 @@ final class SseServer
     }
 
     /**
+     * Track R · Gap C-3 — announce worker teardown to R3's blocking subscribe loop
+     * so the drop it is about to see is recognised as an OPERATOR ACTION rather
+     * than inferred as a Redis failure (issue #100). Driven by
+     * {@see \Semitexa\Ssr\Application\Service\Server\Lifecycle\StopTrackRConsumerListener}
+     * on {@see \Semitexa\Core\Server\Lifecycle\ServerLifecyclePhase::WorkerExit}.
+     *
+     * Keeps {@see SseRuntime} encapsulated: the listener never reaches into the
+     * runtime slot itself. No-op when no coordinator is wired (no Redis).
+     */
+    public function shutdownInvalidationSubscriber(): void
+    {
+        $this->runtime()->connectCoordinator?->shutdown();
+    }
+
+    /**
      * Track R · R8c — is the current coroutine inside a re-run tick?
      *
      * True only while {@see handleControlFrame()} is re-running the chain on THIS

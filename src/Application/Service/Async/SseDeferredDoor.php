@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service\Async;
 
 use Semitexa\Core\Log\StaticLoggerBridge;
+use Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRecord;
 use Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry;
 
 /**
@@ -51,7 +52,7 @@ final class SseDeferredDoor
         'reconnect' => false,
     ];
 
-    /** @var \Closure(string): ?array{page_handle: string, page_context: mixed, locale: string, slots: mixed} */
+    /** @var \Closure(string): ?DeferredRequestRecord */
     private readonly \Closure $readRegistry;
 
     /**
@@ -59,7 +60,7 @@ final class SseDeferredDoor
      * @param \Closure(string, array<string, mixed>): void   $deliver      queue a frame for a session
      * @param \Closure(mixed, array<string, mixed>): void    $writeFrame   write a frame straight to a response
      * @param \Closure(callable, string): void               $spawn        run a callable in a session coroutine
-     * @param null|\Closure(string): ?array{page_handle: string, page_context: mixed, locale: string, slots: mixed} $readRegistry the page lookup; see below
+     * @param null|\Closure(string): ?DeferredRequestRecord $readRegistry the page lookup; see below
      */
     public function __construct(
         private readonly \Closure $orchestrator,
@@ -79,7 +80,7 @@ final class SseDeferredDoor
         // delete the row between the two calls. Defaults to the real registry, so
         // production behaviour is unchanged.
         $this->readRegistry = $readRegistry
-            ?? static fn (string $id): ?array => DeferredRequestRegistry::consume($id);
+            ?? static fn (string $id): ?DeferredRequestRecord => DeferredRequestRegistry::consume($id);
     }
 
     /**
@@ -148,13 +149,13 @@ final class SseDeferredDoor
             return;
         }
 
-        AsyncResourceSseServer::traceMark('deferred.admitted', ['page' => $registry['page_handle']]);
+        AsyncResourceSseServer::traceMark('deferred.admitted', ['page' => $registry->pageHandle]);
 
         self::debug('registry_found', [
             'deferred_request_id' => $deferredRequestId,
-            'page_handle' => $registry['page_handle'],
-            'slots' => $registry['slots'],
-            'locale' => $registry['locale'],
+            'page_handle' => $registry->pageHandle,
+            'slots' => $registry->slots,
+            'locale' => $registry->locale,
         ]);
 
         $run = function () use ($sessionId, $registry, $lastEventId, $deferredRequestId, $allowPersistentDeferredSse, $keepChannelOpen): void {
@@ -179,12 +180,9 @@ final class SseDeferredDoor
         $run();
     }
 
-    /**
-     * @param array{page_handle: string, page_context: mixed, locale: string, slots: mixed} $registry
-     */
     private function streamBlocks(
         string $sessionId,
-        array $registry,
+        DeferredRequestRecord $registry,
         ?string $lastEventId,
         string $deferredRequestId,
         bool $allowPersistentDeferredSse,
@@ -196,11 +194,11 @@ final class SseDeferredDoor
 
             $orchestrator->streamDeferredBlocks(
                 sessionId: $sessionId,
-                pageHandle: $registry['page_handle'],
-                pageContext: $registry['page_context'],
+                pageHandle: $registry->pageHandle,
+                pageContext: $registry->pageContext,
                 lastEventId: $lastEventId,
                 deferredRequestId: $deferredRequestId,
-                locale: $registry['locale'] !== '' ? $registry['locale'] : null,
+                locale: $registry->locale !== '' ? $registry->locale : null,
                 startLiveLoop: $allowPersistentDeferredSse,
                 keepChannelOpen: $keepChannelOpen,
             );

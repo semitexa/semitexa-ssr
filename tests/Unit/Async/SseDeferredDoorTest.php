@@ -7,6 +7,7 @@ namespace Semitexa\Ssr\Tests\Unit\Async;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Ssr\Application\Service\Async\SseDeferredDoor;
+use Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRecord;
 use Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
 
@@ -101,7 +102,7 @@ final class SseDeferredDoorTest extends TestCase
         DeferredRequestRegistry::store('dr_race', 'demo.home', ['k' => 'v'], ['slot-a'], 'tok');
 
         $reads = 0;
-        $door = $this->door(function (string $id) use (&$reads): ?array {
+        $door = $this->door(function (string $id) use (&$reads): ?DeferredRequestRecord {
             $reads++;
 
             return null; // gone by the time the page is fetched

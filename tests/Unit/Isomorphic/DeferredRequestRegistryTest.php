@@ -42,7 +42,7 @@ final class DeferredRequestRegistryTest extends TestCase
         $entry = DeferredRequestRegistry::consume('dr_a');
 
         self::assertNotNull($entry);
-        self::assertNull($entry['request_snapshot']);
+        self::assertNull($entry->requestSnapshot);
     }
 
     public function testStoreCapturesUiSseSessionIntoPageContext(): void
@@ -62,9 +62,9 @@ final class DeferredRequestRegistryTest extends TestCase
         UiSseSessionState::reset();
 
         self::assertNotNull($entry);
-        self::assertSame('sse_live_page_session_01', $entry['page_context']['__ui_sse_session'] ?? null);
+        self::assertSame('sse_live_page_session_01', $entry->pageContext['__ui_sse_session'] ?? null);
         // The original context is preserved alongside the injected key.
-        self::assertSame('v', $entry['page_context']['k'] ?? null);
+        self::assertSame('v', $entry->pageContext['k'] ?? null);
     }
 
     public function testStoreDoesNotInjectSessionKeyWhenNoSessionMinted(): void
@@ -80,7 +80,7 @@ final class DeferredRequestRegistryTest extends TestCase
         $entry = DeferredRequestRegistry::consume('dr_nosse');
 
         self::assertNotNull($entry);
-        self::assertArrayNotHasKey('__ui_sse_session', $entry['page_context']);
+        self::assertArrayNotHasKey('__ui_sse_session', $entry->pageContext);
     }
 
     public function testStoreRequestSnapshotRoundTrip(): void
@@ -100,7 +100,7 @@ final class DeferredRequestRegistryTest extends TestCase
 
         $entry = DeferredRequestRegistry::consume('dr_b');
         self::assertNotNull($entry);
-        self::assertSame($snapshot, $entry['request_snapshot']);
+        self::assertSame($snapshot, $entry->requestSnapshot);
     }
 
     public function testSnapshotSurvivesUpdateSlotsAndMarkDelivered(): void
@@ -140,11 +140,11 @@ final class DeferredRequestRegistryTest extends TestCase
         $entry = DeferredRequestRegistry::consume('dr_components');
 
         self::assertNotNull($entry);
-        self::assertCount(2, $entry['components']);
-        self::assertSame('cmp_1', $entry['components'][0]['instance_id']);
-        self::assertSame('ui-playground.leads-grid', $entry['components'][0]['name']);
-        self::assertSame(['limit' => 5], $entry['components'][0]['props']);
-        self::assertSame(['slot-a'], $entry['slots']);
+        self::assertCount(2, $entry->components);
+        self::assertSame('cmp_1', $entry->components[0]['instance_id']);
+        self::assertSame('ui-playground.leads-grid', $entry->components[0]['name']);
+        self::assertSame(['limit' => 5], $entry->components[0]['props']);
+        self::assertSame(['slot-a'], $entry->slots);
     }
 
     public function testStoreComponentInstancesForUnknownRequestIdIsNoop(): void
@@ -171,8 +171,8 @@ final class DeferredRequestRegistryTest extends TestCase
 
         $entry = DeferredRequestRegistry::consume('dr_mixed');
         self::assertNotNull($entry);
-        self::assertContains('slot-a', $entry['delivered']);
-        self::assertContains('cmp_42', $entry['delivered']);
+        self::assertContains('slot-a', $entry->delivered);
+        self::assertContains('cmp_42', $entry->delivered);
     }
 
     public function testStoreRequestSnapshotThrowsWhenSerializedSizeExceedsBudget(): void

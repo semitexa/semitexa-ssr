@@ -50,10 +50,10 @@ final class SsrFallbackHandler implements TypedHandlerInterface
             $entry = DeferredRequestRegistry::consume($requestId);
             if ($entry !== null) {
                 $bindToken = $this->request->getCookie('semitexa_ssr_bind', '');
-                if ($bindToken === '' || !hash_equals($entry['bind_token'], $bindToken)) {
+                if ($bindToken === '' || !hash_equals($entry->bindToken, $bindToken)) {
                     throw new NotFoundException('Deferred request', $requestId);
                 }
-                $pageContext = $entry['page_context'];
+                $pageContext = $entry->pageContext;
             }
         }
 

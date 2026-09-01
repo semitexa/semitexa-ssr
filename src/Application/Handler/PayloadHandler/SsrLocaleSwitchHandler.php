@@ -70,12 +70,12 @@ final class SsrLocaleSwitchHandler implements TypedHandlerInterface
             throw new NotFoundException('Deferred request', $requestId);
         }
         $bindToken = $this->request->getCookie('semitexa_ssr_bind', '');
-        if ($bindToken === '' || !hash_equals($entry['bind_token'], $bindToken)) {
+        if ($bindToken === '' || !hash_equals($entry->bindToken, $bindToken)) {
             throw new NotFoundException('Deferred request', $requestId);
         }
 
-        $pageHandle = $entry['page_handle'];
-        $pageContext = $entry['page_context'];
+        $pageHandle = $entry->pageHandle;
+        $pageContext = $entry->pageContext;
 
         if (class_exists(Coroutine::class, false) && Coroutine::getCid() > 0) {
             $this->sseServer->createSessionCoroutine(function () use ($sessionId, $pageHandle, $pageContext, $locale): void {

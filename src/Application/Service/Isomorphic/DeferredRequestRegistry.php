@@ -382,9 +382,12 @@ final class DeferredRequestRegistry
     /**
      * Consume a deferred request entry. Returns null if not found or expired.
      *
-     * @return array{page_handle: string, page_context: array, bind_token: string, locale: string, slots: string[], delivered: string[]}|null
+     * Returns a {@see DeferredRequestRecord} rather than an array: the row is nine columns
+     * the table hands back as `mixed`, four of them JSON, and every caller used to redo that
+     * decoding itself. The shape was additionally declared by hand in two places that had
+     * already drifted apart from the table. The record states it once.
      */
-    public static function consume(string $requestId): ?array
+    public static function consume(string $requestId): ?DeferredRequestRecord
     {
         if (self::$table === null) {
             return null;
@@ -393,32 +396,19 @@ final class DeferredRequestRegistry
         $key = self::tableKey($requestId);
         $row = self::$table->get($key);
 
-        if ($row === false) {
+        if (!is_array($row)) {
             return null;
         }
-        /** @var array{created_at:mixed,page_handle:mixed,page_context:mixed,bind_token?:mixed,locale?:mixed,slots:mixed,delivered:mixed} $row */
 
-        if ((time() - (int) $row['created_at']) > self::TTL_SECONDS) {
+        $record = DeferredRequestRecord::fromRow($row);
+
+        if ($record->isExpired(time(), self::TTL_SECONDS)) {
             self::$table->del($key);
+
             return null;
         }
 
-        $snapshotJson = (string) ($row['request_snapshot'] ?? '');
-        $snapshot = $snapshotJson !== '' ? json_decode($snapshotJson, true) : null;
-
-        $componentsRaw = (string) ($row['components'] ?? '');
-        $componentsDecoded = $componentsRaw !== '' ? json_decode($componentsRaw, true) : [];
-
-        return [
-            'page_handle' => trim((string) $row['page_handle']),
-            'page_context' => json_decode((string) $row['page_context'], true) ?: [],
-            'bind_token' => trim((string) ($row['bind_token'] ?? '')),
-            'locale' => trim((string) ($row['locale'] ?? '')),
-            'slots' => json_decode((string) $row['slots'], true) ?: [],
-            'components' => is_array($componentsDecoded) ? $componentsDecoded : [],
-            'delivered' => json_decode((string) $row['delivered'], true) ?: [],
-            'request_snapshot' => is_array($snapshot) ? $snapshot : null,
-        ];
+        return $record;
     }
 
     public static function markDelivered(string $requestId, string $slotId): void
@@ -529,7 +519,7 @@ final class DeferredRequestRegistry
             return false;
         }
 
-        return hash_equals($entry['bind_token'], $bindToken);
+        return hash_equals($entry->bindToken, $bindToken);
     }
 
     public static function remove(string $requestId): void

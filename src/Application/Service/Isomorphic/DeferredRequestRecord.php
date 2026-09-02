@@ -27,7 +27,7 @@ final readonly class DeferredRequestRecord
     /**
      * @param array<string, mixed>      $pageContext
      * @param array<string>             $slots
-     * @param array<string, mixed>      $components
+     * @param list<array<string, mixed>> $components
      * @param array<string>             $delivered
      * @param array<string, mixed>|null $requestSnapshot
      */
@@ -40,7 +40,7 @@ final readonly class DeferredRequestRecord
         public array $components,
         public array $delivered,
         public ?array $requestSnapshot,
-        public int $createdAt,
+        public ?int $createdAt,
     ) {
     }
 
@@ -51,13 +51,13 @@ final readonly class DeferredRequestRecord
      * concurrent write can come back partially populated, and a deferred render that
      * degrades to an empty slot list is far better than one that fatals mid-response.
      *
-     * ⚠️ `created_at` is NOT in that category and the tolerance there is inherited, not
-     * chosen. An unreadable value becomes 0, which {@see isExpired()} reads as long
-     * expired, and {@see DeferredRequestRegistry::consume()} then DELETES the row - so a
-     * transient partial read would destroy a live deferred request rather than degrade it.
-     * The behaviour predates this class (the previous inline code cast the same missing key
-     * to 0) and the window is small, but it is a real edge and should be decided
-     * deliberately rather than inherited quietly.
+     * ⚠️ `created_at` is NOT in that category, and the old tolerance there was inherited
+     * rather than chosen: an unreadable value became 0, {@see isExpired()} read that as long
+     * expired, and {@see DeferredRequestRegistry::consume()} then DELETED the row - so a
+     * transient partial read destroyed a live deferred request instead of degrading it.
+     * An unknown creation time is now null and {@see isExpired()} refuses to judge it, so
+     * the row survives to be read again. A genuinely stale row still expires on the next
+     * read that can see its timestamp.
      *
      * @param array<string, mixed> $row
      */
@@ -69,15 +69,24 @@ final readonly class DeferredRequestRecord
             bindToken:       trim(self::str($row, 'bind_token')),
             locale:          trim(self::str($row, 'locale')),
             slots:           self::jsonStringList($row, 'slots'),
-            components:      self::jsonMap($row, 'components'),
+            components:      self::jsonRecordList($row, 'components'),
             delivered:       self::jsonStringList($row, 'delivered'),
             requestSnapshot: self::jsonMapOrNull($row, 'request_snapshot'),
-            createdAt:       is_numeric($row['created_at'] ?? null) ? (int) $row['created_at'] : 0,
+            createdAt:       is_numeric($row['created_at'] ?? null) ? (int) $row['created_at'] : null,
         );
     }
 
+    /**
+     * False when the creation time is unknown, deliberately. The caller deletes on true, so
+     * answering "expired" for a row we simply could not read would turn an unlucky read into
+     * data loss.
+     */
     public function isExpired(int $now, int $ttlSeconds): bool
     {
+        if ($this->createdAt === null) {
+            return false;
+        }
+
         return ($now - $this->createdAt) > $ttlSeconds;
     }
 
@@ -100,6 +109,33 @@ final readonly class DeferredRequestRecord
     }
 
     /**
+     * Component instances arrive as a LIST of records, not a map - callers index them by
+     * position and read instance_id/name/props off each. Declaring it as a map made PHPStan
+     * reject `components[0]` in the tests that had been reading it correctly all along.
+     *
+     * @param array<string, mixed> $row
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function jsonRecordList(array $row, string $column): array
+    {
+        $decoded = self::jsonMapOrNull($row, $column);
+        if ($decoded === null) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($decoded as $item) {
+            if (is_array($item)) {
+                /** @var array<string, mixed> $item */
+                $out[] = $item;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
      * @param array<string, mixed> $row
      *
      * @return array<string, mixed>|null
@@ -112,8 +148,13 @@ final readonly class DeferredRequestRecord
         }
 
         $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) {
+            return null;
+        }
+        // json_decode gives array<mixed, mixed>; JSON object keys are always strings.
+        /** @var array<string, mixed> $decoded */
 
-        return is_array($decoded) ? $decoded : null;
+        return $decoded;
     }
 
     /**

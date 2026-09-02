@@ -71,6 +71,12 @@ final class RenderParityTest extends TestCase
             'false prints nothing, not "false"' => ['[{{ f }}]', ['f' => false]],
             'zero still prints'                 => ['[{{ z }}]', ['z' => 0]],
             'float output'                      => ['{{ pi }}', ['pi' => 1.5]],
+
+            // Twig normalises line endings before lexing - measured, CRLF and CR inputs
+            // render identically to LF. The client used to preserve them, so a template
+            // saved on Windows rendered differently in the browser than on the server.
+            'CRLF source'                       => ["A\r\n{% if x %}\r\nB\r\n{% endif %}\r\nC", ['x' => true]],
+            'CR source'                         => ["A\r{% if x %}\rB\r{% endif %}\rC", ['x' => true]],
         ];
     }
 

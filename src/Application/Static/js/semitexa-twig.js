@@ -40,6 +40,13 @@
         if (val == null) return '';
         if (val === true) return '1';
         if (val === false) return '';
+        // PHP casts any array to the literal string "Array" (with a warning the client has
+        // no way to reproduce). String([1,2]) in JavaScript is "1,2" and String({}) is
+        // "[object Object]", so without this an array in a template rendered differently on
+        // each side. Printing an array is a template bug either way - the contract here is
+        // only that both engines are wrong in the SAME way.
+        if (Array.isArray(val)) return 'Array';
+        if (typeof val === 'object') return 'Array';
         return String(val);
     }
 
@@ -77,6 +84,11 @@
 
     function tokenize(src) {
         var tokens = [];
+        // Twig normalises line endings before lexing - measured: CRLF and CR inputs both
+        // render identically to LF. Doing it here rather than special-casing \r\n in the
+        // newline-swallowing rule below keeps ONE place aware of line endings.
+        src = String(src).replace(/\r\n?/g, '\n');
+
         var last = 0;
         var m;
         RE_TAG.lastIndex = 0;
@@ -119,16 +131,13 @@
             //   "A\n{% if x %}\nB"     -> "A\nB"        (consumed)
             //   "A\n{% if x %}\n\nB"   -> "A\n\nB"      (only the first)
             //   "A\n{% if x %}   \nB"  -> "A\n   \nB"   (spaces cancel it)
+            // Only \n is checked because tokenize() normalised the source first.
             // Without this the client renderer emitted \n\n around every tag
             // while the server emitted none, so EVERY deferred template差 differed
             // from its server-rendered twin - invisible in most markup, visible
             // the moment any of it lands inside <pre> or white-space: pre.
-            if (m[2] !== undefined) {
-                if (src.charCodeAt(last) === 13 && src.charCodeAt(last + 1) === 10) {
-                    last += 2;
-                } else if (src.charCodeAt(last) === 10) {
-                    last += 1;
-                }
+            if (m[2] !== undefined && src.charCodeAt(last) === 10) {
+                last += 1;
             }
         }
         if (last < src.length) {

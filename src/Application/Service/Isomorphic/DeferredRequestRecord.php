@@ -47,9 +47,17 @@ final readonly class DeferredRequestRecord
     /**
      * Decode one raw table row.
      *
-     * Every column is treated as absent-tolerant on purpose: a Swoole Table row read during
-     * a concurrent write can come back partially populated, and a deferred render that
+     * Content columns are absent-tolerant on purpose: a Swoole Table row read during a
+     * concurrent write can come back partially populated, and a deferred render that
      * degrades to an empty slot list is far better than one that fatals mid-response.
+     *
+     * ⚠️ `created_at` is NOT in that category and the tolerance there is inherited, not
+     * chosen. An unreadable value becomes 0, which {@see isExpired()} reads as long
+     * expired, and {@see DeferredRequestRegistry::consume()} then DELETES the row - so a
+     * transient partial read would destroy a live deferred request rather than degrade it.
+     * The behaviour predates this class (the previous inline code cast the same missing key
+     * to 0) and the window is small, but it is a real edge and should be decided
+     * deliberately rather than inherited quietly.
      *
      * @param array<string, mixed> $row
      */

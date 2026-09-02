@@ -29,9 +29,22 @@
 
     // ── HTML Escaping ──────────────────────────────────────────────────
     var ESC_MAP = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'};
+    // PHP's string cast, which is what Twig prints - NOT JavaScript's.
+    //
+    // The two disagree on booleans and it is not cosmetic: PHP renders true as "1" and
+    // false as the EMPTY STRING, while String(false) is the word "false". A deferred
+    // template printing {{ isActive }} therefore showed nothing on the server and the
+    // literal text "false" on the client. RenderParityTest caught this the first time it
+    // ran; nothing had compared the two engines before.
+    function phpString(val) {
+        if (val == null) return '';
+        if (val === true) return '1';
+        if (val === false) return '';
+        return String(val);
+    }
+
     function htmlEscape(str) {
-        if (str == null) return '';
-        return String(str).replace(/[&<>"']/g, function (c) { return ESC_MAP[c]; });
+        return phpString(str).replace(/[&<>"']/g, function (c) { return ESC_MAP[c]; });
     }
 
     // ── CSS Attribute-Value Escaping ───────────────────────────────────
@@ -98,6 +111,25 @@
                 }
             }
             last = m.index + m[0].length;
+
+            // Match PHP Twig: a block tag swallows the single newline that
+            // immediately follows it. Measured against Twig itself, the rule is
+            // exact and narrow - ONE newline, only when it is the very next
+            // character, and only after {% %}, never after {{ }}:
+            //   "A\n{% if x %}\nB"     -> "A\nB"        (consumed)
+            //   "A\n{% if x %}\n\nB"   -> "A\n\nB"      (only the first)
+            //   "A\n{% if x %}   \nB"  -> "A\n   \nB"   (spaces cancel it)
+            // Without this the client renderer emitted \n\n around every tag
+            // while the server emitted none, so EVERY deferred template差 differed
+            // from its server-rendered twin - invisible in most markup, visible
+            // the moment any of it lands inside <pre> or white-space: pre.
+            if (m[2] !== undefined) {
+                if (src.charCodeAt(last) === 13 && src.charCodeAt(last + 1) === 10) {
+                    last += 2;
+                } else if (src.charCodeAt(last) === 10) {
+                    last += 1;
+                }
+            }
         }
         if (last < src.length) {
             tokens.push({type: 'TEXT', value: src.slice(last)});
@@ -405,7 +437,7 @@
                         break;
                     case 'output': {
                         var val = resolve(node.expr, localCtx);
-                        out += node.raw ? String(val == null ? '' : val) : htmlEscape(val);
+                        out += node.raw ? phpString(val) : htmlEscape(val);
                         break;
                     }
                     case 'if': {

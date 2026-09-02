@@ -19,6 +19,12 @@ final class BindAsyncResourceSseServerListener implements ServerLifecycleListene
 {
     public function handle(ServerLifecycleContext $context): void
     {
+        // Worker phases always carry a server; the console phase does not, and
+        // this listener has nothing to bind without one.
+        if ($context->server === null) {
+            return;
+        }
+
         AsyncResourceSseServer::setServer($context->server);
 
         $tables = $context->bootstrapState?->get(SsrBootstrapStateKey::ASYNC_RESOURCE_SSE_TABLES);

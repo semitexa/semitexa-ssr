@@ -51,18 +51,18 @@ final class TwigExtensionCatalog
 
         foreach ($extensionClasses as $class) {
             $reflection = new \ReflectionClass($class);
-            
+
             if (!$reflection->isInstantiable()) {
                 continue;
             }
 
             try {
                 $extension = $reflection->newInstance();
-                
+
                 if (method_exists($extension, 'registerFunctions')) {
                     $extension->registerFunctions();
                 }
-                
+
                 if (method_exists($extension, 'registerFilters')) {
                     $extension->registerFilters();
                 }

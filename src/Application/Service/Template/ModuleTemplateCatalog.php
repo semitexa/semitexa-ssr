@@ -367,7 +367,7 @@ final class ModuleTemplateCatalog
         // Custom Twig Extensions from modules
         if (class_exists(\Semitexa\Ssr\Application\Service\Extension\TwigExtensionRegistry::class)) {
             \Semitexa\Ssr\Application\Service\Extension\TwigExtensionRegistry::initialize();
-            
+
             foreach (\Semitexa\Ssr\Application\Service\Extension\TwigExtensionRegistry::getFunctions() as $name => $def) {
                 $this->twig->addFunction(new TwigFunction($name, $def['callback'], $def['options']));
             }

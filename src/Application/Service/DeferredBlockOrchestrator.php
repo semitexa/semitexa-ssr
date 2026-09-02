@@ -95,9 +95,9 @@ final class DeferredBlockOrchestrator
         if ($deferredRequestId !== null) {
             $entry = DeferredRequestRegistry::consume($deferredRequestId);
             if ($entry !== null) {
-                $deliveredIds = $entry['delivered'];
-                $requestSnapshot = $entry['request_snapshot'] ?? null;
-                $componentInstances = is_array($entry['components'] ?? null) ? $entry['components'] : [];
+                $deliveredIds = $entry->delivered;
+                $requestSnapshot = $entry->requestSnapshot;
+                $componentInstances = $entry->components;
             }
         }
 

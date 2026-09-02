@@ -26,7 +26,7 @@ class LayoutRenderer
         }
 
         $layout = ModuleTemplateRegistry::resolveLayout($handle);
-        
+
         if ($layout === null) {
             return '<!doctype html><html><head><meta charset="utf-8"><title>'
                 . htmlspecialchars($context['title'] ?? 'Layout missing')
@@ -36,7 +36,7 @@ class LayoutRenderer
                 . htmlspecialchars($handle)
                 . '</p></main></body></html>';
         }
-        
+
         try {
             $baseContext = [
                 'layout_handle' => $handle,

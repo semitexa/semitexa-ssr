@@ -11,7 +11,9 @@ use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Attribute\TransportType;
 use Semitexa\Core\Discovery\AttributeDiscovery;
+use Semitexa\Core\Support\TenantModuleScopeResolver;
 use Semitexa\Locale\Configuration\LocaleConfig;
+use Semitexa\Locale\Domain\Contract\LocalePackProviderInterface;
 use Semitexa\Ssr\Application\Service\Seo\AiSitemapLocator;
 use Semitexa\Ssr\Application\Service\Seo\Sitemap\AsSitemapProvider;
 use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapAlternate;
@@ -33,6 +35,13 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
     #[InjectAsReadonly]
     protected AttributeDiscovery $attributeDiscovery;
 
+    /**
+     * The tenant's own language pack. Needed because generation usually happens
+     * on a schedule, where no request has resolved one.
+     */
+    #[InjectAsReadonly]
+    protected LocalePackProviderInterface $localePacks;
+
     /** @var list<string> */
     private const array EXCLUDED_PATHS = [
         '/robots.txt',
@@ -48,12 +57,24 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
         }
 
         $routes = $this->attributeDiscovery->getRoutes();
+
+        // One site's sitemap must list one site's pages. Route discovery is
+        // install-wide, so without this filter a five-tenant install gave every
+        // domain every other tenant's paths — the museum advertising a hair
+        // school's /courses — and three copies of /about, one per module that
+        // declares it. A route with no tenant scope belongs to all of them.
+        $routes = array_values(array_filter(
+            $routes,
+            static fn (array $route): bool => TenantModuleScopeResolver::isRouteAllowedForTenant($route, $context->tenantContext),
+        ));
+
         usort($routes, fn (array $a, array $b): int => $this->stringValue($a['path'] ?? '') <=> $this->stringValue($b['path'] ?? ''));
 
-        $localeConfig = LocaleConfig::fromEnvironment();
         // Per-request (a tenant's domain serving its sitemap): the locale phase
         // stored the tenant's EFFECTIVE pack — the sitemap must list THAT
-        // tenant's locales/default. Cron/pre-resolution: empty → global config.
+        // tenant's locales/default. Cron/pre-resolution: empty → the tenant's
+        // own settings pack, and only then the install-wide config.
+        $localeConfig = $this->resolveLocaleConfig();
         $tenantSupported = \Semitexa\Locale\Context\LocaleContextStore::getSupportedLocales();
         $supportedLocales = $tenantSupported !== []
             ? array_values($tenantSupported)
@@ -80,6 +101,31 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
                 priority: 0.5,
                 alternates: $alternates,
             );
+        }
+    }
+
+    /**
+     * The language set this sitemap should advertise.
+     *
+     * `LocaleConfig::fromEnvironment()` is the install's global set — for a
+     * multi-tenant install that is one tenant's languages imposed on all of
+     * them, which is how a Ukrainian museum's sitemap came to offer Italian
+     * alternates. The pack provider reads the tenant's own settings, and the
+     * settings store is tenant-scoped, so inside a per-tenant run it answers
+     * for that tenant.
+     */
+    private function resolveLocaleConfig(): LocaleConfig
+    {
+        $base = LocaleConfig::fromEnvironment();
+
+        if (!isset($this->localePacks)) {
+            return $base;
+        }
+
+        try {
+            return $this->localePacks->resolvedPack($base);
+        } catch (\Throwable) {
+            return $base;
         }
     }
 

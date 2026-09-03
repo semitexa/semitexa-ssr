@@ -6,6 +6,7 @@ namespace Semitexa\Ssr\Application\Service\Seo\Sitemap\Job;
 
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
+use Semitexa\Tenancy\Context\TenantContext;
 use Semitexa\Scheduler\Attribute\AsScheduledJob;
 use Semitexa\Scheduler\Domain\Contract\ScheduledJobInterface;
 use Semitexa\Scheduler\Domain\Model\ScheduledJobContext;
@@ -27,6 +28,11 @@ use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapStoragePath;
     key: 'ssr.sitemap_regeneration',
     cronExpression: 'env::SITEMAP_REGENERATION_CRON::0 3 * * *',
     overlapPolicy: 'skip',
+    // Per tenant, because a sitemap is per site. A global run resolves no
+    // tenant, so it writes var/sitemap/default — a file no domain is served
+    // from — while every tenant's own sitemap.xml stays as it was, an empty
+    // urlset, and the run still reports success.
+    tenantMode: 'per_tenant',
 )]
 final class SitemapRegenerationJob implements ScheduledJobInterface
 {
@@ -39,10 +45,21 @@ final class SitemapRegenerationJob implements ScheduledJobInterface
             return;
         }
 
-        $baseUrl = AiSitemapLocator::originUrl();
-        $outputDir = SitemapStoragePath::generatedDirectory();
+        // The run carries its tenant; both the site's own address and the
+        // directory its sitemap is served from come from that. Reading it off
+        // the context rather than injecting it keeps this a plain service and
+        // makes the one input the job actually has visible in one line.
+        $tenantContext = $context->tenantId !== null && $context->tenantId !== ''
+            ? TenantContext::fromResolution($context->tenantId, 'scheduler')
+            : null;
 
-        $generationContext = new SitemapGenerationContext(baseUrl: $baseUrl);
+        $baseUrl = AiSitemapLocator::originUrl(null, $tenantContext);
+        $outputDir = SitemapStoragePath::generatedDirectory($tenantContext);
+
+        $generationContext = new SitemapGenerationContext(
+            baseUrl: $baseUrl,
+            tenantContext: $tenantContext,
+        );
 
         $this->generator->generateAndWrite($generationContext, $outputDir);
     }

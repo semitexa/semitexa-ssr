@@ -6,6 +6,8 @@ namespace Semitexa\Ssr\Application\Console\Command;
 
 use Semitexa\Core\Attribute\AsCommand;
 use Semitexa\Core\Attribute\InjectAsReadonly;
+use Semitexa\Core\Tenant\TenantContextInterface;
+use Semitexa\Tenancy\Context\CoroutineContextStore;
 use Semitexa\Ssr\Application\Service\Seo\AiSitemapLocator;
 use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapGenerationContext;
 use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapGenerator;
@@ -49,17 +51,26 @@ final class SitemapGenerateCommand extends Command
                 throw new \RuntimeException('Sitemap generator is not available.');
             }
 
+            // `tenant:run <id> sitemap:generate` is the natural way to rebuild
+            // one site's map, and it sets this context. Without reading it the
+            // command wrote every tenant's sitemap into var/sitemap/default —
+            // a file no domain is served from — and reported success.
+            $tenantContext = $this->currentTenantContext();
+
             $outputOption = $input->getOption('output');
             $outputDir = is_string($outputOption) && $outputOption !== ''
                 ? $outputOption
-                : SitemapStoragePath::generatedDirectory();
+                : SitemapStoragePath::generatedDirectory($tenantContext);
 
             $baseUrlOption = $input->getOption('base-url');
             $baseUrl = is_string($baseUrlOption) && $baseUrlOption !== ''
                 ? $baseUrlOption
-                : AiSitemapLocator::originUrl();
+                : AiSitemapLocator::originUrl(null, $tenantContext);
 
-            $context = new SitemapGenerationContext(baseUrl: $baseUrl);
+            $context = new SitemapGenerationContext(
+                baseUrl: $baseUrl,
+                tenantContext: $tenantContext,
+            );
             $result = $this->generator->generateAndWrite($context, $outputDir);
 
             if (!$result->success) {
@@ -79,5 +90,13 @@ final class SitemapGenerateCommand extends Command
         }
 
         return Command::SUCCESS;
+    }
+
+    /** The tenant this console process is running inside, if any. */
+    private function currentTenantContext(): ?TenantContextInterface
+    {
+        $context = CoroutineContextStore::get();
+
+        return $context instanceof TenantContextInterface ? $context : null;
     }
 }

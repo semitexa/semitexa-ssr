@@ -141,7 +141,7 @@ final class SitemapGenerator
 
         $urls = [];
 
-        foreach ($this->registry->getProviders() as $providerMeta) {
+        foreach ($this->registry->getProvidersForTenant($context->tenantContext) as $providerMeta) {
             try {
                 $provider = $this->resolveProvider($providerMeta['class']);
                 if ($provider === null) {

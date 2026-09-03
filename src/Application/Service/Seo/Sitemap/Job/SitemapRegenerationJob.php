@@ -25,7 +25,7 @@ use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapStoragePath;
 #[AsService]
 #[AsScheduledJob(
     key: 'ssr.sitemap_regeneration',
-    cronExpression: '0 3 * * *',
+    cronExpression: 'env::SITEMAP_REGENERATION_CRON::0 3 * * *',
     overlapPolicy: 'skip',
 )]
 final class SitemapRegenerationJob implements ScheduledJobInterface

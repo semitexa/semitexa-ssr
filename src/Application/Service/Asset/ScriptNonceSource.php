@@ -30,6 +30,23 @@ final class ScriptNonceSource
         self::$provider = $provider;
     }
 
+    /**
+     * The raw nonce, or '' when no provider is registered.
+     *
+     * Some consumers need the value rather than a script attribute — a
+     * `<meta name="csp-nonce">` that a third-party bundle reads before styling
+     * itself, for one. Building that meta by string-slicing attribute() would
+     * be a second place to get the escaping wrong.
+     */
+    public static function value(): string
+    {
+        if (self::$provider === null) {
+            return '';
+        }
+
+        return (self::$provider)();
+    }
+
     /** ` nonce="…"` ready for a <script tag, or '' when no provider is registered. */
     public static function attribute(): string
     {

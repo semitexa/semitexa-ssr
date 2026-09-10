@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Semitexa\Core\Log\StaticLoggerBridge;
+
 /**
  * Which SSE sessions this worker holds, and the frames waiting for each.
  *
@@ -16,6 +18,15 @@ namespace Semitexa\Ssr\Application\Service\Async;
  *  - **buffer** — frames for a session that has not connected here yet, flushed
  *    on admit. The distinction matters: a queued frame has a socket to go to, a
  *    buffered one is speculative.
+ *
+ * Both frame maps are BOUNDED, because both are worker-local PHP arrays holding
+ * rendered HTML. `SSE_SESSION_QUEUE_MAX` (256) caps a session with a socket: on
+ * overflow the backlog is replaced by one rerun control, so the client re-queries
+ * instead of receiving a stream with a hole in it. `SSE_SESSION_BUFFER_MAX` (64)
+ * caps a session with no socket here yet, keeping the NEWEST frames — there is no
+ * stream to resync on, and a late connector wants current state. Both log when
+ * they fire; neither is a number to raise when it does, since it firing means a
+ * consumer is not keeping up and a bigger buffer only postpones that.
  *
  * Keyed per-worker state, and that is correct rather than a coroutine hazard: a
  * coroutine serving session A legitimately pushes into session B's queue — that
@@ -104,6 +115,42 @@ final class SseSessionRegistry
     public function enqueue(string $sessionId, array $data): void
     {
         $this->queues[$sessionId][] = $data;
+
+        $depth = count($this->queues[$sessionId]);
+        if ($depth <= self::queueCap()) {
+            return;
+        }
+
+        // Backpressure. The queue is a worker-local PHP array and every frame
+        // carries rendered HTML, so a consumer that stops reading — a throttled
+        // tab, a stalled socket, a laptop that slept — grows worker memory with
+        // nothing to stop it until the socket closes.
+        //
+        // The backlog is replaced by ONE rerun control rather than trimmed.
+        // Dropping the oldest frames would leave the client a stream with a hole
+        // in it and no way to know; a rerun tells it to re-query, which is the
+        // state it would have reached by applying the whole backlog anyway. It
+        // is the same collapse RerunCoalescer already performs on signal storms,
+        // applied to the data path.
+        $this->queues[$sessionId] = [[SseControlFrame::KEY => SseControlFrame::RERUN]];
+
+        StaticLoggerBridge::warning('sse', 'SSE queue overflowed; backlog collapsed to a re-run', [
+            'session' => $sessionId,
+            'depth' => $depth,
+            'cap' => self::queueCap(),
+        ]);
+    }
+
+    /**
+     * How many frames may wait for one session before the backlog collapses.
+     *
+     * A cap, not a tuning knob to raise when it fires: it firing means a
+     * consumer is not keeping up, and a larger number only delays the same
+     * outcome while holding more memory.
+     */
+    private static function queueCap(): int
+    {
+        return max(1, SseEnv::int('SSE_SESSION_QUEUE_MAX', 256));
     }
 
     public function hasQueued(string $sessionId): bool
@@ -156,6 +203,33 @@ final class SseSessionRegistry
     public function buffer(string $sessionId, array $data): void
     {
         $this->buffers[$sessionId][] = $data;
+
+        $depth = count($this->buffers[$sessionId]);
+        if ($depth <= self::bufferCap()) {
+            return;
+        }
+
+        // A buffered frame is speculative: there is no socket for it here, and
+        // if the session never connects to THIS worker nothing ever drains it —
+        // close() only fires for a session that did connect. So this map could
+        // grow for the worker's whole life on the fallback path alone.
+        //
+        // The oldest go, not the newest: what a late-connecting client most
+        // needs is the most recent state. Nothing is resynced because there is
+        // no stream to send a control on yet.
+        $this->buffers[$sessionId] = array_slice($this->buffers[$sessionId], -self::bufferCap());
+
+        StaticLoggerBridge::warning('sse', 'SSE buffer overflowed for a session that has not connected here', [
+            'session' => $sessionId,
+            'depth' => $depth,
+            'cap' => self::bufferCap(),
+        ]);
+    }
+
+    /** @see self::queueCap() — same reasoning, for frames with no socket yet. */
+    private static function bufferCap(): int
+    {
+        return max(1, SseEnv::int('SSE_SESSION_BUFFER_MAX', 64));
     }
 
     /**

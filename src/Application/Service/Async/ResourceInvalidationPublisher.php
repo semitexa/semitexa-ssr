@@ -6,6 +6,7 @@ namespace Semitexa\Ssr\Application\Service\Async;
 
 use Semitexa\Core\Attribute\AsEventListener;
 use Semitexa\Core\Attribute\InjectAsReadonly;
+use Semitexa\Core\Contract\InitializesAfterInjectionInterface;
 use Semitexa\Core\Event\EventExecution;
 use Semitexa\Core\Exception\ConfigurationException;
 use Semitexa\Ssr\Domain\Contract\ScopeInvalidationBusInterface;
@@ -42,7 +43,7 @@ use Semitexa\Tenancy\Context\TenantContext;
  * on every instantiation (the constructor below).
  */
 #[AsEventListener(event: self::EVENT_CLASS, execution: EventExecution::Sync)]
-final class ResourceInvalidationPublisher
+final class ResourceInvalidationPublisher implements InitializesAfterInjectionInterface
 {
     /** FQCN of the P2 event (semitexa-orm); referenced as a string to avoid a cross-package import/dependency. */
     public const EVENT_CLASS = 'Semitexa\\Orm\\Domain\\Event\\ResourceChangedEvent';
@@ -55,10 +56,16 @@ final class ResourceInvalidationPublisher
     #[InjectAsReadonly]
     protected ScopeInvalidationBusInterface $bus;
 
-    public function __construct()
+    /**
+     * Fail-closed once the container has built this listener.
+     *
+     * This was a constructor, and the container never calls one — it builds
+     * container-managed classes with newInstanceWithoutConstructor(). So the
+     * guard that called itself defence-in-depth had never run in the only
+     * runtime that matters. It runs here, which the container does call.
+     */
+    public function initialize(): void
     {
-        // Fail-closed at instantiation: even if the boot guard were bypassed,
-        // the listener cannot be constructed to handle an event off Sync.
         self::assertSyncExecutionPinned();
     }
 

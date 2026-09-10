@@ -19,11 +19,35 @@ use Semitexa\Ssr\Application\Service\Async\SseSessionRegistry;
  */
 final class SseSessionQueueBackpressureTest extends TestCase
 {
+    private const VARS = ['SSE_SESSION_QUEUE_MAX', 'SSE_SESSION_BUFFER_MAX', 'SSE_BUFFERED_SESSIONS_MAX'];
+
+    /** @var array<string, array{env: string|false, superglobal: mixed}> */
+    private array $saved = [];
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        // Saved and put back rather than unset: a process that started with any
+        // of these configured would otherwise run every later test without
+        // them. Raised in review of semitexa-ssr#113.
+        foreach (self::VARS as $key) {
+            $this->saved[$key] = [
+                'env' => getenv($key),
+                'superglobal' => $_ENV[$key] ?? null,
+            ];
+        }
+    }
+
     protected function tearDown(): void
     {
-        unset($_ENV['SSE_SESSION_QUEUE_MAX'], $_ENV['SSE_SESSION_BUFFER_MAX']);
-        putenv('SSE_SESSION_QUEUE_MAX');
-        putenv('SSE_SESSION_BUFFER_MAX');
+        foreach ($this->saved as $key => $state) {
+            $state['env'] === false ? putenv($key) : putenv($key . '=' . $state['env']);
+            if ($state['superglobal'] === null) {
+                unset($_ENV[$key]);
+            } else {
+                $_ENV[$key] = $state['superglobal'];
+            }
+        }
         parent::tearDown();
     }
 
@@ -89,5 +113,47 @@ final class SseSessionQueueBackpressureTest extends TestCase
             $registry->buffered('s1'),
             'a late-connecting client needs the most recent state, not the first frames ever sent',
         );
+    }
+
+    /**
+     * Per-session depth is only half the leak. deliver() reaches the buffer
+     * fallback for any session id it has a frame for, and an entry is removed
+     * only by takeBuffered() or close() — neither of which fires for a session
+     * that never connects to this worker. Raised in review of
+     * semitexa-ssr#113.
+     */
+    #[Test]
+    public function the_number_of_buffered_sessions_is_bounded_too(): void
+    {
+        putenv('SSE_BUFFERED_SESSIONS_MAX=3');
+        $registry = new SseSessionRegistry();
+
+        for ($i = 0; $i < 20; $i++) {
+            $registry->buffer("orphan-{$i}", ['html' => "frame {$i}"]);
+        }
+
+        $held = 0;
+        for ($i = 0; $i < 20; $i++) {
+            $held += $registry->buffered("orphan-{$i}") === [] ? 0 : 1;
+        }
+
+        self::assertLessThanOrEqual(3, $held, 'a worker must not hold one buffer per session that never arrives');
+        self::assertNotSame([], $registry->buffered('orphan-19'), 'the session written last is never the one evicted');
+    }
+
+    #[Test]
+    public function the_least_recently_written_session_is_the_one_dropped(): void
+    {
+        putenv('SSE_BUFFERED_SESSIONS_MAX=2');
+        $registry = new SseSessionRegistry();
+
+        $registry->buffer('a', ['html' => 'a1']);
+        $registry->buffer('b', ['html' => 'b1']);
+        $registry->buffer('a', ['html' => 'a2']);
+        $registry->buffer('c', ['html' => 'c1']);
+
+        self::assertSame([], $registry->buffered('b'), 'b was the oldest write once a was touched again');
+        self::assertNotSame([], $registry->buffered('a'));
+        self::assertNotSame([], $registry->buffered('c'));
     }
 }

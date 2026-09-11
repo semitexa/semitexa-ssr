@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Extension;
 
+use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore;
 use Semitexa\Ssr\Application\Service\Asset\AssetManager;
 use Semitexa\Ssr\Application\Service\Asset\AssetRenderer;
@@ -48,7 +49,26 @@ final class AssetTwigExtension
      */
     public function assetUrl(string $path, ?string $module = null): string
     {
-        return AssetManager::getUrl($path, $module);
+        $url = AssetManager::getUrl($path, $module);
+
+        // Noted, not gated. This is the only path a TEMPLATE takes to a URL —
+        // AssetRenderer calls AssetManager directly — so it is where the
+        // collector can learn that a template is about to write its own tag.
+        // The renderer checks the other direction, so whichever of the two is
+        // second is the one that reports, and the order in the template does
+        // not decide whether the duplicate is noticed.
+        $collector = AssetCollectorStore::get();
+        $collector->noteDirectUrl($url);
+
+        if (str_ends_with(strtok($url, '?') ?: $url, '.css') && $collector->wasEmittedAsCss($url)) {
+            StaticLoggerBridge::warning('ssr', 'Stylesheet URL taken by asset() after the same sheet was already linked', [
+                'module' => $module ?? '(current)',
+                'path' => $path,
+                'fix' => 'If this becomes a <link>, the page will carry the stylesheet twice — asset_head() has already emitted it.',
+            ]);
+        }
+
+        return $url;
     }
 
     public function renderHead(): Markup

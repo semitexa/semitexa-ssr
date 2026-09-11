@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Asset;
 
+use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Core\ModuleRegistry;
+use Semitexa\Core\Support\ProjectRoot;
 use Swoole\Http\Request as SwooleRequest;
 use Swoole\Http\Response as SwooleResponse;
 
@@ -16,6 +18,15 @@ readonly class StaticAssetHandler
     }
 
     private const PREFIXES = ['/assets/', '/static/'];
+
+    /**
+     * Extensions worth compressing. Text only: an image, a font and an audio
+     * file are already compressed, and gzipping them spends CPU to add bytes.
+     */
+    private const COMPRESSIBLE = ['js', 'css', 'json', 'svg', 'map'];
+
+    /** Below this, the gzip header costs more than the saving. */
+    private const COMPRESS_MIN_BYTES = 1024;
 
     private const CONTENT_TYPES = [
         'js'   => 'application/javascript',
@@ -99,13 +110,26 @@ readonly class StaticAssetHandler
         $contentType = self::CONTENT_TYPES[$extension] ?? 'application/octet-stream';
 
         $cacheControl = self::cacheControlForUri($queryString === '' ? $uri : $uri . '?' . $queryString);
+
+        // Resolved BEFORE the ETag, because it decides which representation is
+        // being served and the two must not share one. A strong ETag names a
+        // representation, so answering an identity request 304 against a tag
+        // minted for the gzipped copy would let a cache hand out bytes the
+        // client cannot read.
+        $gzipped = self::gzippedTwin($filePath, $extension, self::requestHeader($request, 'accept-encoding'));
         $etag = self::etagForFile($filePath);
+        if ($etag !== '' && $gzipped !== null) {
+            $etag = substr($etag, 0, -1) . '-gzip"';
+        }
 
         $ifNoneMatch = self::requestHeader($request, 'if-none-match');
         if (self::ifNoneMatchMatches($ifNoneMatch, $etag)) {
             $response->status(304);
             $response->header('Cache-Control', $cacheControl);
             $response->header('ETag', $etag);
+            if ($gzipped !== null) {
+                $response->header('Vary', 'Accept-Encoding');
+            }
             $response->end();
             return true;
         }
@@ -116,9 +140,139 @@ readonly class StaticAssetHandler
         if ($etag !== '') {
             $response->header('ETag', $etag);
         }
+
+        if ($gzipped !== null) {
+            $response->header('Content-Encoding', 'gzip');
+            // Without this a shared cache can hand the compressed copy to a
+            // client that never asked for it.
+            $response->header('Vary', 'Accept-Encoding');
+            $response->sendfile($gzipped);
+
+            return true;
+        }
+
         $response->sendfile($filePath);
 
         return true;
+    }
+
+    /**
+     * The gzipped copy of a text asset, built once and kept.
+     *
+     * MEASURED before this existed: platform-ui shipped 315277 bytes of CSS and
+     * JS and every byte of it went out uncompressed — gzip takes the same set
+     * to 82720, which is 74% of the transfer for no change to a single
+     * character of the delivered code. Nothing in the stack was doing it:
+     * Swoole's `http_compression` setting is ACCEPTED and inert on this build
+     * (6.2.0, compiled with no compression support — `php --ri swoole` lists
+     * openssl, dtls, http2 and json and no zlib), and it would not have covered
+     * this path anyway, because Swoole compresses what a response `end()`s and
+     * never what it `sendfile()`s.
+     *
+     * A deployment behind nginx has had this all along, which is why it went
+     * unnoticed; one served straight from Swoole — the dev server every
+     * developer uses, and any single-container install — has not.
+     *
+     * Public and static for the same reason {@see cacheControlForUri()} and
+     * {@see etagForFile()} are: it is a decision, and a decision that only the
+     * request path can reach is a decision nothing can check.
+     *
+     * Written beside the source rather than served from memory so `sendfile()`
+     * survives: the kernel still streams the bytes, and the compression is paid
+     * once per file per deployment instead of once per request. The name
+     * carries the source's mtime and size, so an edited file gets a new twin
+     * and a stale one is never served.
+     */
+    public static function gzippedTwin(
+        string $filePath,
+        string $extension,
+        ?string $acceptEncoding,
+        ?string $cacheDir = null,
+    ): ?string
+    {
+        if (!in_array($extension, self::COMPRESSIBLE, true)) {
+            return null;
+        }
+
+        if ($acceptEncoding === null || !str_contains(strtolower($acceptEncoding), 'gzip')) {
+            return null;
+        }
+
+        $size = @filesize($filePath);
+        if ($size === false || $size < self::COMPRESS_MIN_BYTES) {
+            return null;
+        }
+
+        $cacheDir ??= ProjectRoot::get() . '/var/cache/assets';
+        $twin = $cacheDir . '/' . hash('xxh128', $filePath . '|' . $size . '|' . (string) @filemtime($filePath)) . '.gz';
+
+        if (is_file($twin)) {
+            return $twin;
+        }
+
+        $source = @file_get_contents($filePath);
+        if ($source === false) {
+            return null;
+        }
+
+        $compressed = @gzencode($source, 6);
+        if ($compressed === false || strlen($compressed) >= $size) {
+            return null; // Nothing gained; serve the original.
+        }
+
+        // 0775, not 0755: an install where the CLI creates this directory as
+        // one user and the web worker writes it as another is ordinary, and a
+        // group-writable cache is what lets both use it.
+        if (!is_dir($cacheDir) && !@mkdir($cacheDir, 0775, true) && !is_dir($cacheDir)) {
+            self::reportUncacheable($cacheDir, 'the directory could not be created');
+
+            return null;
+        }
+
+        // Written through a temporary name and renamed: two workers racing the
+        // same first request must never let a reader see a half-written file,
+        // and rename is the only atomic move on a local filesystem.
+        $temp = $twin . '.' . getmypid() . '.tmp';
+        if (@file_put_contents($temp, $compressed) === false || !@rename($temp, $twin)) {
+            @unlink($temp);
+            self::reportUncacheable($cacheDir, 'the directory is not writable by this process');
+
+            return null;
+        }
+
+        return $twin;
+    }
+
+    /**
+     * Say, once, that compression is off because the cache cannot be written.
+     *
+     * Falling back to the uncompressed file is the right thing to do — an asset
+     * that serves is better than one that 500s — but doing it in silence means
+     * a deployment can ship every byte uncompressed forever with nothing to
+     * explain it. MEASURED as a real shape, not imagined: in this workspace the
+     * directory was created root-owned by a CLI container while the worker runs
+     * as uid 1000, and the only symptom was that nothing was ever compressed.
+     *
+     * Once per process per directory. A per-request warning on a busy server is
+     * how a log stops being read. The tally is a function-static rather than a
+     * class property because this class is `readonly`, which forbids one.
+     */
+    private static function reportUncacheable(string $cacheDir, string $because): void
+    {
+        /** @var array<string, true> $reported */
+        static $reported = [];
+
+        if (isset($reported[$cacheDir])) {
+            return;
+        }
+
+        $reported[$cacheDir] = true;
+
+        StaticLoggerBridge::warning('ssr', 'Serving assets uncompressed: ' . $because, [
+            'cache_dir' => $cacheDir,
+            'cost' => 'Text assets go out at full size. platform-ui alone is ~315 KB that gzips to ~83 KB.',
+            'fix' => 'Make the directory writable by the user the workers run as.',
+        ]);
     }
 
     /**

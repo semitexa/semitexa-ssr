@@ -47,6 +47,41 @@ final class AssetCollector
      */
     private array $finalizeCallbacks = [];
 
+    /**
+     * URLs handed out by `asset()` for this request.
+     *
+     * `asset()` answers with a URL string and never touches this collector, so
+     * a template writing its own `<link rel="stylesheet" href="{{ asset(...) }}">`
+     * is invisible here — and when the same file is also declared scope=global,
+     * the page gets it twice with nothing to say so. MEASURED on a consumer:
+     * platform-ui/css/full.css fetched twice, same fingerprint, on every page.
+     *
+     * Recording what asset() resolved is what lets the two halves notice each
+     * other. It is a note, not a gate: asset() is also how an <img>, a favicon
+     * and a font get their URL, and refusing to emit a link because a URL was
+     * mentioned somewhere would break more than it fixed.
+     *
+     * @var array<string, true>
+     */
+    private array $directUrls = [];
+
+    /**
+     * Render signatures the head has already emitted.
+     *
+     * The head is rendered before the body, so an asset required from body
+     * markup — a component asking for the runtime or the stylesheet it cannot
+     * work without — arrives after `asset_head()` is long gone. Scripts are
+     * fine: `asset_body()` runs later and picks them up. CSS was not: a `<link>`
+     * is forced to the head (R1), the body renderer skips it on purpose, and
+     * nothing looked at it again, so it was dropped in silence.
+     *
+     * Remembering what the head DID emit is what lets the post-render pass tell
+     * a late arrival from one it has already printed.
+     *
+     * @var array<string, true>
+     */
+    private array $headRendered = [];
+
     private ?AssetManifestRegistry $registry;
 
     public function __construct(?AssetManifestRegistry $registry = null)
@@ -202,6 +237,74 @@ final class AssetCollector
      *
      * @return list<array{key: string, css: string, priority: int}>
      */
+    /**
+     * Stylesheet URLs this render has already put in the document.
+     *
+     * Written by the renderer, read by `asset()`. The pair is symmetric so the
+     * order in the template does not matter: whichever of the two paths is
+     * second is the one that reports.
+     *
+     * @var array<string, true>
+     */
+    private array $emittedCssUrls = [];
+
+    /** Note a stylesheet URL the renderer has emitted. */
+    public function noteEmittedCss(string $url): void
+    {
+        $this->emittedCssUrls[self::withoutVersion($url)] = true;
+    }
+
+    /** Whether a stylesheet for this URL is already in the document. */
+    public function wasEmittedAsCss(string $url): bool
+    {
+        return isset($this->emittedCssUrls[self::withoutVersion($url)]);
+    }
+
+    /** Note a URL that `asset()` handed to a template for this request. */
+    public function noteDirectUrl(string $url): void
+    {
+        $this->directUrls[self::withoutVersion($url)] = true;
+    }
+
+    /** Whether `asset()` already handed this URL out by hand. */
+    public function wasHandedOutDirectly(string $url): bool
+    {
+        return isset($this->directUrls[self::withoutVersion($url)]);
+    }
+
+    /**
+     * The URL without its cache-busting query.
+     *
+     * Compared without it on purpose: the same file reached through two paths
+     * carries the same fingerprint today, but a difference there would be a
+     * SECOND defect, and a comparison that missed the duplicate because of it
+     * would hide the first one.
+     */
+    private static function withoutVersion(string $url): string
+    {
+        $mark = strpos($url, '?');
+
+        return $mark === false ? $url : substr($url, 0, $mark);
+    }
+
+    /**
+     * Record that the head has emitted these render signatures.
+     *
+     * @param list<string> $signatures
+     */
+    public function markHeadRendered(array $signatures): void
+    {
+        foreach ($signatures as $signature) {
+            $this->headRendered[$signature] = true;
+        }
+    }
+
+    /** Whether the head already printed this one. */
+    public function headAlreadyRendered(string $signature): bool
+    {
+        return isset($this->headRendered[$signature]);
+    }
+
     public function takeRawInlineCss(): array
     {
         $out = [];

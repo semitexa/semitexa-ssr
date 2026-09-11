@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Asset;
 
+use Semitexa\Core\Log\StaticLoggerBridge;
+
 /**
  * Renders collected assets into HTML tags for injection into layout templates.
  *
@@ -66,6 +68,11 @@ final class AssetRenderer
             };
         }
 
+        // What the head printed, remembered for the post-render pass: it is the
+        // only way to tell an asset that arrived late from one already on the
+        // page. See finalizeDynamicCss().
+        $collector->markHeadRendered(array_keys($renderedKeys));
+
         // Raw inline CSS registered before the head rendered goes out now;
         // the marker stands in for whatever the rest of the render registers.
         $html .= self::renderRawInlineCss($collector->takeRawInlineCss());
@@ -89,7 +96,8 @@ final class AssetRenderer
     public static function finalizeDynamicCss(string $html, AssetCollector $collector): string
     {
         $collector->runFinalizeCallbacks($html);
-        $styles = self::renderRawInlineCss($collector->takeRawInlineCss());
+        $styles = self::renderLateHeadAssets($collector)
+            . self::renderRawInlineCss($collector->takeRawInlineCss());
 
         if (str_contains($html, self::DYNAMIC_CSS_MARKER)) {
             return str_replace(self::DYNAMIC_CSS_MARKER, $styles, $html);
@@ -105,6 +113,59 @@ final class AssetRenderer
         }
 
         return $styles . $html;
+    }
+
+    /**
+     * Head assets that were required after the head had already rendered.
+     *
+     * A component asking for its own stylesheet is doing the right thing — the
+     * markup is what knows the asset is needed — but it runs while the body is
+     * rendering, which is after `asset_head()`. A `<link>` is forced to the head
+     * by R1 and {@see renderBody()} skips CSS deliberately, so before this
+     * method the request matched no renderer at all: no tag, no warning, and a
+     * component that came back unstyled with nothing to explain it.
+     *
+     * Emitted at the marker, which sits after everything the head printed, so
+     * a late sheet still lands in the head and still loses the cascade to
+     * nothing that was there first.
+     *
+     * Only what the head has NOT already printed, which is why the collector
+     * remembers its signatures: resolve() returns the whole set every time, and
+     * without that memory this would print every stylesheet on the page twice.
+     */
+    private static function renderLateHeadAssets(AssetCollector $collector): string
+    {
+        $html = '';
+        $seen = [];
+
+        foreach ($collector->resolve() as $entry) {
+            // Scripts are not stranded: asset_body() runs after the markup that
+            // required them. This is about what only the head can carry.
+            if (!in_array($entry->type, ['css', 'preload', 'inline-css'], true)) {
+                continue;
+            }
+
+            $signature = self::buildRenderSignature($entry);
+
+            if ($collector->headAlreadyRendered($signature) || isset($seen[$signature])) {
+                continue;
+            }
+
+            $seen[$signature] = true;
+
+            $html .= match ($entry->type) {
+                'css'        => self::renderCssLink($entry),
+                'preload'    => self::renderPreload($entry),
+                'inline-css' => self::renderInlineCss($entry),
+                default      => '',
+            };
+        }
+
+        // Idempotent like the rest of the finalize pass: a nested render that
+        // finalizes twice must not print these again.
+        $collector->markHeadRendered(array_keys($seen));
+
+        return $html;
     }
 
     /**
@@ -192,9 +253,47 @@ final class AssetRenderer
     private static function renderCssLink(AssetEntry $entry): string
     {
         $attrs = self::buildAttributes($entry->attributes);
-        $url = htmlspecialchars(AssetManager::getUrl($entry->path, $entry->module), ENT_QUOTES, 'UTF-8');
+        $raw = AssetManager::getUrl($entry->path, $entry->module);
+        $url = htmlspecialchars($raw, ENT_QUOTES, 'UTF-8');
+
+        self::reportDuplicateStylesheet($entry, $raw);
 
         return '<link rel="stylesheet" href="' . $url . '"' . $attrs . '>' . "\n";
+    }
+
+    /**
+     * Say something when the same stylesheet is about to be linked twice.
+     *
+     * `asset()` answers a template with a URL and never touches the collector,
+     * so a hand-written `<link rel="stylesheet" href="{{ asset(...) }}">` for a
+     * file the manifest also declares scope=global produced two links and no
+     * complaint. MEASURED on a consumer: platform-ui/css/full.css fetched twice
+     * with the same fingerprint on every page load, one of ten render-blocking
+     * sheets Lighthouse priced at 1,480 ms.
+     *
+     * A warning rather than a skip. `asset()` is also how an <img>, a favicon
+     * and a font get their URL, and a template may legitimately mention a
+     * stylesheet's URL without linking it — refusing to emit on that evidence
+     * would break more pages than the duplicate ever did. The person who wrote
+     * the template is the one who can tell which it is; this makes sure they
+     * are told.
+     */
+    private static function reportDuplicateStylesheet(AssetEntry $entry, string $url): void
+    {
+        $collector = AssetCollectorStore::get();
+        $collector->noteEmittedCss($url);
+
+        if (!$collector->wasHandedOutDirectly($url)) {
+            return;
+        }
+
+        StaticLoggerBridge::warning('ssr', 'Stylesheet linked twice: a template already emitted this URL through asset()', [
+            'key' => $entry->key,
+            'module' => $entry->module,
+            'path' => $entry->path,
+            'fix' => 'Remove the hand-written <link> — this asset is declared scope=' . $entry->scope
+                . ', so asset_head() emits it already. For a scope=page asset use asset_require() instead of a raw tag.',
+        ]);
     }
 
     private static function renderScript(AssetEntry $entry): string

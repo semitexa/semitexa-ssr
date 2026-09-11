@@ -122,12 +122,20 @@ readonly class StaticAssetHandler
             $etag = substr($etag, 0, -1) . '-gzip"';
         }
 
+        // Declared from the FILE, not from what this particular request
+        // negotiated. Emitting it only on the compressed answer would leave the
+        // identity answer to the same URL unmarked, and a shared cache is then
+        // entitled to store that copy under the URL alone and hand it to every
+        // client behind it — so the first visitor without gzip would turn the
+        // compression off for everyone downstream.
+        $variesByEncoding = self::worthCompressing($filePath, $extension);
+
         $ifNoneMatch = self::requestHeader($request, 'if-none-match');
         if (self::ifNoneMatchMatches($ifNoneMatch, $etag)) {
             $response->status(304);
             $response->header('Cache-Control', $cacheControl);
             $response->header('ETag', $etag);
-            if ($gzipped !== null) {
+            if ($variesByEncoding) {
                 $response->header('Vary', 'Accept-Encoding');
             }
             $response->end();
@@ -140,12 +148,12 @@ readonly class StaticAssetHandler
         if ($etag !== '') {
             $response->header('ETag', $etag);
         }
+        if ($variesByEncoding) {
+            $response->header('Vary', 'Accept-Encoding');
+        }
 
         if ($gzipped !== null) {
             $response->header('Content-Encoding', 'gzip');
-            // Without this a shared cache can hand the compressed copy to a
-            // client that never asked for it.
-            $response->header('Vary', 'Accept-Encoding');
             $response->sendfile($gzipped);
 
             return true;
@@ -190,7 +198,7 @@ readonly class StaticAssetHandler
         ?string $cacheDir = null,
     ): ?string
     {
-        if (!in_array($extension, self::COMPRESSIBLE, true)) {
+        if (!self::worthCompressing($filePath, $extension)) {
             return null;
         }
 
@@ -198,10 +206,7 @@ readonly class StaticAssetHandler
             return null;
         }
 
-        $size = @filesize($filePath);
-        if ($size === false || $size < self::COMPRESS_MIN_BYTES) {
-            return null;
-        }
+        $size = (int) @filesize($filePath);
 
         $cacheDir ??= ProjectRoot::get() . '/var/cache/assets';
         $twin = $cacheDir . '/' . hash('xxh128', $filePath . '|' . $size . '|' . (string) @filemtime($filePath)) . '.gz';
@@ -241,6 +246,28 @@ readonly class StaticAssetHandler
         }
 
         return $twin;
+    }
+
+    /**
+     * Whether this file's representation depends on Accept-Encoding at all.
+     *
+     * Deliberately a property of the FILE — extension and size — and not of the
+     * request, because it is what the `Vary` header claims, and a header that
+     * claimed something request-dependent would describe a different resource
+     * to each caller.
+     *
+     * Public for the reason {@see gzippedTwin()} is: a decision only the
+     * request path can reach is a decision nothing can check.
+     */
+    public static function worthCompressing(string $filePath, string $extension): bool
+    {
+        if (!in_array($extension, self::COMPRESSIBLE, true)) {
+            return false;
+        }
+
+        $size = @filesize($filePath);
+
+        return $size !== false && $size >= self::COMPRESS_MIN_BYTES;
     }
 
     /**

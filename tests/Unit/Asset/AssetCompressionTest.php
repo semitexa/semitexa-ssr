@@ -135,6 +135,33 @@ final class AssetCompressionTest extends TestCase
     }
 
     /**
+     * What `Vary: Accept-Encoding` claims is a property of the file, not of the
+     * request that happened to arrive first.
+     *
+     * The header exists to tell a shared cache that this URL has more than one
+     * representation. Deciding it from the current request's Accept-Encoding
+     * would leave the identity answer unmarked, and a cache holding THAT copy
+     * under the bare URL would serve it to every client behind it — one visitor
+     * without gzip turning the compression off for everyone downstream. So the
+     * answer must be the same for a request that asked for gzip and one that
+     * did not.
+     */
+    #[Test]
+    public function whether_a_url_varies_by_encoding_does_not_depend_on_the_request(): void
+    {
+        $text = $this->fixture('css', 4096);
+
+        self::assertTrue(StaticAssetHandler::worthCompressing($text, 'css'));
+        self::assertTrue(StaticAssetHandler::worthCompressing($this->fixture('js', 4096), 'js'));
+
+        // An asset with a single representation must not be marked as varying:
+        // saying so splits a cache key for nothing.
+        self::assertFalse(StaticAssetHandler::worthCompressing($this->fixture('png', 4096), 'png'));
+        self::assertFalse(StaticAssetHandler::worthCompressing($this->fixture('css', 200), 'css'));
+        self::assertFalse(StaticAssetHandler::worthCompressing('/no/such/file.css', 'css'));
+    }
+
+    /**
      * An edited file must never be served from the old twin. The name carries
      * the source's size and mtime, so a change is a different twin rather than
      * a stale one.

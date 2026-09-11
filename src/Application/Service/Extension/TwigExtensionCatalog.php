@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Extension;
 
+use Psr\Container\ContainerInterface;
+use Psr\Container\NotFoundExceptionInterface;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Discovery\ClassDiscovery;
@@ -30,6 +32,21 @@ final class TwigExtensionCatalog
     private bool $initialized = false;
     #[InjectAsReadonly]
     protected ClassDiscovery $classDiscovery;
+
+    /**
+     * So an extension can have collaborators.
+     *
+     * Every extension shipped before this was static-only, which hid the fact
+     * that `new` was the only way one was ever built: the first extension to
+     * declare an #[InjectAsReadonly] property got an uninitialised typed
+     * property and a Twig RuntimeError the first time its function ran —
+     * at render time, on a page, not at boot.
+     *
+     * Absent in a build that wires the catalog by hand, which is why the
+     * fallback to `new` stays rather than becoming a hard requirement.
+     */
+    #[InjectAsReadonly]
+    protected ContainerInterface $container;
 
     public function setClassDiscovery(ClassDiscovery $classDiscovery): void
     {
@@ -71,7 +88,7 @@ final class TwigExtensionCatalog
             }
 
             try {
-                $extension = $reflection->newInstance();
+                $extension = $this->instantiate($class, $reflection);
 
                 if (method_exists($extension, 'registerFunctions')) {
                     $extension->registerFunctions();
@@ -88,6 +105,39 @@ final class TwigExtensionCatalog
                 ]);
             }
         }
+    }
+
+    /**
+     * Build one extension, through the container when it can.
+     *
+     * The container is what runs #[InjectAs*] property injection; `new` does
+     * not, and an extension with an uninjected property fails later, inside a
+     * template, where the message names Twig rather than the wiring. Falling
+     * back to `new` keeps every static-only extension working in a build where
+     * the catalog was assembled without a container.
+     *
+     * @param class-string $class
+     * @param \ReflectionClass<object> $reflection
+     */
+    private function instantiate(string $class, \ReflectionClass $reflection): object
+    {
+        if (isset($this->container)) {
+            try {
+                return $this->container->get($class);
+            } catch (NotFoundExceptionInterface) {
+                // The ONLY failure `new` is an answer to: the container has
+                // never heard of this class, which is what a static-only
+                // extension looks like. Any other throwable means the container
+                // knew it and could not build it — a missing collaborator, a
+                // constructor that raised — and swallowing that would hand back
+                // an extension without its dependencies. That does not fail
+                // here; it fails inside a template, as a property accessed
+                // before initialization, naming Twig instead of the wiring.
+                // Let it reach initialize(), which logs the real boot error.
+            }
+        }
+
+        return $reflection->newInstance();
     }
 
     /**

@@ -22,24 +22,35 @@ final class LlmsTxtRenderer
         $robotsTxt = $origin . '/robots.txt';
         $llmsTxt = $origin . '/llms.txt';
 
+        // Markdown LINKS, not "label: url".
+        //
+        // llms.txt is a Markdown document by definition, and a tool reading it
+        // looks for links. Lighthouse's Agentic Browsing audit says so in as
+        // many words — MEASURED on a consumer report: "File does not appear to
+        // contain any links", with the whole category scoring 1/3. This file
+        // had the right headings and the right prose and every URL written as
+        // bare text after a colon, which reads fine to a person and is
+        // invisible to the thing it is addressed to.
         $lines = [
             '# ' . $appName,
             '',
             '> Guidance for language models and automated agents visiting this site.',
             '',
             '## Canonical machine entry points',
-            '- LLMS: ' . $llmsTxt,
-            '- AI sitemap: ' . $sitemapJson,
-            '- Robots: ' . $robotsTxt,
+            '',
+            '- [AI sitemap](' . $sitemapJson . '): a route inventory of the public GET endpoints.',
+            '- [robots.txt](' . $robotsTxt . '): what may be crawled.',
+            '- [llms.txt](' . $llmsTxt . '): this file.',
             '',
             '## Crawl guidance',
+            '',
             '- Start from human-facing pages when you need page context and narrative structure.',
-            '- Use /sitemap.json for a route inventory of public GET endpoints.',
-            '- For HTML pages, prefer ?_format=json when you need a machine-readable page document.',
-            '- Use ?_format=json&_slot=<slot-name> when you need slot-level SSR documents.',
+            '- Append `?_format=json` to an HTML page for a machine-readable page document.',
+            '- Append `?_format=json&_slot=<slot-name>` for slot-level SSR documents.',
             '- Respect robots.txt, canonical URLs, and normal rate limits.',
             '',
             '## Scope',
+            '',
             '- This file is advisory metadata for automated agents.',
             '- Project owners may override this fallback by providing llms.txt at the project root or in public/.',
         ];

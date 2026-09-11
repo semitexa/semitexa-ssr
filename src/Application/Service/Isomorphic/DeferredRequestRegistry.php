@@ -29,6 +29,90 @@ final class DeferredRequestRegistry
      * The returned table is shared across all workers via mmap. Pass it to each worker
      * via setTable() inside the WorkerStart callback.
      */
+    /**
+     * Apply a partial update to a row that must already exist.
+     *
+     * `Table::set()` CREATES a row on a key it does not have, and every writer
+     * here checks the row first and writes second — so a `remove()`, or the
+     * expired branch of `consume()`, landing between the two turns the write
+     * into a resurrection: a row made of whichever columns this writer happened
+     * to be changing and defaults for the other seven. Nobody takes a lock that
+     * would prevent it; `$deliveredLock` is held by one writer out of four and
+     * by neither deletion path.
+     *
+     * So the write is checked instead of guarded. A resurrected fragment has
+     * `created_at` of 0 — the column is only ever written by {@see store()},
+     * which writes `time()` — and that is both the tell and the damage: 0 makes
+     * the row instantly expired, so it can never be delivered, and it would sit
+     * in a fixed-size table holding a slot until something happened to read
+     * that id again. Dropping it here costs one `get()` on a path that has just
+     * written, and leaves the table exactly as the deletion intended.
+     *
+     * Three outcomes, because two of them are not the same thing.
+     *
+     * `true`  — written.
+     * `null`  — the row is GONE. Not an error: the request was consumed or
+     *           expired while this update was in flight, and an update to a
+     *           request nobody will read again is moot. The writers already
+     *           return quietly when the row is absent at check time; a row that
+     *           vanishes a moment later has to read the same way, or a benign
+     *           race becomes a DeferredRenderingException and a finalisation
+     *           the renderer logs and abandons.
+     * `false` — the write itself failed. That is worth raising.
+     *
+     * @param array<string, mixed> $columns
+     */
+    private static function updateExistingRow(string $key, array $columns): ?bool
+    {
+        if (self::$table === null) {
+            return false;
+        }
+
+        if (self::$table->set($key, $columns) === false) {
+            return false;
+        }
+
+        $row = self::row($key);
+
+        if ($row === null) {
+            return null;
+        }
+
+        if ((int) ($row['created_at'] ?? 0) === 0) {
+            self::$table->del($key);
+
+            return null;
+        }
+
+        return true;
+    }
+
+    /**
+     * One row, narrowed to the shape the rest of this class speaks.
+     *
+     * `Table::get()` is declared as returning `array|false`, which static
+     * analysis reads as `array<mixed, mixed>` — so every call site passing the
+     * result to {@see DeferredRequestRecord::fromRow()} or indexing it had to be
+     * excused individually. A row's keys are the column names, strings by
+     * construction, so the narrowing is stated once here instead of asserted at
+     * four call sites.
+     *
+     * Null means "no such request" — consumed, expired, or never stored.
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function row(string $key): ?array
+    {
+        $row = self::$table?->get($key);
+
+        if (!is_array($row)) {
+            return null;
+        }
+
+        /** @var array<string, mixed> $row */
+        return $row;
+    }
+
     public static function createSharedTable(IsomorphicConfig $config): Table
     {
         $table = new Table(self::MAX_ENTRIES);
@@ -194,8 +278,8 @@ final class DeferredRequestRegistry
         }
 
         $key = self::tableKey($requestId);
-        $row = self::$table->get($key);
-        if ($row === false) {
+        $row = self::row($key);
+        if ($row === null) {
             return;
         }
 
@@ -218,18 +302,12 @@ final class DeferredRequestRegistry
             );
         }
 
-        $ok = self::$table->set($key, [
-            'page_handle' => $row['page_handle'],
+        // Two columns, because two are what this changes. See the note on
+        // markDelivered() for why the other seven are not listed here.
+        if (self::updateExistingRow($key, [
             'page_context' => self::backfillUiSseSession((string) $row['page_context']),
-            'bind_token' => $row['bind_token'] ?? '',
-            'locale' => $row['locale'] ?? '',
-            'slots' => $row['slots'],
             'components' => $componentsJson,
-            'delivered' => $row['delivered'],
-            'request_snapshot' => $row['request_snapshot'] ?? '',
-            'created_at' => $row['created_at'],
-        ]);
-        if ($ok === false) {
+        ]) === false) {
             throw new DeferredRenderingException('Failed to update deferred component instances.');
         }
     }
@@ -284,9 +362,10 @@ final class DeferredRequestRegistry
             return;
         }
 
+        // Existence check only — a set() on an unknown key would CREATE the row,
+        // resurrecting a request that was consumed or expired.
         $key = self::tableKey($requestId);
-        $row = self::$table->get($key);
-        if ($row === false) {
+        if (self::row($key) === null) {
             return;
         }
 
@@ -309,24 +388,21 @@ final class DeferredRequestRegistry
             );
         }
 
-        $ok = self::$table->set($key, [
-            'page_handle' => $row['page_handle'],
-            'page_context' => $row['page_context'],
-            'bind_token' => $row['bind_token'] ?? '',
-            'locale' => $row['locale'] ?? '',
-            'slots' => $row['slots'],
-            'components' => $row['components'] ?? '[]',
-            'delivered' => $row['delivered'],
-            'request_snapshot' => $snapshotJson,
-            'created_at' => $row['created_at'],
-        ]);
-        if ($ok === false) {
+        if (self::updateExistingRow($key, ['request_snapshot' => $snapshotJson]) === false) {
             throw new DeferredRenderingException('Failed to store request snapshot.');
         }
     }
 
     /**
-     * @return array{query?: array<string, mixed>, route?: array<string, mixed>, method?: string, path?: string}|null
+     * The snapshot {@see storeRequestSnapshot()} put there, or null.
+     *
+     * Typed as a plain map, not as the `{query?, route?, method?, path?}` shape
+     * the writer accepts: the value makes a round trip through JSON in a table
+     * column and nothing on the way back checks it, so the narrower declaration
+     * was a promise this method had no way to keep. A caller that needs a field
+     * checks for it — which it had to do anyway, every key being optional.
+     *
+     * @return array<string, mixed>|null
      */
     public static function getRequestSnapshot(string $requestId): ?array
     {
@@ -335,18 +411,9 @@ final class DeferredRequestRegistry
         }
 
         $key = self::tableKey($requestId);
-        $row = self::$table->get($key);
-        if ($row === false) {
-            return null;
-        }
+        $row = self::row($key);
 
-        $snapshot = (string) ($row['request_snapshot'] ?? '');
-        if ($snapshot === '') {
-            return null;
-        }
-
-        $decoded = json_decode($snapshot, true);
-        return is_array($decoded) ? $decoded : null;
+        return $row === null ? null : DeferredRequestRecord::fromRow($row)->requestSnapshot;
     }
 
     /**
@@ -394,9 +461,9 @@ final class DeferredRequestRegistry
         }
 
         $key = self::tableKey($requestId);
-        $row = self::$table->get($key);
+        $row = self::row($key);
 
-        if (!is_array($row)) {
+        if ($row === null) {
             return null;
         }
 
@@ -423,13 +490,16 @@ final class DeferredRequestRegistry
         }
         try {
             $key = self::tableKey($requestId);
-            $row = self::$table->get($key);
+            $row = self::row($key);
 
-            if ($row === false) {
+            if ($row === null) {
                 return;
             }
 
-            $delivered = json_decode((string) $row['delivered'], true) ?: [];
+            // Read through the record rather than decoding inline: `delivered`
+            // is a JSON list of strings and DeferredRequestRecord is where that
+            // is stated. `?: []` also swallowed a legitimately-empty decode.
+            $delivered = DeferredRequestRecord::fromRow($row)->delivered;
             if (!in_array($slotId, $delivered, true)) {
                 $delivered[] = $slotId;
             }
@@ -442,18 +512,23 @@ final class DeferredRequestRegistry
                 );
             }
 
-            $ok = self::$table->set($key, [
-                'page_handle' => $row['page_handle'],
-                'page_context' => $row['page_context'],
-                'bind_token' => $row['bind_token'] ?? '',
-                'locale' => $row['locale'] ?? '',
-                'slots' => $row['slots'],
-                'components' => $row['components'] ?? '[]',
-                'delivered' => $deliveredJson,
-                'request_snapshot' => $row['request_snapshot'] ?? '',
-                'created_at' => $row['created_at'],
-            ]);
-            if ($ok === false) {
+            // ONE column, because one is what this changes.
+            //
+            // `Table::set()` is a partial update — measured, not assumed: a set
+            // naming one column leaves every other column of that row exactly
+            // as it was. Every writer here used to name all nine anyway, which
+            // made each one a read-modify-write over the whole row: eight
+            // columns read back as `mixed`, cast, defaulted (`?? ''`, `?? '[]'`)
+            // and written again, so a transient partial read could blank a
+            // column nobody was changing, and two writers touching different
+            // columns still overwrote each other with their own stale copy of
+            // the rest. The lock below cannot fix that, because it only helps
+            // when EVERY writer takes it and the other three never did.
+            //
+            // The lock stays: appending to `delivered` is still a genuine
+            // read-modify-write, and the table is shared across worker
+            // PROCESSES by mmap, which are parallel for real.
+            if (self::updateExistingRow($key, ['delivered' => $deliveredJson]) === false) {
                 throw new DeferredRenderingException('Failed to update deferred request entry.');
             }
         } finally {
@@ -472,12 +547,15 @@ final class DeferredRequestRegistry
             return;
         }
 
+        // The row is fetched only to answer "does this request still exist" —
+        // creating one here would resurrect a consumed or expired request. None
+        // of its values are read, which is why nothing declares their shape any
+        // more: the hand-written @var that used to sit here listed six of the
+        // nine columns and existed solely to quiet the casts below it.
         $key = self::tableKey($requestId);
-        $row = self::$table->get($key);
-        if ($row === false) {
+        if (self::row($key) === null) {
             return;
         }
-        /** @var array{page_handle:mixed,page_context:mixed,bind_token?:mixed,locale?:mixed,delivered:mixed,created_at:mixed} $row */
 
         $slotIds = array_values(array_unique(array_filter(
             array_map(static fn (mixed $slotId): string => trim((string) $slotId), $slotIds),
@@ -492,18 +570,7 @@ final class DeferredRequestRegistry
             );
         }
 
-        $ok = self::$table->set($key, [
-            'page_handle' => $row['page_handle'],
-            'page_context' => $row['page_context'],
-            'bind_token' => $row['bind_token'] ?? '',
-            'locale' => $row['locale'] ?? '',
-            'slots' => $slotsJson,
-            'components' => $row['components'] ?? '[]',
-            'delivered' => $row['delivered'],
-            'request_snapshot' => $row['request_snapshot'] ?? '',
-            'created_at' => $row['created_at'],
-        ]);
-        if ($ok === false) {
+        if (self::updateExistingRow($key, ['slots' => $slotsJson]) === false) {
             throw new DeferredRenderingException('Failed to update deferred request slots.');
         }
     }

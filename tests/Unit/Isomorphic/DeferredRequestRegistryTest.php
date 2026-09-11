@@ -117,6 +117,73 @@ final class DeferredRequestRegistryTest extends TestCase
         self::assertSame($snapshot, DeferredRequestRegistry::getRequestSnapshot('dr_c'));
     }
 
+    /**
+     * A partial write to a row that is no longer there must create nothing.
+     *
+     * `Table::set()` creates a row on a key it does not have, and every writer
+     * here checks the row and writes as two steps — so a remove(), or the
+     * expired branch of consume(), landing between them turns the write into a
+     * resurrection: a row of whichever columns that writer was changing and
+     * defaults for the rest. No lock prevents it; the one that exists is held
+     * by a single writer out of four and by neither deletion path.
+     *
+     * The window cannot be opened from a test, so the guard is exercised
+     * directly. A resurrected fragment carries `created_at` of 0 — only
+     * store() ever writes that column, and it writes time() — which is both the
+     * tell and the damage: 0 is instantly expired, so the row can never be
+     * delivered, and it would hold a slot in a fixed-size table until something
+     * happened to read that id again.
+     */
+    public function testAWriteToAVanishedRowResurrectsNothing(): void
+    {
+        $this->bootRegistry();
+        DeferredRequestRegistry::store('dr_gone', 'demo.home', [], ['slot-a']);
+        DeferredRequestRegistry::remove('dr_gone');
+
+        $write = new \ReflectionMethod(DeferredRequestRegistry::class, 'updateExistingRow');
+        $key = (new \ReflectionMethod(DeferredRequestRegistry::class, 'tableKey'))
+            ->invoke(null, 'dr_gone');
+
+        self::assertNull(
+            $write->invoke(null, $key, ['delivered' => '["slot-a"]']),
+            'gone is not failed: the request was consumed, so the update it carried is moot',
+        );
+
+        $table = (new \ReflectionProperty(DeferredRequestRegistry::class, 'table'))->getValue();
+        self::assertNotNull($table);
+        self::assertFalse($table->exist($key), 'the row must be gone, exactly as the removal intended');
+        self::assertNull(DeferredRequestRegistry::consume('dr_gone'));
+    }
+
+    /**
+     * A row that vanishes mid-update must not raise.
+     *
+     * The writers already return quietly when the row is absent at check time.
+     * A row that disappears a moment later — consumed, or expired — has to read
+     * the same way, otherwise a benign race turns into a
+     * DeferredRenderingException and LayoutRenderer logs a failed finalisation
+     * and abandons the rest of the work for a request nobody will read again.
+     */
+    public function testAVanishedRowIsNotReportedAsAFailedWrite(): void
+    {
+        $this->bootRegistry();
+        DeferredRequestRegistry::store('dr_race', 'demo.home', [], ['slot-a']);
+
+        $table = (new \ReflectionProperty(DeferredRequestRegistry::class, 'table'))->getValue();
+        self::assertNotNull($table);
+        $key = (new \ReflectionMethod(DeferredRequestRegistry::class, 'tableKey'))->invoke(null, 'dr_race');
+
+        // The shape of the race, made deterministic: the row is there when the
+        // writer checks and gone by the time it writes.
+        $table->del($key);
+
+        DeferredRequestRegistry::markDelivered('dr_race', 'slot-a');
+        DeferredRequestRegistry::updateSlots('dr_race', ['slot-a']);
+        DeferredRequestRegistry::storeRequestSnapshot('dr_race', ['query' => []]);
+
+        self::assertNull(DeferredRequestRegistry::consume('dr_race'), 'and nothing was resurrected');
+    }
+
     public function testStoreRequestSnapshotForUnknownRequestIdIsNoop(): void
     {
         $this->bootRegistry();
@@ -173,6 +240,62 @@ final class DeferredRequestRegistryTest extends TestCase
         self::assertNotNull($entry);
         self::assertContains('slot-a', $entry->delivered);
         self::assertContains('cmp_42', $entry->delivered);
+    }
+
+    /**
+     * A write must leave alone every column it did not come to change.
+     *
+     * ⚠️ This is NOT a reproduction of the cross-worker race, and it passed
+     * before the change that motivated it. Sequentially it cannot fail: each
+     * write method does its own get() immediately before its set(), with no
+     * yield point between them, so within one worker the pair is effectively
+     * atomic and the second writer always reads what the first just wrote.
+     *
+     * What it does pin is the property the fix relies on — that changing the
+     * components leaves `delivered`, `slots` and `page_handle` exactly as they
+     * were. A writer that goes back to rewriting all nine columns from its own
+     * read would still pass this; one that writes the wrong column, or blanks
+     * a column it defaulted, would not. That is worth having, and claiming
+     * more for it would be claiming a test that does not exist.
+     *
+     * The race itself lives across WORKERS: the table is shared by mmap between
+     * OS processes, which are genuinely parallel. markDelivered takes a
+     * Swoole\Lock for exactly that reason — and a lock only helps when every
+     * writer takes it, which storeComponentInstances and storeRequestSnapshot
+     * never did while they were rewriting `delivered` from a stale read.
+     * Writing only the column you came for removes the question.
+     */
+    public function testAWriteLeavesAloneTheColumnsItDidNotComeToChange(): void
+    {
+        $this->bootRegistry();
+        DeferredRequestRegistry::store('dr_race', 'demo.home', ['k' => 'v'], ['slot-a', 'slot-b']);
+
+        DeferredRequestRegistry::markDelivered('dr_race', 'slot-a');
+
+        $components = [['instance_id' => 'c1', 'name' => 'Card', 'props' => []]];
+        DeferredRequestRegistry::storeComponentInstances('dr_race', $components);
+
+        $entry = DeferredRequestRegistry::consume('dr_race');
+        self::assertNotNull($entry);
+        self::assertSame(['slot-a'], $entry->delivered, 'the delivered slot must survive an unrelated write');
+        self::assertSame($components, $entry->components);
+        self::assertSame(['slot-a', 'slot-b'], $entry->slots, 'and so must the slots');
+        self::assertSame('demo.home', $entry->pageHandle);
+        self::assertSame(['k' => 'v'], $entry->pageContext);
+    }
+
+    /** The same property from the snapshot writer's side. */
+    public function testStoringASnapshotLeavesTheDeliveredSlotsAlone(): void
+    {
+        $this->bootRegistry();
+        DeferredRequestRegistry::store('dr_race2', 'demo.home', [], ['slot-a']);
+
+        DeferredRequestRegistry::markDelivered('dr_race2', 'slot-a');
+        DeferredRequestRegistry::storeRequestSnapshot('dr_race2', ['method' => 'GET', 'path' => '/x']);
+
+        $entry = DeferredRequestRegistry::consume('dr_race2');
+        self::assertNotNull($entry);
+        self::assertSame(['slot-a'], $entry->delivered);
     }
 
     public function testStoreRequestSnapshotThrowsWhenSerializedSizeExceedsBudget(): void

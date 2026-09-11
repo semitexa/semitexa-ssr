@@ -138,6 +138,14 @@ final class TwigFunctionContractTest extends TestCase
                 'sk_code_block',
                 'sk_code_tabs',
             ],
+            // The statement/printer pair a CMS-backed page uses to show what the
+            // CMS knows about it: cms_seo(ref) fills the request's metadata,
+            // cms_seo_head() prints the canonical link and the JSON-LD block that
+            // the meta store cannot carry. Same shape as asset_require/asset_head.
+            'Semitexa\\Cms\\Application\\Service\\Twig\\ContentSeoTwigExtension' => [
+                'cms_seo',
+                'cms_seo_head',
+            ],
         ];
     }
 

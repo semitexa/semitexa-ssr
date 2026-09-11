@@ -30,6 +30,55 @@ final class DeferredRequestRegistry
      * via setTable() inside the WorkerStart callback.
      */
     /**
+     * Apply a partial update to a row that must already exist.
+     *
+     * `Table::set()` CREATES a row on a key it does not have, and every writer
+     * here checks the row first and writes second — so a `remove()`, or the
+     * expired branch of `consume()`, landing between the two turns the write
+     * into a resurrection: a row made of whichever columns this writer happened
+     * to be changing and defaults for the other seven. Nobody takes a lock that
+     * would prevent it; `$deliveredLock` is held by one writer out of four and
+     * by neither deletion path.
+     *
+     * So the write is checked instead of guarded. A resurrected fragment has
+     * `created_at` of 0 — the column is only ever written by {@see store()},
+     * which writes `time()` — and that is both the tell and the damage: 0 makes
+     * the row instantly expired, so it can never be delivered, and it would sit
+     * in a fixed-size table holding a slot until something happened to read
+     * that id again. Dropping it here costs one `get()` on a path that has just
+     * written, and leaves the table exactly as the deletion intended.
+     *
+     * Returns false when the row is gone — the caller's update did not happen
+     * and cannot, which is not the same as a failed write.
+     *
+     * @param array<string, mixed> $columns
+     */
+    private static function updateExistingRow(string $key, array $columns): bool
+    {
+        if (self::$table === null) {
+            return false;
+        }
+
+        if (self::$table->set($key, $columns) === false) {
+            return false;
+        }
+
+        $row = self::row($key);
+
+        if ($row === null) {
+            return false;
+        }
+
+        if ((int) ($row['created_at'] ?? 0) === 0) {
+            self::$table->del($key);
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
      * One row, narrowed to the shape the rest of this class speaks.
      *
      * `Table::get()` is declared as returning `array|false`, which static
@@ -246,11 +295,10 @@ final class DeferredRequestRegistry
 
         // Two columns, because two are what this changes. See the note on
         // markDelivered() for why the other seven are not listed here.
-        $ok = self::$table->set($key, [
+        if (!self::updateExistingRow($key, [
             'page_context' => self::backfillUiSseSession((string) $row['page_context']),
             'components' => $componentsJson,
-        ]);
-        if ($ok === false) {
+        ])) {
             throw new DeferredRenderingException('Failed to update deferred component instances.');
         }
     }
@@ -331,8 +379,7 @@ final class DeferredRequestRegistry
             );
         }
 
-        $ok = self::$table->set($key, ['request_snapshot' => $snapshotJson]);
-        if ($ok === false) {
+        if (!self::updateExistingRow($key, ['request_snapshot' => $snapshotJson])) {
             throw new DeferredRenderingException('Failed to store request snapshot.');
         }
     }
@@ -472,8 +519,7 @@ final class DeferredRequestRegistry
             // The lock stays: appending to `delivered` is still a genuine
             // read-modify-write, and the table is shared across worker
             // PROCESSES by mmap, which are parallel for real.
-            $ok = self::$table->set($key, ['delivered' => $deliveredJson]);
-            if ($ok === false) {
+            if (!self::updateExistingRow($key, ['delivered' => $deliveredJson])) {
                 throw new DeferredRenderingException('Failed to update deferred request entry.');
             }
         } finally {
@@ -515,8 +561,7 @@ final class DeferredRequestRegistry
             );
         }
 
-        $ok = self::$table->set($key, ['slots' => $slotsJson]);
-        if ($ok === false) {
+        if (!self::updateExistingRow($key, ['slots' => $slotsJson])) {
             throw new DeferredRenderingException('Failed to update deferred request slots.');
         }
     }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service\Extension;
 
 use Psr\Container\ContainerInterface;
+use Psr\Container\NotFoundExceptionInterface;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Discovery\ClassDiscovery;
@@ -123,9 +124,16 @@ final class TwigExtensionCatalog
         if (isset($this->container)) {
             try {
                 return $this->container->get($class);
-            } catch (\Throwable) {
-                // Not every extension is container-managed; a static-only one
-                // has nothing to inject and `new` is the honest answer.
+            } catch (NotFoundExceptionInterface) {
+                // The ONLY failure `new` is an answer to: the container has
+                // never heard of this class, which is what a static-only
+                // extension looks like. Any other throwable means the container
+                // knew it and could not build it — a missing collaborator, a
+                // constructor that raised — and swallowing that would hand back
+                // an extension without its dependencies. That does not fail
+                // here; it fails inside a template, as a property accessed
+                // before initialization, naming Twig instead of the wiring.
+                // Let it reach initialize(), which logs the real boot error.
             }
         }
 

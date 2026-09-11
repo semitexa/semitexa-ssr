@@ -117,6 +117,44 @@ final class DeferredRequestRegistryTest extends TestCase
         self::assertSame($snapshot, DeferredRequestRegistry::getRequestSnapshot('dr_c'));
     }
 
+    /**
+     * A partial write to a row that is no longer there must create nothing.
+     *
+     * `Table::set()` creates a row on a key it does not have, and every writer
+     * here checks the row and writes as two steps — so a remove(), or the
+     * expired branch of consume(), landing between them turns the write into a
+     * resurrection: a row of whichever columns that writer was changing and
+     * defaults for the rest. No lock prevents it; the one that exists is held
+     * by a single writer out of four and by neither deletion path.
+     *
+     * The window cannot be opened from a test, so the guard is exercised
+     * directly. A resurrected fragment carries `created_at` of 0 — only
+     * store() ever writes that column, and it writes time() — which is both the
+     * tell and the damage: 0 is instantly expired, so the row can never be
+     * delivered, and it would hold a slot in a fixed-size table until something
+     * happened to read that id again.
+     */
+    public function testAWriteToAVanishedRowResurrectsNothing(): void
+    {
+        $this->bootRegistry();
+        DeferredRequestRegistry::store('dr_gone', 'demo.home', [], ['slot-a']);
+        DeferredRequestRegistry::remove('dr_gone');
+
+        $write = new \ReflectionMethod(DeferredRequestRegistry::class, 'updateExistingRow');
+        $key = (new \ReflectionMethod(DeferredRequestRegistry::class, 'tableKey'))
+            ->invoke(null, 'dr_gone');
+
+        self::assertFalse(
+            $write->invoke(null, $key, ['delivered' => '["slot-a"]']),
+            'the update did not happen and cannot — that is not the same as a failed write',
+        );
+
+        $table = (new \ReflectionProperty(DeferredRequestRegistry::class, 'table'))->getValue();
+        self::assertNotNull($table);
+        self::assertFalse($table->exist($key), 'the row must be gone, exactly as the removal intended');
+        self::assertNull(DeferredRequestRegistry::consume('dr_gone'));
+    }
+
     public function testStoreRequestSnapshotForUnknownRequestIdIsNoop(): void
     {
         $this->bootRegistry();

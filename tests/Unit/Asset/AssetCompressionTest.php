@@ -127,6 +127,45 @@ final class AssetCompressionTest extends TestCase
         self::assertNull(StaticAssetHandler::gzippedTwin($source, 'css', 'br', $this->cacheDir));
     }
 
+    /**
+     * `gzip;q=0` is how a client refuses gzip BY NAME, and it contains the
+     * word — the one header where a substring test is not merely sloppy but
+     * inverted, handing a compressed body to the single client that said it
+     * could not read one.
+     */
+    #[Test]
+    public function a_quality_of_zero_refuses_the_encoding_it_names(): void
+    {
+        self::assertFalse(StaticAssetHandler::acceptsGzip('gzip;q=0'));
+        self::assertFalse(StaticAssetHandler::acceptsGzip('gzip;q=0.0'));
+        self::assertFalse(StaticAssetHandler::acceptsGzip('br, gzip;q=0'));
+        self::assertNull(
+            StaticAssetHandler::gzippedTwin($this->fixture('css', 4096), 'css', 'gzip;q=0', $this->cacheDir),
+        );
+    }
+
+    /**
+     * A named encoding decides on its own, wherever it sits; `*` is consulted
+     * only when gzip is not named at all.
+     */
+    #[Test]
+    public function the_encoding_list_is_parsed_rather_than_searched(): void
+    {
+        self::assertTrue(StaticAssetHandler::acceptsGzip('gzip'));
+        self::assertTrue(StaticAssetHandler::acceptsGzip('deflate, gzip;q=1.0, *;q=0.5'));
+        self::assertTrue(StaticAssetHandler::acceptsGzip('x-gzip'), 'the same encoding under its older name');
+        self::assertTrue(StaticAssetHandler::acceptsGzip('*'));
+        self::assertTrue(StaticAssetHandler::acceptsGzip('br, *;q=0.1'));
+
+        self::assertFalse(StaticAssetHandler::acceptsGzip('br, deflate'));
+        self::assertFalse(StaticAssetHandler::acceptsGzip('*;q=0'));
+        self::assertFalse(StaticAssetHandler::acceptsGzip(''));
+
+        // A wildcard cannot override an encoding the client refused by name.
+        self::assertFalse(StaticAssetHandler::acceptsGzip('*, gzip;q=0'));
+        self::assertFalse(StaticAssetHandler::acceptsGzip('gzip;q=0, *'));
+    }
+
     /** Below the floor the gzip header costs more than the saving. */
     #[Test]
     public function a_tiny_asset_is_not_worth_compressing(): void
@@ -162,8 +201,43 @@ final class AssetCompressionTest extends TestCase
     }
 
     /**
+     * Content, not size and mtime.
+     *
+     * A deployment that replaces a file with different bytes of the same length
+     * leaves both unchanged, and so does a checkout or an rsync that preserves
+     * timestamps. Naming the twin by either would keep serving the old body
+     * while the ETag — which IS content-derived — had already moved: a cache
+     * told this is a new representation and handed the previous one.
+     */
+    #[Test]
+    public function the_twin_is_named_by_content_and_not_by_size_and_mtime(): void
+    {
+        $source = $this->fixture('css', 4096);
+        $first = StaticAssetHandler::gzippedTwin($source, 'css', 'gzip', $this->cacheDir);
+        self::assertIsString($first);
+
+        $before = filesize($source);
+        $stat = stat($source);
+        self::assertIsArray($stat);
+
+        // Same length, different bytes — and the timestamps put back exactly.
+        $replacement = str_repeat("/* a comment that repeats */\n.rule { color: blue; }\n", (int) ceil(4096 / 50));
+        $replacement = substr($replacement, 0, (int) $before);
+        file_put_contents($source, $replacement);
+        touch($source, $stat['mtime'], $stat['atime']);
+
+        self::assertSame($before, filesize($source), 'the point of the case is that size did not change');
+        self::assertSame($stat['mtime'], filemtime($source), 'nor did mtime');
+
+        $second = StaticAssetHandler::gzippedTwin($source, 'css', 'gzip', $this->cacheDir);
+        self::assertIsString($second);
+        self::assertNotSame($first, $second, 'different bytes must never be served from the old twin');
+        self::assertSame($replacement, gzdecode((string) file_get_contents($second)));
+    }
+
+    /**
      * An edited file must never be served from the old twin. The name carries
-     * the source's size and mtime, so a change is a different twin rather than
+     * the source's content digest, so a change is a different twin rather than
      * a stale one.
      */
     #[Test]

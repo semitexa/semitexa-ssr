@@ -116,8 +116,17 @@ readonly class StaticAssetHandler
         // representation, so answering an identity request 304 against a tag
         // minted for the gzipped copy would let a cache hand out bytes the
         // client cannot read.
-        $gzipped = self::gzippedTwin($filePath, $extension, self::requestHeader($request, 'accept-encoding'));
         $etag = self::etagForFile($filePath);
+        $gzipped = self::gzippedTwin(
+            $filePath,
+            $extension,
+            self::requestHeader($request, 'accept-encoding'),
+            null,
+            // The digest the ETag is already made of, reused so the twin is
+            // named by CONTENT. Computing it here costs nothing: etagForFile()
+            // has just hashed the same bytes.
+            $etag === '' ? null : trim($etag, '"'),
+        );
         if ($etag !== '' && $gzipped !== null) {
             $etag = substr($etag, 0, -1) . '-gzip"';
         }
@@ -187,29 +196,42 @@ readonly class StaticAssetHandler
      *
      * Written beside the source rather than served from memory so `sendfile()`
      * survives: the kernel still streams the bytes, and the compression is paid
-     * once per file per deployment instead of once per request. The name
-     * carries the source's mtime and size, so an edited file gets a new twin
-     * and a stale one is never served.
+     * once per file per deployment instead of once per request.
+     *
+     * The name is the source's CONTENT digest — the same one the ETag is made
+     * of, passed in so the bytes are hashed once. Size and mtime would be
+     * cheaper and wrong: a deployment that replaces a file with different bytes
+     * of the same length, and a checkout or rsync that preserves timestamps,
+     * both leave those two unchanged. The twin would then still be the old
+     * body while the ETag, which IS content-derived, had already moved — a
+     * cache told that this is a new representation and handed the previous one.
      */
     public static function gzippedTwin(
         string $filePath,
         string $extension,
         ?string $acceptEncoding,
         ?string $cacheDir = null,
+        ?string $contentHash = null,
     ): ?string
     {
         if (!self::worthCompressing($filePath, $extension)) {
             return null;
         }
 
-        if ($acceptEncoding === null || !str_contains(strtolower($acceptEncoding), 'gzip')) {
+        if (!self::acceptsGzip($acceptEncoding)) {
             return null;
         }
 
         $size = (int) @filesize($filePath);
 
+        $contentHash ??= @hash_file('sha256', $filePath) ?: null;
+
+        if ($contentHash === null) {
+            return null;
+        }
+
         $cacheDir ??= ProjectRoot::get() . '/var/cache/assets';
-        $twin = $cacheDir . '/' . hash('xxh128', $filePath . '|' . $size . '|' . (string) @filemtime($filePath)) . '.gz';
+        $twin = $cacheDir . '/' . substr($contentHash, 0, 32) . '.gz';
 
         if (is_file($twin)) {
             return $twin;
@@ -246,6 +268,56 @@ readonly class StaticAssetHandler
         }
 
         return $twin;
+    }
+
+    /**
+     * Whether the client actually accepts gzip.
+     *
+     * A substring test is not this question. `Accept-Encoding: gzip;q=0` CONTAINS
+     * "gzip" and means the exact opposite — q=0 is how a client refuses an
+     * encoding by name, and the one shape where the naive test is not merely
+     * sloppy but inverted: it would hand a compressed body to the one client
+     * that said it could not read one.
+     *
+     * An explicit entry for gzip decides on its own, wherever it sits in the
+     * list, because a named encoding outranks the wildcard. `*` is consulted
+     * only when gzip is not named at all.
+     */
+    public static function acceptsGzip(?string $acceptEncoding): bool
+    {
+        if ($acceptEncoding === null) {
+            return false;
+        }
+
+        $wildcard = null;
+
+        foreach (explode(',', strtolower($acceptEncoding)) as $candidate) {
+            $parameters = explode(';', $candidate);
+            $name = trim(array_shift($parameters));
+
+            if ($name === '') {
+                continue;
+            }
+
+            $quality = 1.0;
+            foreach ($parameters as $parameter) {
+                [$key, $value] = array_pad(explode('=', $parameter, 2), 2, '');
+                if (trim($key) === 'q') {
+                    $quality = (float) trim($value);
+                }
+            }
+
+            // `x-gzip` is the same encoding under its older name.
+            if ($name === 'gzip' || $name === 'x-gzip') {
+                return $quality > 0;
+            }
+
+            if ($name === '*') {
+                $wildcard = $quality > 0;
+            }
+        }
+
+        return $wildcard ?? false;
     }
 
     /**

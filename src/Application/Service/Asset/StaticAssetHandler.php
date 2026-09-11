@@ -242,6 +242,18 @@ readonly class StaticAssetHandler
             return null;
         }
 
+        // The digest came from a SEPARATE read of this file, and a deployment
+        // can replace it between the two. Storing the bytes just read under the
+        // earlier digest would give the twin a name its own content does not
+        // hash to — and unlike a single racy response, which is transient, a
+        // misnamed twin is durable: it would be served under that ETag for as
+        // long as it exists. So the two are required to agree, and when they do
+        // not, nothing is cached and the original is served. The next request
+        // arrives with a digest of the new bytes and builds the right twin.
+        if (hash('sha256', $source) !== $contentHash) {
+            return null;
+        }
+
         $compressed = @gzencode($source, 6);
         if ($compressed === false || strlen($compressed) >= $size) {
             return null; // Nothing gained; serve the original.

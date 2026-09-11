@@ -144,15 +144,44 @@ final class DeferredRequestRegistryTest extends TestCase
         $key = (new \ReflectionMethod(DeferredRequestRegistry::class, 'tableKey'))
             ->invoke(null, 'dr_gone');
 
-        self::assertFalse(
+        self::assertNull(
             $write->invoke(null, $key, ['delivered' => '["slot-a"]']),
-            'the update did not happen and cannot — that is not the same as a failed write',
+            'gone is not failed: the request was consumed, so the update it carried is moot',
         );
 
         $table = (new \ReflectionProperty(DeferredRequestRegistry::class, 'table'))->getValue();
         self::assertNotNull($table);
         self::assertFalse($table->exist($key), 'the row must be gone, exactly as the removal intended');
         self::assertNull(DeferredRequestRegistry::consume('dr_gone'));
+    }
+
+    /**
+     * A row that vanishes mid-update must not raise.
+     *
+     * The writers already return quietly when the row is absent at check time.
+     * A row that disappears a moment later — consumed, or expired — has to read
+     * the same way, otherwise a benign race turns into a
+     * DeferredRenderingException and LayoutRenderer logs a failed finalisation
+     * and abandons the rest of the work for a request nobody will read again.
+     */
+    public function testAVanishedRowIsNotReportedAsAFailedWrite(): void
+    {
+        $this->bootRegistry();
+        DeferredRequestRegistry::store('dr_race', 'demo.home', [], ['slot-a']);
+
+        $table = (new \ReflectionProperty(DeferredRequestRegistry::class, 'table'))->getValue();
+        self::assertNotNull($table);
+        $key = (new \ReflectionMethod(DeferredRequestRegistry::class, 'tableKey'))->invoke(null, 'dr_race');
+
+        // The shape of the race, made deterministic: the row is there when the
+        // writer checks and gone by the time it writes.
+        $table->del($key);
+
+        DeferredRequestRegistry::markDelivered('dr_race', 'slot-a');
+        DeferredRequestRegistry::updateSlots('dr_race', ['slot-a']);
+        DeferredRequestRegistry::storeRequestSnapshot('dr_race', ['query' => []]);
+
+        self::assertNull(DeferredRequestRegistry::consume('dr_race'), 'and nothing was resurrected');
     }
 
     public function testStoreRequestSnapshotForUnknownRequestIdIsNoop(): void

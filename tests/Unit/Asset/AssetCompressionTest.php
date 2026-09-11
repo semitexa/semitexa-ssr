@@ -236,6 +236,36 @@ final class AssetCompressionTest extends TestCase
     }
 
     /**
+     * A digest that no longer describes the file caches nothing.
+     *
+     * The ETag is taken in one read and the bytes are compressed in another, so
+     * a deployment can replace the file between them. Storing what was just
+     * read under the earlier digest would give the twin a name its own content
+     * does not hash to, and that is durable: it would be served under that ETag
+     * for as long as it existed. A single racy response is transient; a
+     * misnamed cache entry is not.
+     */
+    #[Test]
+    public function a_digest_that_does_not_match_the_bytes_caches_nothing(): void
+    {
+        $source = $this->fixture('css', 4096);
+        $stale = hash('sha256', 'something this file never contained');
+
+        self::assertNull(
+            StaticAssetHandler::gzippedTwin($source, 'css', 'gzip', $this->cacheDir, $stale),
+            'the file moved under us — serve the original and cache nothing',
+        );
+        self::assertSame([], glob($this->cacheDir . '/*.gz') ?: [], 'and leave no twin behind');
+
+        // The honest digest still caches normally.
+        $twin = StaticAssetHandler::gzippedTwin(
+            $source, 'css', 'gzip', $this->cacheDir, hash_file('sha256', $source),
+        );
+        self::assertIsString($twin);
+        self::assertFileExists($twin);
+    }
+
+    /**
      * An edited file must never be served from the old twin. The name carries
      * the source's content digest, so a change is a different twin rather than
      * a stale one.

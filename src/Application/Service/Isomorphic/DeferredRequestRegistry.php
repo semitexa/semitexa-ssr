@@ -48,12 +48,21 @@ final class DeferredRequestRegistry
      * that id again. Dropping it here costs one `get()` on a path that has just
      * written, and leaves the table exactly as the deletion intended.
      *
-     * Returns false when the row is gone — the caller's update did not happen
-     * and cannot, which is not the same as a failed write.
+     * Three outcomes, because two of them are not the same thing.
+     *
+     * `true`  — written.
+     * `null`  — the row is GONE. Not an error: the request was consumed or
+     *           expired while this update was in flight, and an update to a
+     *           request nobody will read again is moot. The writers already
+     *           return quietly when the row is absent at check time; a row that
+     *           vanishes a moment later has to read the same way, or a benign
+     *           race becomes a DeferredRenderingException and a finalisation
+     *           the renderer logs and abandons.
+     * `false` — the write itself failed. That is worth raising.
      *
      * @param array<string, mixed> $columns
      */
-    private static function updateExistingRow(string $key, array $columns): bool
+    private static function updateExistingRow(string $key, array $columns): ?bool
     {
         if (self::$table === null) {
             return false;
@@ -66,13 +75,13 @@ final class DeferredRequestRegistry
         $row = self::row($key);
 
         if ($row === null) {
-            return false;
+            return null;
         }
 
         if ((int) ($row['created_at'] ?? 0) === 0) {
             self::$table->del($key);
 
-            return false;
+            return null;
         }
 
         return true;
@@ -295,10 +304,10 @@ final class DeferredRequestRegistry
 
         // Two columns, because two are what this changes. See the note on
         // markDelivered() for why the other seven are not listed here.
-        if (!self::updateExistingRow($key, [
+        if (self::updateExistingRow($key, [
             'page_context' => self::backfillUiSseSession((string) $row['page_context']),
             'components' => $componentsJson,
-        ])) {
+        ]) === false) {
             throw new DeferredRenderingException('Failed to update deferred component instances.');
         }
     }
@@ -379,7 +388,7 @@ final class DeferredRequestRegistry
             );
         }
 
-        if (!self::updateExistingRow($key, ['request_snapshot' => $snapshotJson])) {
+        if (self::updateExistingRow($key, ['request_snapshot' => $snapshotJson]) === false) {
             throw new DeferredRenderingException('Failed to store request snapshot.');
         }
     }
@@ -519,7 +528,7 @@ final class DeferredRequestRegistry
             // The lock stays: appending to `delivered` is still a genuine
             // read-modify-write, and the table is shared across worker
             // PROCESSES by mmap, which are parallel for real.
-            if (!self::updateExistingRow($key, ['delivered' => $deliveredJson])) {
+            if (self::updateExistingRow($key, ['delivered' => $deliveredJson]) === false) {
                 throw new DeferredRenderingException('Failed to update deferred request entry.');
             }
         } finally {
@@ -561,7 +570,7 @@ final class DeferredRequestRegistry
             );
         }
 
-        if (!self::updateExistingRow($key, ['slots' => $slotsJson])) {
+        if (self::updateExistingRow($key, ['slots' => $slotsJson]) === false) {
             throw new DeferredRenderingException('Failed to update deferred request slots.');
         }
     }

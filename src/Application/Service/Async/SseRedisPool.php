@@ -26,6 +26,15 @@ use Semitexa\Core\Redis\RedisConnectionPool;
  * Resolution is **fail-soft**: no `REDIS_HOST` means `null`, and every caller
  * treats `null` as "durability unavailable, carry on in-memory". SSE keeps
  * working without Redis; it just loses cross-worker queue durability.
+ *
+ * **Why this is not {@see \Semitexa\Core\Redis\RedisSharedPool}.** That class is
+ * the worker's one general-purpose pool — what the session handler, the webhook
+ * replay store and now the cache all borrow from, so a worker stops opening
+ * several. This one
+ * stays separate on purpose: its size of 1 is a deliberate cap on how much SSE
+ * can occupy, and borrowing from a 16-connection pool instead would let a slow
+ * SSE operation hold connections the rest of the worker is waiting on. Revisit
+ * only with a measurement showing the cap costs more than it protects.
  */
 final class SseRedisPool
 {

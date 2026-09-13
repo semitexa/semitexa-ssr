@@ -201,7 +201,11 @@ final class ResourceInvalidationSubscriber
 
                 foreach ($pubsub as $message) {
                     if (($message->kind ?? null) === 'message') {
-                        $this->handleMessage((string) $message->channel);
+                        // Waiting for an invalidation is what the label says;
+                        // acting on one is not. A re-render that hangs has to
+                        // show as work, not as a park by design. Raised in
+                        // review of core#135.
+                        StandingCoroutines::busy(fn () => $this->handleMessage((string) $message->channel));
                     }
                 }
             } catch (\Throwable $e) {

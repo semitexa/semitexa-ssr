@@ -217,29 +217,24 @@ final class SseServer
     /** `ep-slay-sse-god-class` — the eight worker-boot collaborators, gathered. */
     private ?SseRuntime $runtime = null;
 
-    /** `ep-slay-sse-god-class` — the extracted control plane. */
-    private ?SseControlRouter $controlRouter = null;
-
     /**
-     * {@see handleControlFrame()} outcomes. A control marker is a SIGNAL, never
-     * bytes for the wire (§C.4): NOT_CONTROL → the caller writes the ordinary
-     * data frame as before; HANDLED_CONTINUE → the control was consumed (re-run
-     * frame written, or a safe no-op), the drain continues; HANDLED_CLOSE → the
-     * re-run TERMINATEd (lost access) or the fresh-frame write failed, the stream
-     * must close.
+     * {@see handleControlFrame()} outcomes, the two this class still decides
+     * between: HANDLED_CONTINUE → the control was consumed (re-run frame
+     * written, or a safe no-op), the drain continues; HANDLED_CLOSE → the
+     * re-run TERMINATEd (lost access) or the fresh-frame write failed, the
+     * stream must close. A control marker is a SIGNAL, never bytes for the
+     * wire (§C.4).
+     *
+     * The NOT_CONTROL alias and the control-KIND aliases (KEY, RERUN,
+     * VIEWCHANGE, SUBSCRIBE, UNSUBSCRIBE) left with `ep-slay-sse-god-class`:
+     * recognising a kind is SseControlRouter's job now, and it reads them off
+     * SseControlFrame directly. The aliases stayed behind pointing at the same
+     * constants with nothing using them. Likewise `$controlRouter`, which
+     * controlRouter() deliberately does not cache — it builds a fresh router
+     * per frame, as its own docblock explains.
      */
-    private const CTRL_NOT_CONTROL = SseControlFrame::NOT_CONTROL;
     private const CTRL_HANDLED_CONTINUE = SseControlFrame::HANDLED_CONTINUE;
     private const CTRL_HANDLED_CLOSE = SseControlFrame::HANDLED_CLOSE;
-
-    /** The control kind key + the recognised control kinds on a session queue. */
-    private const CTRL_KEY = SseControlFrame::KEY;
-    private const CTRL_RERUN = SseControlFrame::RERUN;
-    private const CTRL_VIEWCHANGE = SseControlFrame::VIEWCHANGE;
-    // SSE transport unification · Phase 1 — attach/detach a feed subscription to
-    // an already-open KISS connection (the multiplex case).
-    private const CTRL_SUBSCRIBE = SseControlFrame::SUBSCRIBE;
-    private const CTRL_UNSUBSCRIBE = SseControlFrame::UNSUBSCRIBE;
 
     public function handle(Request $request, Response $response): bool
     {
@@ -1067,6 +1062,7 @@ final class SseServer
         return false;
     }
 
+    /** @param array<array-key, mixed> $data */
     private function writeSse(Response $response, array $data): bool
     {
         return $this->transport()->writeFrame($response, $this->buildFrame($data));
@@ -1194,6 +1190,7 @@ final class SseServer
         );
     }
 
+    /** @param array<string, mixed> $data */
     private function shouldCloseAfterPayload(array $data): bool
     {
         return $this->transportModePolicy()->shouldCloseAfterPayload($data);
@@ -1202,6 +1199,8 @@ final class SseServer
     /**
      * Deliver payload to session.
      * Paths: same-worker queue -> Redis queue (cross-worker/server) -> Swoole Tables fallback -> pendingTable -> buffer.
+     *
+     * @param array<string, mixed> $data
      */
     public function deliver(string $sessionId, array $data): void
     {
@@ -1982,18 +1981,6 @@ final class SseServer
     private function getRedisPool(): ?RedisConnectionPool
     {
         return $this->redisPool()->get();
-    }
-
-    /** @return list<string> */
-    private function getAuthenticatedUserSessionIds(string $userId): array
-    {
-        return $this->authSessionMap()->sessionIdsForUser($userId);
-    }
-
-    /** @return list<string> */
-    private function getAllAuthenticatedSessionIds(): array
-    {
-        return $this->authSessionMap()->allSessionIds();
     }
 
     private function isSameOriginRequest(Request $request): bool

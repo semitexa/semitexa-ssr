@@ -104,6 +104,7 @@ final class AsyncResourceSseServer
         self::instance()->setServer($server);
     }
 
+    /** @param list<string> $paths */
     public static function setSseServedPaths(array $paths): void
     {
         self::instance()->setSseServedPaths($paths);
@@ -124,6 +125,7 @@ final class AsyncResourceSseServer
         self::instance()->setRequestTracer($tracer);
     }
 
+    /** @param array<string, mixed> $context */
     public static function traceMark(string $name, array $context = []): void
     {
         self::instance()->traceMark($name, $context);
@@ -159,11 +161,13 @@ final class AsyncResourceSseServer
         self::instance()->setViewChangeCoalescer($coalescer);
     }
 
+    /** @param array<string, mixed> $params */
     public static function submitViewChange(string $sessionId, array $params, ?string $streamingId = null): bool
     {
         return self::instance()->submitViewChange($sessionId, $params, $streamingId);
     }
 
+    /** @param array<string, mixed> $requestSnapshot */
     public static function submitSubscribe(string $sessionId, string $streamingId, string $routePath, string $routeMethod, array $requestSnapshot): bool
     {
         return self::instance()->submitSubscribe($sessionId, $streamingId, $routePath, $routeMethod, $requestSnapshot);
@@ -184,11 +188,13 @@ final class AsyncResourceSseServer
         return self::instance()->isReRunInProgress();
     }
 
+    /** @param array<string, mixed> $data */
     public static function deliverToUser(string $userId, array $data): int
     {
         return self::instance()->deliverToUser($userId, $data);
     }
 
+    /** @param array<string, mixed> $data */
     public static function deliverToAuthenticatedUsers(array $data): int
     {
         return self::instance()->deliverToAuthenticatedUsers($data);

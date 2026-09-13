@@ -371,6 +371,11 @@ final class DeferredBlockOrchestrator
         return $eventId;
     }
 
+    /**
+     * @param array<string, mixed>|null $requestSnapshot the stored snapshot, read
+     *        back out of DeferredRequestRegistry rather than straight from the
+     *        producer — so its shape is only as good as what was stored
+     */
     private function resolveSlotSafely(
         DeferredSlotDefinition $slot,
         string $pageHandle,
@@ -447,6 +452,9 @@ final class DeferredBlockOrchestrator
      * After initial SSE delivery, keep pushing live slots (refreshInterval > 0) until the client disconnects.
      *
      * @param DeferredSlotDefinition[] $liveSlots
+     * @param array<string, mixed>|null $requestSnapshot the stored snapshot, read
+     *        back out of DeferredRequestRegistry rather than straight from the
+     *        producer — so its shape is only as good as what was stored
      */
     private function runLiveLoop(
         string $sessionId,
@@ -563,6 +571,11 @@ final class DeferredBlockOrchestrator
      * Resolve slot data for rendering.
      * For new-style slot resources (resourceClass set): run the slot handler pipeline.
      * For legacy provider-backed slots: delegate to DataProviderRegistry.
+     */
+    /**
+     * @param array<string, mixed>|null $requestSnapshot the stored snapshot, read
+     *        back out of DeferredRequestRegistry rather than straight from the
+     *        producer — so its shape is only as good as what was stored
      */
     private function resolveSlotData(
         DeferredSlotDefinition $slot,

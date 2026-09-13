@@ -20,6 +20,7 @@ use Semitexa\Core\Discovery\ClassDiscovery;
 final class ComponentCatalog
 {
     /** @var array<string, array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string, dataProviderClass: ?string, transportMode: TransportType, deferred: bool, providerProps: array<string, mixed>}> */
+    /** @var array<string, array<string, mixed>> */
     private array $components = [];
     private bool $initialized = false;
     #[InjectAsReadonly]
@@ -184,12 +185,14 @@ final class ComponentCatalog
         $this->initialized = true;
     }
 
+    /** @return array<string, mixed>|null */
     public function get(string $name): ?array
     {
         $this->initialize();
         return $this->components[$name] ?? null;
     }
 
+    /** @return array<string, array<string, mixed>> */
     public function all(): array
     {
         $this->initialize();

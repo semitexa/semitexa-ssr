@@ -16,6 +16,7 @@ namespace Semitexa\Ssr\Domain\Model;
  */
 final readonly class DeferredComponentPayload
 {
+    /** @param array<string, mixed> $meta */
     public function __construct(
         public string $componentName,
         public string $instanceId,

@@ -422,6 +422,7 @@ final class ModuleTemplateCatalog
         return is_array($chain) ? array_values(array_filter($chain, 'is_string')) : [];
     }
 
+    /** @return array{template: string, module: string, type: string}|null */
     public function resolveLayout(string $handle): ?array
     {
         $this->initialize();

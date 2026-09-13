@@ -4,12 +4,16 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Psr\Container\ContainerInterface;
 use Semitexa\Core\Support\Row;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Attribute\SatisfiesServiceContract;
 use Semitexa\Core\Discovery\AttributeDiscovery;
 use Semitexa\Core\Discovery\RouteRegistry;
+use Semitexa\Core\Container\PropertyInjector;
+use Semitexa\Core\Discovery\PayloadPartRegistry;
+use Semitexa\Core\Http\PayloadFactory;
 use Semitexa\Core\Http\PayloadHydrator;
 use Semitexa\Core\Pipeline\ReRun\ReRunContext;
 use Semitexa\Core\Request;
@@ -62,12 +66,46 @@ final class PipelineSubscriptionFactory implements SubscriptionFactoryInterface
     #[InjectAsReadonly]
     protected AttributeDiscovery $attributeDiscovery;
 
+    /**
+     * For {@see PropertyInjector::inject()} on the rebuilt request DTO — the
+     * same collaborator RouteExecutor uses for the ordinary request path.
+     */
+    #[InjectAsReadonly]
+    protected ContainerInterface $container;
+
     /** Test seam — production path uses property injection. */
-    public function withDiscovery(RouteRegistry $routeRegistry, AttributeDiscovery $attributeDiscovery): self
-    {
+    /**
+     * The test seam: supply the collaborators instead of being injected.
+     *
+     * `$container` is optional because the parameter is new and this method is
+     * not — but build() needs it to give a payload its #[InjectAsReadonly]
+     * dependencies, so a seam that omits it gets a payload without them. That
+     * is the seam's own limit, stated here rather than discovered at the first
+     * uninitialized-property Error.
+     */
+    public function withDiscovery(
+        RouteRegistry $routeRegistry,
+        AttributeDiscovery $attributeDiscovery,
+        ?ContainerInterface $container = null,
+    ): self {
         $this->routeRegistry = $routeRegistry;
         $this->attributeDiscovery = $attributeDiscovery;
+        if ($container !== null) {
+            $this->container = $container;
+        }
         return $this;
+    }
+
+    /**
+     * The injected container, or null when there is none.
+     *
+     * isset(), not a null check: the property is UNINITIALIZED when this
+     * factory is built through withDiscovery() rather than by the container,
+     * and reading it directly throws instead of falling through.
+     */
+    private function container(): ?ContainerInterface
+    {
+        return isset($this->container) ? $this->container : null;
     }
 
     public function build(
@@ -95,8 +133,22 @@ final class PipelineSubscriptionFactory implements SubscriptionFactoryInterface
 
         $request = self::rebuildRequest($requestSnapshot);
 
-        /** @var object $dto */
-        $dto = new $dtoClass();
+        // Built the way the ordinary request path builds it — see
+        // RouteExecutor::createBarePayload(): payload PARTS first, then the
+        // instance, then injection, and only then hydration.
+        //
+        // `new $dtoClass()` skipped the first two. A payload assembled from
+        // #[AsPayloadPart] traits lost every one of them on a re-run, and a
+        // payload with #[InjectAsReadonly] dependencies came back with those
+        // properties UNINITIALIZED — so an SSE feed that worked on the first
+        // request threw on the first re-run, in a coroutine far from the cause.
+        $container = $this->container();
+        $traits = $this->payloadPartRegistry($container)->getPayloadPartsForClass($dtoClass);
+        $dto = PayloadFactory::createInstance($dtoClass, $traits);
+        if ($container !== null) {
+            PropertyInjector::inject($dto, $container);
+        }
+
         $dto = PayloadHydrator::hydrate($dto, $request);
         // The feed reads transport metadata + dynamic scopes off the request.
         if (method_exists($dto, 'setHttpRequest')) {
@@ -112,7 +164,7 @@ final class PipelineSubscriptionFactory implements SubscriptionFactoryInterface
             streamingId: $streamingId,
             sessionId: $sessionId,
             tenantId: $tenantId ?? self::currentTenantId(),
-            scopeKeys: self::resolveScopeKeys($dto),
+            scopeKeys: self::resolveScopeKeys($dtoClass, $dto),
             tenantBlob: $tenantBlob ?? self::currentTenantBlob(),
         );
 
@@ -130,6 +182,23 @@ final class PipelineSubscriptionFactory implements SubscriptionFactoryInterface
         );
 
         return new SubscriptionAttachment($record, $context, self::errorEventTypeFor($dto));
+    }
+
+    /**
+     * The payload-part registry, preferred from the container and falling back
+     * to discovery — the same order RouteExecutor uses, so a re-run assembles
+     * a payload from exactly the parts the first request did.
+     */
+    private function payloadPartRegistry(?ContainerInterface $container): PayloadPartRegistry
+    {
+        if ($container !== null && $container->has(PayloadPartRegistry::class)) {
+            /** @var PayloadPartRegistry $registry */
+            $registry = $container->get(PayloadPartRegistry::class);
+
+            return $registry;
+        }
+
+        return $this->attributeDiscovery->getPayloadPartRegistry();
     }
 
     /**
@@ -177,11 +246,22 @@ final class PipelineSubscriptionFactory implements SubscriptionFactoryInterface
      * any request-time scopes via {@see DynamicallyScopedFeedInterface}. Mirrors
      * {@see AbstractSseFeedHandler::resolveScopeKeys()}.
      *
+     * `$declaredClass` is the class the ROUTE names, NOT `$dto::class`.
+     *
+     * Once payloads are built through PayloadFactory, a payload that declares
+     * #[AsPayloadPart] traits comes back as a generated wrapper extending the
+     * base — and PHP attributes are not inherited: `getAttributes()` on the
+     * wrapper returns nothing. Reading the runtime class would have handed
+     * watchScopesOf() a class with no #[WatchScopes] on it, so the subscription
+     * would carry NO scope keys and the feed would quietly stop receiving
+     * invalidations. Nothing would have thrown.
+     *
+     * @param class-string $declaredClass
      * @return list<string>
      */
-    private static function resolveScopeKeys(object $dto): array
+    private static function resolveScopeKeys(string $declaredClass, object $dto): array
     {
-        $scopes = AbstractSseFeedHandler::watchScopesOf($dto::class);
+        $scopes = AbstractSseFeedHandler::watchScopesOf($declaredClass);
 
         if ($dto instanceof DynamicallyScopedFeedInterface) {
             foreach ($dto->dynamicWatchScopes() as $scope) {

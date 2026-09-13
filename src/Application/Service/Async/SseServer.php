@@ -1682,12 +1682,25 @@ final class SseServer
      * seam the graphql streamer's test and the document-feed handler's test use
      * to open the FACADE's re-run scope. A test that built its own SseReRunScope
      * would be invisible to code that asks the facade, so this stays.
+     *
+     * PHPStan reports both as unused and cannot do otherwise: the callers reach
+     * them with `new ReflectionMethod(SseServer::class, ...)`, and one of them
+     * lives in semitexa-graphql, which `composer phpstan` does not analyse at
+     * all. The ignore is pinned to `method.unused` alone so it cannot mask
+     * anything else about these two, and it is here rather than in the baseline
+     * because this is a standing fact about the seam, not debt to be burnt down.
+     *
+     * Do NOT delete them on the analyser's word. Measured 2026-09-13: of eleven
+     * members it called unused in this class, nine were and these two were not.
+     *
+     * @phpstan-ignore method.unused
      */
     private function beginReRunScope(): void
     {
         $this->reRunScope()->begin();
     }
 
+    /** @phpstan-ignore method.unused */
     private function endReRunScope(): void
     {
         $this->reRunScope()->end();

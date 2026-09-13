@@ -77,6 +77,64 @@ final class SubscriptionPayloadConstructionTest extends TestCase
 
         self::assertInstanceOf(SubscriptionPayloadProbe::class, $dto);
     }
+
+
+    /**
+     * THE REGRESSION THE FACTORY CHANGE NEARLY SHIPPED.
+     *
+     * Once payloads are built through PayloadFactory, one that declares
+     * #[AsPayloadPart] traits comes back as a generated wrapper extending the
+     * base — and PHP attributes are NOT inherited: getAttributes() on the
+     * wrapper returns nothing.
+     *
+     * So reading `$dto::class` would have handed watchScopesOf() a class with
+     * no #[WatchScopes] on it, the subscription would carry NO scope keys, and
+     * the feed would quietly stop receiving invalidations. Nothing throws; the
+     * stream simply goes silent. The factory reads the class the ROUTE names
+     * instead.
+     */
+    #[Test]
+    public function a_class_attribute_does_not_survive_into_a_generated_wrapper(): void
+    {
+        $base = new \ReflectionClass(ScopedPayloadProbe::class);
+        self::assertCount(1, $base->getAttributes(ScopeProbeMarker::class), 'the base declares it');
+
+        $wrapperClass = get_class(new class () extends ScopedPayloadProbe {});
+        $wrapper = new \ReflectionClass($wrapperClass);
+
+        self::assertCount(
+            0,
+            $wrapper->getAttributes(ScopeProbeMarker::class),
+            'a subclass sees none of it — which is why the declared class name is what must be read',
+        );
+    }
+
+    /**
+     * PROPERTY attributes do survive, which is why the other half of the re-run
+     * path is unaffected: LiveFilterParamOverride reads #[LiveFilterParam] off
+     * properties and walks the parent chain to do it.
+     *
+     * Counted by NAME, not by occurrence — `getProperties()` already returns
+     * inherited properties, so the parent walk visits the same one twice. That
+     * is harmless there for the same reason: it keys by name and lets the first
+     * declaration win.
+     */
+    #[Test]
+    public function a_property_attribute_is_still_reachable_through_the_parent_chain(): void
+    {
+        $wrapperClass = get_class(new class () extends ScopedPayloadProbe {});
+
+        $found = [];
+        for ($class = new \ReflectionClass($wrapperClass); $class !== false; $class = $class->getParentClass()) {
+            foreach ($class->getProperties() as $property) {
+                if ($property->getAttributes(ScopeProbeMarker::class) !== []) {
+                    $found[$property->getName()] = true;
+                }
+            }
+        }
+
+        self::assertSame(['filter'], array_keys($found), 'LiveFilterParamOverride relies on exactly this');
+    }
 }
 
 /** A payload shaped like a feed request: one container-managed dependency. */
@@ -89,4 +147,17 @@ class SubscriptionPayloadProbe
     {
         return $this->collaborator::class;
     }
+}
+
+#[\Attribute(\Attribute::TARGET_ALL)]
+final class ScopeProbeMarker
+{
+}
+
+/** Declares the marker on the CLASS and on a property, to tell the two apart. */
+#[ScopeProbeMarker]
+class ScopedPayloadProbe
+{
+    #[ScopeProbeMarker]
+    public string $filter = '';
 }

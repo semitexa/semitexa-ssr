@@ -134,7 +134,7 @@ final class PipelineSubscriptionFactory implements SubscriptionFactoryInterface
             streamingId: $streamingId,
             sessionId: $sessionId,
             tenantId: $tenantId ?? self::currentTenantId(),
-            scopeKeys: self::resolveScopeKeys($dto),
+            scopeKeys: self::resolveScopeKeys($dtoClass, $dto),
             tenantBlob: $tenantBlob ?? self::currentTenantBlob(),
         );
 
@@ -216,11 +216,22 @@ final class PipelineSubscriptionFactory implements SubscriptionFactoryInterface
      * any request-time scopes via {@see DynamicallyScopedFeedInterface}. Mirrors
      * {@see AbstractSseFeedHandler::resolveScopeKeys()}.
      *
+     * `$declaredClass` is the class the ROUTE names, NOT `$dto::class`.
+     *
+     * Once payloads are built through PayloadFactory, a payload that declares
+     * #[AsPayloadPart] traits comes back as a generated wrapper extending the
+     * base — and PHP attributes are not inherited: `getAttributes()` on the
+     * wrapper returns nothing. Reading the runtime class would have handed
+     * watchScopesOf() a class with no #[WatchScopes] on it, so the subscription
+     * would carry NO scope keys and the feed would quietly stop receiving
+     * invalidations. Nothing would have thrown.
+     *
+     * @param class-string $declaredClass
      * @return list<string>
      */
-    private static function resolveScopeKeys(object $dto): array
+    private static function resolveScopeKeys(string $declaredClass, object $dto): array
     {
-        $scopes = AbstractSseFeedHandler::watchScopesOf($dto::class);
+        $scopes = AbstractSseFeedHandler::watchScopesOf($declaredClass);
 
         if ($dto instanceof DynamicallyScopedFeedInterface) {
             foreach ($dto->dynamicWatchScopes() as $scope) {

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Semitexa\Core\Support\StandingCoroutines;
 use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Ssr\Domain\Contract\SessionControlDeliveryInterface;
 use Semitexa\Ssr\Domain\Contract\SubscriberIndexInterface;
@@ -144,6 +145,21 @@ final class ResourceInvalidationSubscriber
         // any connection failure logs, backs off, re-reads the desired channels, and
         // re-subscribes. (read_write_timeout: -1 means idle no longer drops it at all,
         // so this path is reached only on a genuine connection failure.)
+        // finally, not a line before each return: this loop leaves through five
+        // different points, two of them reached only when the coroutine is
+        // CANCELLED while parked — and a cancelled park runs no deferred
+        // callback. A declaration left behind outlives its coroutine and, once
+        // Swoole hands the id to somebody else, would move a genuinely hung
+        // coroutine out of the hung count.
+        try {
+            $this->subscribeLoop();
+        } finally {
+            StandingCoroutines::forget();
+        }
+    }
+
+    private function subscribeLoop(): void
+    {
         while (true) {
             if ($this->stopping) {
                 return; // worker teardown — not a failure, nothing to report.
@@ -165,6 +181,16 @@ final class ResourceInvalidationSubscriber
 
             $subscribedAt = hrtime(true);
 
+            // Say what this coroutine is waiting for. It parks in read() for the
+            // life of the worker with no request behind it, which is exactly the
+            // shape the Observatory reads as a leak — so it declares itself
+            // instead, and the panel has something true to show. Re-declared each
+            // turn because the channel set is what makes the reason useful.
+            StandingCoroutines::declare(
+                'live push receiver',
+                sprintf('subscribed to %d channel%s — waiting for an invalidation', count($channels), count($channels) === 1 ? '' : 's'),
+            );
+
             try {
                 /** @var \Predis\PubSub\Consumer $pubsub */
                 $pubsub = $connection->pubSubLoop(['subscribe' => $channels]);
@@ -175,7 +201,11 @@ final class ResourceInvalidationSubscriber
 
                 foreach ($pubsub as $message) {
                     if (($message->kind ?? null) === 'message') {
-                        $this->handleMessage((string) $message->channel);
+                        // Waiting for an invalidation is what the label says;
+                        // acting on one is not. A re-render that hangs has to
+                        // show as work, not as a park by design. Raised in
+                        // review of core#135.
+                        StandingCoroutines::busy(fn () => $this->handleMessage((string) $message->channel));
                     }
                 }
             } catch (\Throwable $e) {

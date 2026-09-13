@@ -74,11 +74,38 @@ final class PipelineSubscriptionFactory implements SubscriptionFactoryInterface
     protected ContainerInterface $container;
 
     /** Test seam — production path uses property injection. */
-    public function withDiscovery(RouteRegistry $routeRegistry, AttributeDiscovery $attributeDiscovery): self
-    {
+    /**
+     * The test seam: supply the collaborators instead of being injected.
+     *
+     * `$container` is optional because the parameter is new and this method is
+     * not — but build() needs it to give a payload its #[InjectAsReadonly]
+     * dependencies, so a seam that omits it gets a payload without them. That
+     * is the seam's own limit, stated here rather than discovered at the first
+     * uninitialized-property Error.
+     */
+    public function withDiscovery(
+        RouteRegistry $routeRegistry,
+        AttributeDiscovery $attributeDiscovery,
+        ?ContainerInterface $container = null,
+    ): self {
         $this->routeRegistry = $routeRegistry;
         $this->attributeDiscovery = $attributeDiscovery;
+        if ($container !== null) {
+            $this->container = $container;
+        }
         return $this;
+    }
+
+    /**
+     * The injected container, or null when there is none.
+     *
+     * isset(), not a null check: the property is UNINITIALIZED when this
+     * factory is built through withDiscovery() rather than by the container,
+     * and reading it directly throws instead of falling through.
+     */
+    private function container(): ?ContainerInterface
+    {
+        return isset($this->container) ? $this->container : null;
     }
 
     public function build(
@@ -115,9 +142,12 @@ final class PipelineSubscriptionFactory implements SubscriptionFactoryInterface
         // payload with #[InjectAsReadonly] dependencies came back with those
         // properties UNINITIALIZED — so an SSE feed that worked on the first
         // request threw on the first re-run, in a coroutine far from the cause.
-        $traits = $this->payloadPartRegistry()->getPayloadPartsForClass($dtoClass);
+        $container = $this->container();
+        $traits = $this->payloadPartRegistry($container)->getPayloadPartsForClass($dtoClass);
         $dto = PayloadFactory::createInstance($dtoClass, $traits);
-        PropertyInjector::inject($dto, $this->container);
+        if ($container !== null) {
+            PropertyInjector::inject($dto, $container);
+        }
 
         $dto = PayloadHydrator::hydrate($dto, $request);
         // The feed reads transport metadata + dynamic scopes off the request.
@@ -159,11 +189,11 @@ final class PipelineSubscriptionFactory implements SubscriptionFactoryInterface
      * to discovery — the same order RouteExecutor uses, so a re-run assembles
      * a payload from exactly the parts the first request did.
      */
-    private function payloadPartRegistry(): PayloadPartRegistry
+    private function payloadPartRegistry(?ContainerInterface $container): PayloadPartRegistry
     {
-        if ($this->container->has(PayloadPartRegistry::class)) {
+        if ($container !== null && $container->has(PayloadPartRegistry::class)) {
             /** @var PayloadPartRegistry $registry */
-            $registry = $this->container->get(PayloadPartRegistry::class);
+            $registry = $container->get(PayloadPartRegistry::class);
 
             return $registry;
         }

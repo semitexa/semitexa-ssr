@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Semitexa\Core\Support\Row;
 use Swoole\Http\Server;
 use Swoole\Table;
 
@@ -129,7 +130,7 @@ final class SseWorkerTables
 
         $row = $this->sessionWorker->get(self::tableKey($sessionId));
 
-        return $row === false ? null : (int) $row['worker_id'];
+        return is_array($row) ? Row::of($row)->int('worker_id') : null;
     }
 
     /**
@@ -195,12 +196,16 @@ final class SseWorkerTables
         $keys = [];
         $payloads = [];
         foreach ($this->pending as $key => $row) {
-            if (!is_array($row) || trim((string) ($row['session_id'] ?? '')) !== $sessionId) {
+            if (!is_array($row) || !is_scalar($key)) {
+                continue;
+            }
+            $values = Row::of($row);
+            if (trim($values->string('session_id')) !== $sessionId) {
                 continue;
             }
 
             $keys[] = (string) $key;
-            $payloads[] = (string) ($row['payload'] ?? '');
+            $payloads[] = $values->string('payload');
         }
 
         foreach ($keys as $key) {
@@ -229,19 +234,20 @@ final class SseWorkerTables
 
         $rows = [];
         foreach ($this->deliver as $key => $row) {
-            if (!is_array($row)) {
+            if (!is_array($row) || !is_scalar($key)) {
                 continue;
             }
 
-            if ((int) ($row['worker_id'] ?? -1) !== $workerId) {
+            $values = Row::of($row);
+            if ($values->int('worker_id', -1) !== $workerId) {
                 continue;
             }
 
-            if (trim((string) ($row['session_id'] ?? '')) !== $sessionId) {
+            if (trim($values->string('session_id')) !== $sessionId) {
                 continue;
             }
 
-            $rows[] = ['key' => (string) $key, 'payload' => (string) ($row['payload'] ?? '')];
+            $rows[] = ['key' => (string) $key, 'payload' => $values->string('payload')];
         }
 
         return $rows;

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Semitexa\Core\Support\Row;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\HttpResponse;
 use Semitexa\Core\Pipeline\ReRun\ReRunContext;
@@ -216,29 +217,24 @@ final class SseServer
     /** `ep-slay-sse-god-class` — the eight worker-boot collaborators, gathered. */
     private ?SseRuntime $runtime = null;
 
-    /** `ep-slay-sse-god-class` — the extracted control plane. */
-    private ?SseControlRouter $controlRouter = null;
-
     /**
-     * {@see handleControlFrame()} outcomes. A control marker is a SIGNAL, never
-     * bytes for the wire (§C.4): NOT_CONTROL → the caller writes the ordinary
-     * data frame as before; HANDLED_CONTINUE → the control was consumed (re-run
-     * frame written, or a safe no-op), the drain continues; HANDLED_CLOSE → the
-     * re-run TERMINATEd (lost access) or the fresh-frame write failed, the stream
-     * must close.
+     * {@see handleControlFrame()} outcomes, the two this class still decides
+     * between: HANDLED_CONTINUE → the control was consumed (re-run frame
+     * written, or a safe no-op), the drain continues; HANDLED_CLOSE → the
+     * re-run TERMINATEd (lost access) or the fresh-frame write failed, the
+     * stream must close. A control marker is a SIGNAL, never bytes for the
+     * wire (§C.4).
+     *
+     * The NOT_CONTROL alias and the control-KIND aliases (KEY, RERUN,
+     * VIEWCHANGE, SUBSCRIBE, UNSUBSCRIBE) left with `ep-slay-sse-god-class`:
+     * recognising a kind is SseControlRouter's job now, and it reads them off
+     * SseControlFrame directly. The aliases stayed behind pointing at the same
+     * constants with nothing using them. Likewise `$controlRouter`, which
+     * controlRouter() deliberately does not cache — it builds a fresh router
+     * per frame, as its own docblock explains.
      */
-    private const CTRL_NOT_CONTROL = SseControlFrame::NOT_CONTROL;
     private const CTRL_HANDLED_CONTINUE = SseControlFrame::HANDLED_CONTINUE;
     private const CTRL_HANDLED_CLOSE = SseControlFrame::HANDLED_CLOSE;
-
-    /** The control kind key + the recognised control kinds on a session queue. */
-    private const CTRL_KEY = SseControlFrame::KEY;
-    private const CTRL_RERUN = SseControlFrame::RERUN;
-    private const CTRL_VIEWCHANGE = SseControlFrame::VIEWCHANGE;
-    // SSE transport unification · Phase 1 — attach/detach a feed subscription to
-    // an already-open KISS connection (the multiplex case).
-    private const CTRL_SUBSCRIBE = SseControlFrame::SUBSCRIBE;
-    private const CTRL_UNSUBSCRIBE = SseControlFrame::UNSUBSCRIBE;
 
     public function handle(Request $request, Response $response): bool
     {
@@ -1066,6 +1062,7 @@ final class SseServer
         return false;
     }
 
+    /** @param array<array-key, mixed> $data */
     private function writeSse(Response $response, array $data): bool
     {
         return $this->transport()->writeFrame($response, $this->buildFrame($data));
@@ -1193,6 +1190,7 @@ final class SseServer
         );
     }
 
+    /** @param array<string, mixed> $data */
     private function shouldCloseAfterPayload(array $data): bool
     {
         return $this->transportModePolicy()->shouldCloseAfterPayload($data);
@@ -1201,6 +1199,8 @@ final class SseServer
     /**
      * Deliver payload to session.
      * Paths: same-worker queue -> Redis queue (cross-worker/server) -> Swoole Tables fallback -> pendingTable -> buffer.
+     *
+     * @param array<string, mixed> $data
      */
     public function deliver(string $sessionId, array $data): void
     {
@@ -1441,7 +1441,7 @@ final class SseServer
     {
         $tenant = $this->resolveTenantContext();
         if (is_object($tenant) && method_exists($tenant, 'getTenantId')) {
-            $id = trim((string) $tenant->getTenantId());
+            $id = trim(Row::asString($tenant->getTenantId()));
             if ($id !== '') {
                 return $id;
             }
@@ -1682,12 +1682,25 @@ final class SseServer
      * seam the graphql streamer's test and the document-feed handler's test use
      * to open the FACADE's re-run scope. A test that built its own SseReRunScope
      * would be invisible to code that asks the facade, so this stays.
+     *
+     * PHPStan reports both as unused and cannot do otherwise: the callers reach
+     * them with `new ReflectionMethod(SseServer::class, ...)`, and one of them
+     * lives in semitexa-graphql, which `composer phpstan` does not analyse at
+     * all. The ignore is pinned to `method.unused` alone so it cannot mask
+     * anything else about these two, and it is here rather than in the baseline
+     * because this is a standing fact about the seam, not debt to be burnt down.
+     *
+     * Do NOT delete them on the analyser's word. Measured 2026-09-13: of eleven
+     * members it called unused in this class, nine were and these two were not.
+     *
+     * @phpstan-ignore method.unused
      */
     private function beginReRunScope(): void
     {
         $this->reRunScope()->begin();
     }
 
+    /** @phpstan-ignore method.unused */
     private function endReRunScope(): void
     {
         $this->reRunScope()->end();
@@ -1903,7 +1916,7 @@ final class SseServer
         $cookieName = 'semitexa_ssr_bind';
         $cookie = is_array($request->cookie) ? $request->cookie : [];
 
-        return trim((string) ($cookie[$cookieName] ?? ''));
+        return trim(Row::of($cookie)->string($cookieName));
     }
 
     private function removeSessionWorkerMapping(string $sessionId): void
@@ -1981,18 +1994,6 @@ final class SseServer
     private function getRedisPool(): ?RedisConnectionPool
     {
         return $this->redisPool()->get();
-    }
-
-    /** @return list<string> */
-    private function getAuthenticatedUserSessionIds(string $userId): array
-    {
-        return $this->authSessionMap()->sessionIdsForUser($userId);
-    }
-
-    /** @return list<string> */
-    private function getAllAuthenticatedSessionIds(): array
-    {
-        return $this->authSessionMap()->allSessionIds();
     }
 
     private function isSameOriginRequest(Request $request): bool

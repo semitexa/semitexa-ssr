@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Semitexa\Core\Support\Row;
 use Semitexa\Core\Support\StandingCoroutines;
 use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Ssr\Domain\Contract\SessionControlDeliveryInterface;
@@ -199,13 +200,22 @@ final class ResourceInvalidationSubscriber
                 // that closes it — see self::$recoveryTimerId.
                 $this->armRecoveryNotice();
 
+                // Predis yields `(object) ['kind' => ..., 'channel' => ...,
+                // 'payload' => ...]` — see Consumer::getValue(). PHPStan cannot
+                // see that: AbstractConsumer::getValue() is abstract with no
+                // return type and current() carries no @return, so it infers an
+                // array and both property reads below fail analysis. Stated
+                // here rather than worked around — reading these as array keys
+                // would be a TypeError against the real message.
+                /** @var object{kind?: string, channel?: string, payload?: string} $message */
                 foreach ($pubsub as $message) {
                     if (($message->kind ?? null) === 'message') {
                         // Waiting for an invalidation is what the label says;
                         // acting on one is not. A re-render that hangs has to
                         // show as work, not as a park by design. Raised in
                         // review of core#135.
-                        StandingCoroutines::busy(fn () => $this->handleMessage((string) $message->channel));
+                        $channel = Row::asString($message->channel ?? null);
+                        StandingCoroutines::busy(fn () => $this->handleMessage($channel));
                     }
                 }
             } catch (\Throwable $e) {

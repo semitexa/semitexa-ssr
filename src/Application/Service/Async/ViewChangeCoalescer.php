@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Semitexa\Core\Support\Row;
 use Swoole\Table;
 
 /**
@@ -117,11 +118,11 @@ final class ViewChangeCoalescer
         // later command can re-arm rather than coalescing into a dead pending mark.
         $this->table->del($key);
 
-        if ($row === false) {
+        if (!is_array($row)) {
             return null;
         }
 
-        return self::decode((string) ($row['params'] ?? ''));
+        return self::decode(Row::of($row)->string('params'));
     }
 
     public function isPending(string $streamingId): bool
@@ -137,11 +138,11 @@ final class ViewChangeCoalescer
     public function peek(string $streamingId): ?array
     {
         $row = $this->table->get($this->key($streamingId));
-        if ($row === false) {
+        if (!is_array($row)) {
             return null;
         }
 
-        return self::decode((string) ($row['params'] ?? ''));
+        return self::decode(Row::of($row)->string('params'));
     }
 
     public function count(): int
@@ -171,7 +172,7 @@ final class ViewChangeCoalescer
         }
         $decoded = json_decode($json, true);
 
-        return is_array($decoded) ? $decoded : [];
+        return is_array($decoded) ? Row::keyedByName($decoded) : [];
     }
 
     /**

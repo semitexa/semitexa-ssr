@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Semitexa\Core\Support\Row;
 use Swoole\Http\Request;
 use Swoole\Http\Response;
 
@@ -103,7 +104,7 @@ final class SseRequestGuard
     public function resolveClientIp(Request $request): string
     {
         $server = is_array($request->server) ? $request->server : [];
-        $ip = trim((string) ($server['remote_addr'] ?? ''));
+        $ip = trim(Row::of($server)->string('remote_addr'));
 
         return $ip !== '' ? strtolower($ip) : '';
     }

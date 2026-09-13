@@ -425,10 +425,6 @@ final class DeferredRequestRegistry
      */
     public static function snapshotFromCurrentSwooleRequest(): ?array
     {
-        if (!class_exists(\Semitexa\Core\Server\SwooleBootstrap::class, false)) {
-            return null;
-        }
-
         $ctx = \Semitexa\Core\Server\SwooleBootstrap::getCurrentSwooleRequestResponse();
         if ($ctx === null) {
             return null;

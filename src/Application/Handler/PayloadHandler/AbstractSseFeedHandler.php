@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Handler\PayloadHandler;
 
+use Semitexa\Core\Support\Row;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Attribute\WatchScopes;
 use Semitexa\Core\Discovery\AttributeDiscovery;
@@ -469,9 +470,8 @@ abstract class AbstractSseFeedHandler
         array $envelope,
         bool $success,
     ): ?JsonResourceResponse {
-        if (!class_exists(SwooleBootstrap::class)) {
-            return null;
-        }
+        // getCurrentSwooleRequestResponse() answers null off a Swoole server,
+        // extension absent included; it does not need announcing here.
         $context = SwooleBootstrap::getCurrentSwooleRequestResponse();
         if ($context === null || ($context[1] ?? null) === null || ($context[2] ?? null) === null) {
             return null;
@@ -653,7 +653,7 @@ abstract class AbstractSseFeedHandler
         $document = PayloadMetadataReflector::describe($payload::class);
         $methods = is_array($document['methods'] ?? null) ? $document['methods'] : [];
 
-        return in_array('GET', $methods, true) ? 'GET' : (string) ($methods[0] ?? 'GET');
+        return in_array('GET', $methods, true) ? 'GET' : Row::of($methods)->string('0', 'GET');
     }
 
     /**
@@ -669,7 +669,9 @@ abstract class AbstractSseFeedHandler
             /** @var object|null $user */
             $user = $store::getUser();
             if (is_object($user) && method_exists($user, 'getId')) {
-                return (string) $user->getId();
+                // The surface is reached reflectively, so getId() is `mixed`;
+                // read it the same way any other untyped value is read.
+                return Row::asString($user->getId());
             }
         }
 
@@ -680,7 +682,7 @@ abstract class AbstractSseFeedHandler
     {
         $tenant = self::resolveTenant();
         if (is_object($tenant) && method_exists($tenant, 'getTenantId')) {
-            $id = trim((string) $tenant->getTenantId());
+            $id = trim(Row::asString($tenant->getTenantId()));
             if ($id !== '') {
                 return $id;
             }

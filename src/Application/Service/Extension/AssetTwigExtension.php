@@ -33,15 +33,10 @@ final class AssetTwigExtension
 {
     public function registerFunctions(): void
     {
-        if (class_exists(AssetManager::class)) {
-            TwigExtensionRegistry::registerFunction('asset', [$this, 'assetUrl']);
-        }
-
-        if (class_exists(AssetCollectorStore::class)) {
-            TwigExtensionRegistry::registerFunction('asset_head', [$this, 'renderHead'], ['is_safe' => ['html']]);
-            TwigExtensionRegistry::registerFunction('asset_body', [$this, 'renderBody'], ['is_safe' => ['html']]);
-            TwigExtensionRegistry::registerFunction('asset_require', [$this, 'requireAsset'], ['is_safe' => ['html']]);
-        }
+        TwigExtensionRegistry::registerFunction('asset', [$this, 'assetUrl']);
+        TwigExtensionRegistry::registerFunction('asset_head', [$this, 'renderHead'], ['is_safe' => ['html']]);
+        TwigExtensionRegistry::registerFunction('asset_body', [$this, 'renderBody'], ['is_safe' => ['html']]);
+        TwigExtensionRegistry::registerFunction('asset_require', [$this, 'requireAsset'], ['is_safe' => ['html']]);
     }
 
     /**

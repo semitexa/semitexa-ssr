@@ -40,16 +40,20 @@ final class SsrLocaleSwitchHandler implements TypedHandlerInterface
             throw new NotFoundException('Locale', '(empty)');
         }
 
-        if (class_exists(\Semitexa\Locale\Configuration\LocaleConfig::class)) {
-            // Validate against the EFFECTIVE (per-tenant) set the locale phase
-            // stored for this request; empty = not set → the global pack.
-            $supported = \Semitexa\Locale\Context\LocaleContextStore::getSupportedLocales();
-            if ($supported === []) {
-                $supported = \Semitexa\Locale\Configuration\LocaleConfig::fromEnvironment()->supportedLocales;
-            }
-            if (!in_array($locale, $supported, true)) {
-                throw new NotFoundException('Locale', $locale);
-            }
+        // Validate against the EFFECTIVE (per-tenant) set the locale phase
+        // stored for this request; empty = not set → the global pack.
+        //
+        // This used to sit behind class_exists(LocaleConfig), which made the
+        // validation itself conditional: in a build without semitexa/locale the
+        // handler accepted ANY locale string. That build does not exist —
+        // semitexa/locale is a require of this package — but a guard that can
+        // switch off an input check is the wrong shape for one regardless.
+        $supported = \Semitexa\Locale\Context\LocaleContextStore::getSupportedLocales();
+        if ($supported === []) {
+            $supported = \Semitexa\Locale\Configuration\LocaleConfig::fromEnvironment()->supportedLocales;
+        }
+        if (!in_array($locale, $supported, true)) {
+            throw new NotFoundException('Locale', $locale);
         }
 
         $sessionId = trim($payload->getSessionId());

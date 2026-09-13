@@ -35,6 +35,7 @@ final class AssetCollector
      *
      * @var array<string, array{css: string, priority: int}>
      */
+    /** @var array<string, array{css: string, priority: int}> */
     private array $rawInlineCss = [];
 
     /**
@@ -305,6 +306,7 @@ final class AssetCollector
         return isset($this->headRendered[$signature]);
     }
 
+    /** @return list<array{key: string, css: string, priority: int}> */
     public function takeRawInlineCss(): array
     {
         $out = [];

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Semitexa\Core\Support\Row;
 /**
  * The four query parameters that decide what kind of SSE stream a client is
  * asking for, parsed once instead of re-read from `$request->get` at each step.
@@ -48,6 +49,7 @@ final class SseStreamRequest
         }
 
         $lastEventId = $header['last-event-id'] ?? null;
+        $query = Row::of($get);
 
         return new self(
             // A client may bring its own id (that is how a reconnect rejoins its
@@ -57,10 +59,10 @@ final class SseStreamRequest
             // this session's frame queue, and uniqid() is time-derived, guessable
             // from a neighbouring id, and shaped with a `.` that does not match the
             // accepted `sse_<32hex>` channel id.
-            sessionId: trim((string) ($rawSessionId ?: AsyncResourceSseServer::mintStreamId())),
-            demoStream: isset($get['demo_stream']) ? trim((string) $get['demo_stream']) : '',
-            deferredRequestId: trim((string) ($get['deferred_request_id'] ?? '')),
-            rawMode: trim((string) ($get['mode'] ?? '')),
+            sessionId: trim($rawSessionId ?: AsyncResourceSseServer::mintStreamId()),
+            demoStream: isset($get['demo_stream']) ? trim($query->string('demo_stream')) : '',
+            deferredRequestId: trim($query->string('deferred_request_id')),
+            rawMode: trim($query->string('mode')),
             rawSessionId: $rawSessionId,
             lastEventId: is_string($lastEventId) ? $lastEventId : null,
         );

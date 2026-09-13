@@ -18,24 +18,33 @@ use Twig\Markup;
  * into its own environment, so these were bypassing a seam their own host
  * supported — and which eight other packages already use.
  *
- * The `class_exists` guards are preserved, not tidied away: {@see SeoMeta} and
- * {@see SemanticRenderer} are optional collaborators, and a template calling
- * `page_title()` in a build without them should get a missing function (a clear
- * error naming the template) rather than a fatal inside the extension.
+ * The `class_exists` guards that used to wrap these registrations are GONE, and
+ * the note that kept them is worth preserving because its reasoning was right
+ * and its premise was not. It read: SeoMeta and SemanticRenderer are optional
+ * collaborators, so a template calling `page_title()` in a build without them
+ * should get a missing function naming the template rather than a fatal inside
+ * the extension.
+ *
+ * Both live in `Application/Service/Seo/` — this package. There is no build
+ * without them that is not a broken install of semitexa/ssr, and the guards
+ * never held up their end anyway: `pageTitle()` calls `SeoMeta::getTitle()`
+ * unguarded, so an absent class fataled on the first call regardless of whether
+ * the function got registered. A guard that decides registration while the body
+ * assumes presence buys nothing.
+ *
+ * That is the shape `semitexa.explicitOptionalDependency` exists to catch:
+ * package absence modelled as a runtime check instead of as a composer
+ * requirement. A genuinely optional collaborator belongs behind a contract the
+ * container binds, not behind class_exists().
  */
 #[AsTwigExtension]
 final class SeoTwigExtension
 {
     public function registerFunctions(): void
     {
-        if (class_exists(SeoMeta::class)) {
-            TwigExtensionRegistry::registerFunction('page_title', [$this, 'pageTitle']);
-            TwigExtensionRegistry::registerFunction('meta', [$this, 'metaTag'], ['is_safe' => ['html']]);
-        }
-
-        if (class_exists(SemanticRenderer::class)) {
-            TwigExtensionRegistry::registerFunction('semantic_head', [$this, 'semanticHead'], ['is_safe' => ['html']]);
-        }
+        TwigExtensionRegistry::registerFunction('page_title', [$this, 'pageTitle']);
+        TwigExtensionRegistry::registerFunction('meta', [$this, 'metaTag'], ['is_safe' => ['html']]);
+        TwigExtensionRegistry::registerFunction('semantic_head', [$this, 'semanticHead'], ['is_safe' => ['html']]);
     }
 
     /**

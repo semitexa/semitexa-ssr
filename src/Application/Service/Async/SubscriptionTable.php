@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Semitexa\Core\Support\Row;
 use Semitexa\Ssr\Domain\Model\SubscriptionRecord;
 use Swoole\Table;
 
@@ -172,17 +173,21 @@ final class SubscriptionTable
         /** @var array<string, string> $stale key => streaming_id */
         $stale = [];
         foreach ($this->table as $key => $row) {
-            if (!is_array($row)) {
+            // A Swoole\Table key is a string by contract, but the iterator is
+            // typed `mixed` — and this one is used to del() the row, so it is
+            // guarded rather than cast blind.
+            if (!is_array($row) || !is_scalar($key)) {
                 continue;
             }
-            $connectedAt = (int) ($row[self::CONNECTED_AT_COLUMN] ?? 0);
+            $values = Row::of($row);
+            $connectedAt = $values->int(self::CONNECTED_AT_COLUMN);
             if ($connectedAt <= 0) {
                 continue; // un-aged row — never reap (cannot prove orphan)
             }
             if (($now - $connectedAt) <= $maxAgeSeconds) {
                 continue; // within the age+grace window — possibly live, never reap
             }
-            $stale[(string) $key] = (string) ($row['streaming_id'] ?? '');
+            $stale[(string) $key] = $values->string('streaming_id');
         }
 
         $evicted = [];
@@ -218,16 +223,24 @@ final class SubscriptionTable
     }
 
     /**
-     * @param array<string, mixed> $row
+     * A Swoole\Table row is `array<mixed, mixed>` — the column names are known
+     * to this class and to nothing else — so the narrowing goes through
+     * {@see Row}, once, instead of a cast per column. A column holding
+     * something other than a string then yields the default rather than
+     * raising "Array to string conversion" in the middle of a reap.
+     *
+     * @param array<mixed, mixed> $row
      */
     private function hydrate(array $row): SubscriptionRecord
     {
+        $values = Row::of($row);
+
         return new SubscriptionRecord(
-            streamingId: (string) ($row['streaming_id'] ?? ''),
-            sessionId: (string) ($row['session_id'] ?? ''),
-            tenantId: (string) ($row['tenant_id'] ?? ''),
-            scopeKeys: $this->decodeScopeKeys((string) ($row['scope_keys'] ?? '')),
-            tenantBlob: (string) ($row['tenant_blob'] ?? ''),
+            streamingId: $values->string('streaming_id'),
+            sessionId: $values->string('session_id'),
+            tenantId: $values->string('tenant_id'),
+            scopeKeys: $this->decodeScopeKeys($values->string('scope_keys')),
+            tenantBlob: $values->string('tenant_blob'),
         );
     }
 
@@ -236,7 +249,12 @@ final class SubscriptionTable
      */
     private function encodeScopeKeys(array $scopeKeys): string
     {
-        return json_encode(array_values($scopeKeys), JSON_THROW_ON_ERROR);
+        // The parameter is a `list<string>`; the sole caller passes
+        // SubscriptionRecord::$scopeKeys, which is built as one. array_values()
+        // here did nothing except hide the case it looked like it was guarding:
+        // a non-list would json_encode to an OBJECT, and decodeScopeKeys() would
+        // then read the scope keys back in a shape nothing expects.
+        return json_encode($scopeKeys, JSON_THROW_ON_ERROR);
     }
 
     /**
@@ -252,7 +270,19 @@ final class SubscriptionTable
             return [];
         }
 
-        return array_values(array_map(static fn (mixed $v): string => (string) $v, $decoded));
+        // Same narrowing Row does, and for the same reason: a nested array in
+        // the encoded blob is dropped rather than raising "Array to string
+        // conversion" while hydrating a live subscription.
+        $keys = [];
+        foreach ($decoded as $value) {
+            if (is_string($value)) {
+                $keys[] = $value;
+            } elseif (is_int($value) || is_float($value) || is_bool($value)) {
+                $keys[] = (string) $value;
+            }
+        }
+
+        return $keys;
     }
 
     /**

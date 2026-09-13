@@ -25,10 +25,6 @@ final class SlotAssetCollector
             return;
         }
 
-        if (!class_exists(\Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore::class)) {
-            return;
-        }
-
         \Semitexa\Ssr\Application\Service\Asset\AssetCollector::boot();
         $collector = \Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore::get();
 

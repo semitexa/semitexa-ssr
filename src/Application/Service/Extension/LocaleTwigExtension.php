@@ -35,16 +35,11 @@ final class LocaleTwigExtension
 {
     public function registerFunctions(): void
     {
-        if (class_exists(LocaleContextStore::class)) {
-            TwigExtensionRegistry::registerFunction('locale_url', [$this, 'localeUrl']);
-            TwigExtensionRegistry::registerFunction('locale_switch_url', [$this, 'localeSwitchUrl']);
-        }
-
-        if (class_exists(Translator::class)) {
-            TwigExtensionRegistry::registerFunction('trans', [$this, 'translate']);
-            TwigExtensionRegistry::registerFunction('trans_choice', [$this, 'translateChoice']);
-            TwigExtensionRegistry::registerFunction('locale', [$this, 'currentLocale']);
-        }
+        TwigExtensionRegistry::registerFunction('locale_url', [$this, 'localeUrl']);
+        TwigExtensionRegistry::registerFunction('locale_switch_url', [$this, 'localeSwitchUrl']);
+        TwigExtensionRegistry::registerFunction('trans', [$this, 'translate']);
+        TwigExtensionRegistry::registerFunction('trans_choice', [$this, 'translateChoice']);
+        TwigExtensionRegistry::registerFunction('locale', [$this, 'currentLocale']);
     }
 
     /**

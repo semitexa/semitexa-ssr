@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Semitexa\Core\Support\Row;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Attribute\SatisfiesServiceContract;
@@ -198,7 +199,7 @@ final class PipelineSubscriptionFactory implements SubscriptionFactoryInterface
     {
         $tenant = self::resolveTenant();
         if (is_object($tenant) && method_exists($tenant, 'getTenantId')) {
-            $id = trim((string) $tenant->getTenantId());
+            $id = trim(Row::asString($tenant->getTenantId()));
             if ($id !== '') {
                 return $id;
             }
@@ -247,7 +248,7 @@ final class PipelineSubscriptionFactory implements SubscriptionFactoryInterface
             /** @var object|null $user */
             $user = $store::getUser();
             if (is_object($user) && method_exists($user, 'getId')) {
-                return (string) $user->getId();
+                return Row::asString($user->getId());
             }
         }
 

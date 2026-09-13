@@ -371,6 +371,11 @@ final class DeferredBlockOrchestrator
         return $eventId;
     }
 
+    /**
+     * @param array<string, mixed>|null $requestSnapshot the stored snapshot, read
+     *        back out of DeferredRequestRegistry rather than straight from the
+     *        producer — so its shape is only as good as what was stored
+     */
     private function resolveSlotSafely(
         DeferredSlotDefinition $slot,
         string $pageHandle,
@@ -447,6 +452,9 @@ final class DeferredBlockOrchestrator
      * After initial SSE delivery, keep pushing live slots (refreshInterval > 0) until the client disconnects.
      *
      * @param DeferredSlotDefinition[] $liveSlots
+     * @param array<string, mixed>|null $requestSnapshot the stored snapshot, read
+     *        back out of DeferredRequestRegistry rather than straight from the
+     *        producer — so its shape is only as good as what was stored
      */
     private function runLiveLoop(
         string $sessionId,
@@ -564,6 +572,11 @@ final class DeferredBlockOrchestrator
      * For new-style slot resources (resourceClass set): run the slot handler pipeline.
      * For legacy provider-backed slots: delegate to DataProviderRegistry.
      */
+    /**
+     * @param array<string, mixed>|null $requestSnapshot the stored snapshot, read
+     *        back out of DeferredRequestRegistry rather than straight from the
+     *        producer — so its shape is only as good as what was stored
+     */
     private function resolveSlotData(
         DeferredSlotDefinition $slot,
         string $pageHandle,
@@ -600,14 +613,12 @@ final class DeferredBlockOrchestrator
             return;
         }
 
-        if (class_exists(\Semitexa\Locale\Context\LocaleContextStore::class)) {
-            \Semitexa\Locale\Context\LocaleContextStore::setLocale($locale);
-            return;
-        }
-
-        if (class_exists(\Semitexa\Ssr\Application\Service\I18n\Translator::class)) {
-            \Semitexa\Ssr\Application\Service\I18n\Translator::setLocale($locale);
-        }
+        // The Translator fallback that used to sit under this was already
+        // unreachable: semitexa/locale is a REQUIRE of this package, so the
+        // first branch always won. Both write the same locale subsystem
+        // anyway -- Translator resolves its context to LocaleManager, beside
+        // this store.
+        \Semitexa\Locale\Context\LocaleContextStore::setLocale($locale);
     }
 
     /**

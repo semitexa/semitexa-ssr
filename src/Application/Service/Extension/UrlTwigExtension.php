@@ -31,10 +31,6 @@ final class UrlTwigExtension
 {
     public function registerFunctions(): void
     {
-        if (!class_exists(UrlGenerator::class)) {
-            return;
-        }
-
         TwigExtensionRegistry::registerFunction('url', [$this, 'route']);
         TwigExtensionRegistry::registerFunction('current_url', [$this, 'currentUrl']);
         TwigExtensionRegistry::registerFunction('current_absolute_url', [$this, 'currentAbsoluteUrl']);

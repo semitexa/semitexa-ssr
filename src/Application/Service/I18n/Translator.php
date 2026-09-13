@@ -173,7 +173,7 @@ final class Translator
      */
     public static function reset(): void
     {
-        if (self::$localeContext !== null && class_exists(LocaleManager::class) && self::$localeContext instanceof LocaleManager) {
+        if (self::$localeContext instanceof LocaleManager) {
             self::$localeContext->setLocale('en');
         }
 
@@ -188,11 +188,16 @@ final class Translator
         CoroutineLocal::set(self::CTX_LOCALE, null);
     }
 
+    /**
+     * semitexa/locale is a REQUIRE of this package, so the core
+     * DefaultLocaleContext fallback that used to sit here could never be
+     * reached — LocaleManager always won. (Core still uses that default in
+     * SessionPhase, where locale genuinely is not guaranteed; it is not
+     * orphaned by this.)
+     */
     private static function resolveLocaleContext(): LocaleContextInterface
     {
-        return class_exists(LocaleManager::class)
-            ? LocaleManager::getInstance()
-            : \Semitexa\Core\Locale\DefaultLocaleContext::getInstance();
+        return LocaleManager::getInstance();
     }
 
     private static function buildService(LocaleContextInterface $localeContext): TranslationService

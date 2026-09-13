@@ -600,14 +600,12 @@ final class DeferredBlockOrchestrator
             return;
         }
 
-        if (class_exists(\Semitexa\Locale\Context\LocaleContextStore::class)) {
-            \Semitexa\Locale\Context\LocaleContextStore::setLocale($locale);
-            return;
-        }
-
-        if (class_exists(\Semitexa\Ssr\Application\Service\I18n\Translator::class)) {
-            \Semitexa\Ssr\Application\Service\I18n\Translator::setLocale($locale);
-        }
+        // The Translator fallback that used to sit under this was already
+        // unreachable: semitexa/locale is a REQUIRE of this package, so the
+        // first branch always won. Both write the same locale subsystem
+        // anyway -- Translator resolves its context to LocaleManager, beside
+        // this store.
+        \Semitexa\Locale\Context\LocaleContextStore::setLocale($locale);
     }
 
     /**

@@ -470,9 +470,8 @@ abstract class AbstractSseFeedHandler
         array $envelope,
         bool $success,
     ): ?JsonResourceResponse {
-        if (!class_exists(SwooleBootstrap::class)) {
-            return null;
-        }
+        // getCurrentSwooleRequestResponse() answers null off a Swoole server,
+        // extension absent included; it does not need announcing here.
         $context = SwooleBootstrap::getCurrentSwooleRequestResponse();
         if ($context === null || ($context[1] ?? null) === null || ($context[2] ?? null) === null) {
             return null;

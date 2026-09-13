@@ -232,9 +232,7 @@ class HtmlResponse extends ResourceResponse
     {
         $this->assetCollectorPrepared = false;
 
-        if (class_exists(\Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore::class)) {
-            \Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore::reset();
-        }
+        \Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore::reset();
 
         \Semitexa\Ssr\Application\Service\Asset\AssetManager::reset();
     }
@@ -252,10 +250,6 @@ class HtmlResponse extends ResourceResponse
             return;
         }
         $this->assetCollectorPrepared = true;
-
-        if (!class_exists(\Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore::class)) {
-            return;
-        }
 
         // Ensure boot has run (in non-Swoole environments like CLI/tests,
         // SwooleBootstrap::WorkerStart is never called)
@@ -363,10 +357,7 @@ class HtmlResponse extends ResourceResponse
         $slotIds = array_map(static fn ($s) => $s->slotId, $deferredSlots);
         $serializableContext = self::sanitizeDeferredContext($context);
         $bindToken = bin2hex(random_bytes(16));
-        $locale = '';
-        if (class_exists(\Semitexa\Locale\Context\LocaleContextStore::class)) {
-            $locale = \Semitexa\Locale\Context\LocaleContextStore::getLocale();
-        }
+        $locale = \Semitexa\Locale\Context\LocaleContextStore::getLocale();
         DeferredRequestRegistry::store($requestId, $handle, $serializableContext, $slotIds, $bindToken, $locale);
 
         $requestSnapshot = DeferredRequestRegistry::snapshotFromCurrentSwooleRequest();

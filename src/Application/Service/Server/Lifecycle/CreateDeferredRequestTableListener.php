@@ -25,9 +25,11 @@ final class CreateDeferredRequestTableListener implements ServerLifecycleListene
             return;
         }
 
-        if (!class_exists(Table::class, false)
-            || !class_exists(DeferredRequestRegistry::class)
-            || !method_exists(DeferredRequestRegistry::class, 'createSharedTable')) {
+        // Swoole\Table only: the extension genuinely may be absent, and this
+        // listener runs on a server that may not be Swoole. DeferredRequestRegistry
+        // ships in this package, so asking whether it and its method exist was
+        // asking whether semitexa/ssr is installed correctly.
+        if (!class_exists(Table::class, false)) {
             return;
         }
 

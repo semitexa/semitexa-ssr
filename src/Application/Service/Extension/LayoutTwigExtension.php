@@ -36,13 +36,8 @@ final class LayoutTwigExtension
 
     public function registerFunctions(): void
     {
-        if (class_exists(LayoutSlotRegistry::class)) {
-            TwigExtensionRegistry::registerFunction('layout_slot', [$this, 'layoutSlot'], self::CONTEXTUAL_HTML);
-        }
-
-        if (class_exists(PlaceholderRenderer::class)) {
-            TwigExtensionRegistry::registerFunction('layout_slot_deferred', [$this, 'layoutSlotDeferred'], self::CONTEXTUAL_HTML);
-        }
+        TwigExtensionRegistry::registerFunction('layout_slot', [$this, 'layoutSlot'], self::CONTEXTUAL_HTML);
+        TwigExtensionRegistry::registerFunction('layout_slot_deferred', [$this, 'layoutSlotDeferred'], self::CONTEXTUAL_HTML);
 
         TwigExtensionRegistry::registerFunction('component', [$this, 'component'], ['is_safe' => ['html']]);
         TwigExtensionRegistry::registerFunction('slot', [$this, 'componentSlot'], self::CONTEXTUAL_HTML);

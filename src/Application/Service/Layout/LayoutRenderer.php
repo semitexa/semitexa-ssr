@@ -21,9 +21,7 @@ class LayoutRenderer
 
     public static function renderHandle(string $handle, array $context = []): string
     {
-        if (class_exists(\Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore::class)) {
-            \Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore::reset();
-        }
+        \Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore::reset();
 
         $layout = ModuleTemplateRegistry::resolveLayout($handle);
 
@@ -75,10 +73,7 @@ class LayoutRenderer
                     // to actually rendered placeholders after Twig finishes rendering.
                     $slotIds = array_map(static fn ($s) => $s->slotId, $deferredSlots);
                     $bindToken = bin2hex(random_bytes(16));
-                    $locale = '';
-                    if (class_exists(\Semitexa\Locale\Context\LocaleContextStore::class)) {
-                        $locale = \Semitexa\Locale\Context\LocaleContextStore::getLocale();
-                    }
+                    $locale = \Semitexa\Locale\Context\LocaleContextStore::getLocale();
                     DeferredRequestRegistry::store($requestId, $handle, $context, $slotIds, $bindToken, $locale);
 
                     $requestSnapshot = DeferredRequestRegistry::snapshotFromCurrentSwooleRequest();
@@ -178,12 +173,10 @@ class LayoutRenderer
                 }
             }
 
-            if (class_exists(\Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore::class)) {
-                $html = \Semitexa\Ssr\Application\Service\Asset\AssetRenderer::finalizeDynamicCss(
-                    $html,
-                    \Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore::get(),
-                );
-            }
+            $html = \Semitexa\Ssr\Application\Service\Asset\AssetRenderer::finalizeDynamicCss(
+                $html,
+                \Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore::get(),
+            );
 
             return $html;
         } catch (\Throwable $e) {

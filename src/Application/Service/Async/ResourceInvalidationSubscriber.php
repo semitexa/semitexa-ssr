@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Semitexa\Core\Support\Row;
 use Semitexa\Core\Support\StandingCoroutines;
 use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Ssr\Domain\Contract\SessionControlDeliveryInterface;
@@ -205,7 +206,8 @@ final class ResourceInvalidationSubscriber
                         // acting on one is not. A re-render that hangs has to
                         // show as work, not as a park by design. Raised in
                         // review of core#135.
-                        StandingCoroutines::busy(fn () => $this->handleMessage((string) $message->channel));
+                        $channel = Row::asString($message->channel ?? null);
+                        StandingCoroutines::busy(fn () => $this->handleMessage($channel));
                     }
                 }
             } catch (\Throwable $e) {

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Routing;
 
+use Semitexa\Core\Support\Row;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Discovery\AttributeDiscovery;
@@ -34,7 +35,7 @@ final class RouteUrlBuilder
             throw new \RuntimeException("Route '{$routeName}' not found");
         }
 
-        return $this->prefixLocale($this->buildPath((string) $route['path'], $params));
+        return $this->prefixLocale($this->buildPath(Row::of($route)->string('path'), $params));
     }
 
     private function prefixLocale(string $path): string
@@ -62,7 +63,7 @@ final class RouteUrlBuilder
         // it appeared as a substring of a static segment: `/id-cards/{id}` with id=7
         // came back as `/7-cards/7`.
         foreach ($params as $key => $value) {
-            $encoded = urlencode((string) $value);
+            $encoded = urlencode(Row::asString($value));
             $path = str_replace(['{' . $key . '}', '{' . $key . '?}'], $encoded, $path);
         }
 

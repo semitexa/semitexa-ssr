@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Semitexa\Core\Support\Row;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\HttpResponse;
 use Semitexa\Core\Pipeline\ReRun\ReRunContext;
@@ -1441,7 +1442,7 @@ final class SseServer
     {
         $tenant = $this->resolveTenantContext();
         if (is_object($tenant) && method_exists($tenant, 'getTenantId')) {
-            $id = trim((string) $tenant->getTenantId());
+            $id = trim(Row::asString($tenant->getTenantId()));
             if ($id !== '') {
                 return $id;
             }
@@ -1903,7 +1904,7 @@ final class SseServer
         $cookieName = 'semitexa_ssr_bind';
         $cookie = is_array($request->cookie) ? $request->cookie : [];
 
-        return trim((string) ($cookie[$cookieName] ?? ''));
+        return trim(Row::of($cookie)->string($cookieName));
     }
 
     private function removeSessionWorkerMapping(string $sessionId): void

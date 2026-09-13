@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Semitexa\Core\Support\Row;
 use Semitexa\Core\Log\StaticLoggerBridge;
 
 /**
@@ -102,16 +103,32 @@ final class SseSessionRegistry
      */
     public function capturedTenantId(string $sessionId): ?string
     {
-        $value = $this->sessions[$sessionId]['tenant_id'] ?? null;
-
-        return $value === null ? null : (string) $value;
+        return $this->captured($sessionId, 'tenant_id');
     }
 
     public function capturedTenantBlob(string $sessionId): ?string
     {
-        $value = $this->sessions[$sessionId]['tenant_blob'] ?? null;
+        return $this->captured($sessionId, 'tenant_blob');
+    }
 
-        return $value === null ? null : (string) $value;
+    /**
+     * One captured column, or null when the session never recorded it.
+     *
+     * Null and absent stay the SAME answer here — the subscription factory
+     * reads either as "fall back to the ambient tenant" — but a column holding
+     * something that is not a string now yields null rather than whatever
+     * `(string)` made of it.
+     */
+    private function captured(string $sessionId, string $column): ?string
+    {
+        $session = $this->sessions[$sessionId] ?? null;
+        if (!is_array($session) || !Row::of($session)->has($column)) {
+            return null;
+        }
+
+        $value = $session[$column];
+
+        return $value === null ? null : Row::of($session)->string($column);
     }
 
     /**

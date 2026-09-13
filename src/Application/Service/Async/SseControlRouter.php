@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Semitexa\Core\Support\Row;
 use Semitexa\Core\HttpResponse;
 use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Core\Pipeline\ReRun\ReRunContext;
@@ -134,7 +135,7 @@ final class SseControlRouter
      */
     private function handleReRun(string $sessionId, mixed $response, array $data): int
     {
-        $streamingId = trim((string) ($data['streaming_id'] ?? ''));
+        $streamingId = trim(Row::of($data)->string('streaming_id'));
         if ($streamingId === '') {
             return SseControlFrame::HANDLED_CONTINUE;
         }
@@ -164,7 +165,7 @@ final class SseControlRouter
      */
     private function handleViewChange(string $sessionId, mixed $response, array $data): int
     {
-        $streamingId = trim((string) ($data['streaming_id'] ?? ''));
+        $streamingId = trim(Row::of($data)->string('streaming_id'));
         if ($streamingId === '') {
             return SseControlFrame::HANDLED_CONTINUE;
         }
@@ -172,7 +173,7 @@ final class SseControlRouter
         $override = $this->runtime->viewChangeCoalescer?->consume($streamingId);
         if ($override === null) {
             $inline = $data['params'] ?? null;
-            $override = is_array($inline) ? $inline : [];
+            $override = is_array($inline) ? Row::keyedByName($inline) : [];
         }
 
         $context = SubscriptionDtoRegistry::get($streamingId);
@@ -197,17 +198,19 @@ final class SseControlRouter
      */
     private function handleSubscribe(string $sessionId, mixed $response, array $data): int
     {
-        $streamingId = trim((string) ($data['streaming_id'] ?? ''));
+        $frame = Row::of($data);
+        $streamingId = trim($frame->string('streaming_id'));
         if ($streamingId === '' || $this->runtime->subscriptionFactory === null || $this->runtime->reRunner === null) {
             return SseControlFrame::HANDLED_CONTINUE;
         }
 
-        $snapshot = is_array($data['request_snapshot'] ?? null) ? $data['request_snapshot'] : [];
+        $inlineSnapshot = $data['request_snapshot'] ?? null;
+        $snapshot = is_array($inlineSnapshot) ? Row::keyedByName($inlineSnapshot) : [];
         $attachment = $this->runtime->subscriptionFactory->build(
             $sessionId,
             $streamingId,
-            (string) ($data['route_path'] ?? ''),
-            (string) ($data['route_method'] ?? 'GET'),
+            $frame->string('route_path'),
+            $frame->string('route_method', 'GET'),
             $snapshot,
             // Scope the record to the tenant THIS connection resolved at connect
             // time, not the draining coroutine's ambient one.
@@ -266,7 +269,7 @@ final class SseControlRouter
      */
     private function handleUnsubscribe(array $data): int
     {
-        $streamingId = trim((string) ($data['streaming_id'] ?? ''));
+        $streamingId = trim(Row::of($data)->string('streaming_id'));
         if ($streamingId !== '') {
             $this->detach($streamingId);
         }
@@ -359,14 +362,23 @@ final class SseControlRouter
     }
 
     /**
+     * A control frame's body, keyed by name.
+     *
+     * `json_decode(..., true)` gives `array<mixed>` — a JSON ARRAY decodes to a
+     * list, and a control frame that arrived as `[1,2]` would then be handed to
+     * every `array<string, mixed>` parameter downstream with integer keys.
+     * Narrowing here rather than at each of those keeps one answer to "what
+     * shape is a frame".
+     *
      * @return array<string, mixed>
      */
     private function frameData(HttpResponse $frame): array
     {
         $decoded = json_decode($frame->getContent(), true);
 
-        return is_array($decoded) ? $decoded : ['data' => $frame->getContent()];
+        return is_array($decoded) ? Row::keyedByName($decoded) : ['data' => $frame->getContent()];
     }
+
 
     private function clearPending(string $streamingId): void
     {

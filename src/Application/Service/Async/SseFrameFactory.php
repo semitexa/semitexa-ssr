@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Semitexa\Core\Support\Row;
 use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Core\Server\SseFrame;
 use Semitexa\Ssr\Application\Service\UiEvent\UiSseEventType;
@@ -40,7 +41,7 @@ final class SseFrameFactory
         [$resolvedEventName, $data] = $this->resolveEventName($data);
 
         return SseFrame::fromResolved(
-            isset($data['id']) ? (string) $data['id'] : null,
+            isset($data['id']) ? Row::of($data)->string('id') : null,
             $resolvedEventName,
             $data,
         );

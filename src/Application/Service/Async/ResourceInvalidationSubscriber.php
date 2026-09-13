@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Semitexa\Core\Support\StandingCoroutines;
 use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Ssr\Domain\Contract\SessionControlDeliveryInterface;
 use Semitexa\Ssr\Domain\Contract\SubscriberIndexInterface;
@@ -146,11 +147,13 @@ final class ResourceInvalidationSubscriber
         // so this path is reached only on a genuine connection failure.)
         while (true) {
             if ($this->stopping) {
+                StandingCoroutines::forget();
                 return; // worker teardown — not a failure, nothing to report.
             }
 
             $channels = $this->desiredChannels();
             if ($channels === []) {
+                StandingCoroutines::forget();
                 return; // no local subscribers → nothing to subscribe to (C2).
             }
 
@@ -164,6 +167,16 @@ final class ResourceInvalidationSubscriber
             $this->interrupted = false;
 
             $subscribedAt = hrtime(true);
+
+            // Say what this coroutine is waiting for. It parks in read() for the
+            // life of the worker with no request behind it, which is exactly the
+            // shape the Observatory reads as a leak — so it declares itself
+            // instead, and the panel has something true to show. Re-declared each
+            // turn because the channel set is what makes the reason useful.
+            StandingCoroutines::declare(
+                'live push receiver',
+                sprintf('subscribed to %d channel%s — waiting for an invalidation', count($channels), count($channels) === 1 ? '' : 's'),
+            );
 
             try {
                 /** @var \Predis\PubSub\Consumer $pubsub */

@@ -145,15 +145,28 @@ final class ResourceInvalidationSubscriber
         // any connection failure logs, backs off, re-reads the desired channels, and
         // re-subscribes. (read_write_timeout: -1 means idle no longer drops it at all,
         // so this path is reached only on a genuine connection failure.)
+        // finally, not a line before each return: this loop leaves through five
+        // different points, two of them reached only when the coroutine is
+        // CANCELLED while parked — and a cancelled park runs no deferred
+        // callback. A declaration left behind outlives its coroutine and, once
+        // Swoole hands the id to somebody else, would move a genuinely hung
+        // coroutine out of the hung count.
+        try {
+            $this->subscribeLoop();
+        } finally {
+            StandingCoroutines::forget();
+        }
+    }
+
+    private function subscribeLoop(): void
+    {
         while (true) {
             if ($this->stopping) {
-                StandingCoroutines::forget();
                 return; // worker teardown — not a failure, nothing to report.
             }
 
             $channels = $this->desiredChannels();
             if ($channels === []) {
-                StandingCoroutines::forget();
                 return; // no local subscribers → nothing to subscribe to (C2).
             }
 

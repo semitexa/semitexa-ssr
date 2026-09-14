@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Tests\Unit\Isomorphic;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Ssr\Application\Service\Isomorphic\DeferredTemplateRegistry;
@@ -133,5 +134,50 @@ final class DeferredTemplatePublishGuardTest extends TestCase
         }
 
         $this->expectNotToPerformAssertions();
+    }
+
+    /**
+     * BOTH publish paths must call the guard, and this is checked structurally.
+     *
+     * That is not the first choice, and the reason is measured rather than
+     * assumed: driving initialize() or ensurePublishedPath() for real needs a
+     * booted module template catalog, and whether a unit test has one depends
+     * on what else the suite ran — an earlier attempt at an end-to-end version
+     * of this passed only because of test ordering.
+     *
+     * The failure it guards is exactly the one that already happened once: the
+     * guard was added to the wrong method, the suite stayed green, and nothing
+     * said a word. A structural assertion is a poor test of behaviour and a
+     * good test of "this call is still there", which is the thing that went
+     * missing.
+     *
+     * @param 'initialize'|'publishSlot' $method
+     */
+    #[Test]
+    #[DataProvider('publishPaths')]
+    public function every_publish_path_checks_the_template(string $method): void
+    {
+        $reflected = new \ReflectionMethod(DeferredTemplateRegistry::class, $method);
+        $file = (array) file((string) $reflected->getFileName());
+        $body = implode('', array_slice(
+            $file,
+            $reflected->getStartLine() - 1,
+            $reflected->getEndLine() - $reflected->getStartLine() + 1,
+        ));
+
+        self::assertStringContainsString(
+            'self::assertClientCanRender(',
+            $body,
+            "{$method}() publishes a template without checking the client can render it",
+        );
+    }
+
+    /** @return array<string, array{string}> */
+    public static function publishPaths(): array
+    {
+        return [
+            'boot sweep' => ['initialize'],
+            'lazy publish' => ['publishSlot'],
+        ];
     }
 }

@@ -74,35 +74,13 @@ final class DeferredTemplateRegistry
             }
 
             $content = file_get_contents($templatePath);
-
-        // PUBLISHING IS THE PROMISE, so it is where the promise is checked.
-        //
-        // A deferred slot template is rendered TWICE — by Twig on the server
-        // and by semitexa-twig.js on the client — and the client subset has no
-        // functions, no filters beyond |raw and no ternary. Anything outside it
-        // renders as an EMPTY STRING with no error, so the divergence is
-        // invisible until someone notices missing text.
-        //
-        // ai:verify already runs lint:deferred-twig when a template changes,
-        // which catches this for anyone working in this workspace. It does not
-        // catch a consumer project editing its own template and never running
-        // the linter — and this is the one moment the framework itself says
-        // "the client can render this".
-        //
-        // Checked HERE and not in the render path: publishSlot() runs once per
-        // slot and page, behind ensurePublishedPath()'s cache, so the cost is
-        // paid once per worker rather than per request.
-        //
-        // DEV THROWS, PRODUCTION DOES NOT. A developer wants to be stopped; an
-        // end user should not get a 500 for a template that merely degrades,
-        // and a template already in production has already shipped. Production
-        // logs it once, at the same moment, with the same detail.
-        if ($content !== false) {
-            self::assertClientCanRender($slot->templateName, $templatePath, $content);
-        }
             if ($content === false) {
                 continue;
             }
+
+            // PUBLISHING IS THE PROMISE, so it is where the promise is checked.
+            // See assertClientCanRender() for why here and not the render path.
+            self::assertClientCanRender($slot->templateName, $templatePath, $content);
 
             $hash = substr(md5($content), 0, 8);
             $safeName = preg_replace('/[^a-zA-Z0-9_-]/', '_', $slot->slotId);
@@ -221,6 +199,23 @@ final class DeferredTemplateRegistry
      * Refuse — or in production, report — a deferred template the client cannot
      * render.
      *
+     * A deferred slot is rendered TWICE: by Twig on the server and by
+     * semitexa-twig.js on the client. The client subset has no functions, no
+     * filters beyond |raw and no ternary, and anything outside it renders as an
+     * EMPTY STRING with no error — so the divergence is invisible until someone
+     * notices missing text.
+     *
+     * CHECKED AT PUBLISH, NOT AT RENDER. Publishing is the moment the framework
+     * says "the client can render this", and both publish paths run once per
+     * slot — initialize() sweeps them at boot, publishSlot() covers whatever it
+     * missed, behind ensurePublishedPath()'s cache. Validating per render would
+     * pay an AST walk per request for an answer that cannot change between them.
+     *
+     * ai:verify already runs lint:deferred-twig when a template changes, so
+     * anyone working in this workspace is covered. What is not covered, and what
+     * this is for, is a consumer project editing its own template and never
+     * running the linter.
+     *
      * @throws DeferredRenderingException in dev, so the gap is impossible to miss
      */
     private static function assertClientCanRender(string $templateName, string $templatePath, string $source): void
@@ -323,6 +318,10 @@ final class DeferredTemplateRegistry
         if ($content === false) {
             return null;
         }
+
+        // The lazy twin of the check in initialize(): ensurePublishedPath()
+        // reaches this for a slot the boot sweep did not cover.
+        self::assertClientCanRender($slot->templateName, $templatePath, $content);
 
         $hash = substr(md5($content), 0, 8);
         $safeName = preg_replace('/[^a-zA-Z0-9_-]/', '_', $slot->slotId);

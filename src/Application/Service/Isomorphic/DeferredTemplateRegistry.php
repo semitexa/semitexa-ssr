@@ -4,7 +4,12 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Isomorphic;
 
+use Semitexa\Core\Environment;
 use Semitexa\Core\Support\ProjectRoot;
+use Twig\Source;
+use Semitexa\Ssr\Domain\Exception\DeferredRenderingException;
+use Semitexa\Ssr\Application\Service\Twig\FrontendTwigCompatibilityIssue;
+use Semitexa\Ssr\Application\Service\Twig\DeferredTemplateCompatibilityValidator;
 use Semitexa\Ssr\Application\Service\Asset\ModuleAssetRegistry;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Semitexa\Core\Log\StaticLoggerBridge;
@@ -72,6 +77,10 @@ final class DeferredTemplateRegistry
             if ($content === false) {
                 continue;
             }
+
+            // PUBLISHING IS THE PROMISE, so it is where the promise is checked.
+            // See assertClientCanRender() for why here and not the render path.
+            self::assertClientCanRender($slot->templateName, $templatePath, $content);
 
             $hash = substr(md5($content), 0, 8);
             $safeName = preg_replace('/[^a-zA-Z0-9_-]/', '_', $slot->slotId);
@@ -186,6 +195,90 @@ final class DeferredTemplateRegistry
         return strtolower($pageHandle) . '::' . strtolower($slotId);
     }
 
+    /**
+     * Refuse — or in production, report — a deferred template the client cannot
+     * render.
+     *
+     * A deferred slot is rendered TWICE: by Twig on the server and by
+     * semitexa-twig.js on the client. The client subset has no functions, no
+     * filters beyond |raw and no ternary, and anything outside it renders as an
+     * EMPTY STRING with no error — so the divergence is invisible until someone
+     * notices missing text.
+     *
+     * CHECKED AT PUBLISH, NOT AT RENDER. Publishing is the moment the framework
+     * says "the client can render this", and both publish paths run once per
+     * slot — initialize() sweeps them at boot, publishSlot() covers whatever it
+     * missed, behind ensurePublishedPath()'s cache. Validating per render would
+     * pay an AST walk per request for an answer that cannot change between them.
+     *
+     * ai:verify already runs lint:deferred-twig when a template changes, so
+     * anyone working in this workspace is covered. What is not covered, and what
+     * this is for, is a consumer project editing its own template and never
+     * running the linter.
+     *
+     * @throws DeferredRenderingException in dev, so the gap is impossible to miss
+     */
+    private static function assertClientCanRender(string $templateName, string $templatePath, string $source): void
+    {
+        try {
+            $issues = (new DeferredTemplateCompatibilityValidator())
+                ->validateSource(new Source($source, $templateName, $templatePath));
+        } catch (\Throwable) {
+            // The checker failing must never stop a page from publishing.
+            return;
+        }
+
+        self::reportIncompatibleTemplate($templateName, $issues);
+    }
+
+    /**
+     * What to DO about issues, separated from finding them.
+     *
+     * Detection needs a booted module registry — ModuleTemplateRegistry::getTwig()
+     * — which is always true where publishSlot() runs and never true in a unit
+     * test. Keeping the decision here means the dev/prod asymmetry can be tested
+     * on its own, while the finding stays covered by the validator's own tests.
+     *
+     * @param list<FrontendTwigCompatibilityIssue> $issues
+     * @throws DeferredRenderingException in dev, so the gap is impossible to miss
+     */
+    private static function reportIncompatibleTemplate(string $templateName, array $issues): void
+    {
+        if ($issues === []) {
+            return;
+        }
+
+        $detail = array_map(
+            static fn (FrontendTwigCompatibilityIssue $i): string => sprintf(
+                '%s:%d %s "%s" — %s',
+                $i->templateName,
+                $i->line,
+                $i->construct,
+                $i->name,
+                $i->message,
+            ),
+            $issues,
+        );
+
+        if (strtolower((string) Environment::getEnvValue('APP_ENV', 'prod')) !== 'dev') {
+            StaticLoggerBridge::warning('ssr', 'Deferred template uses constructs the client cannot render', [
+                'template' => $templateName,
+                'issues' => $detail,
+            ]);
+
+            return;
+        }
+
+        throw new DeferredRenderingException(sprintf(
+            "Deferred template %s uses %d construct(s) the client renderer does not support, "
+            . "so those regions would render as an empty string with no error:\n  - %s\n"
+            . 'Run bin/semitexa lint:deferred-twig to see the whole picture.',
+            $templateName,
+            count($issues),
+            implode("\n  - ", $detail),
+        ));
+    }
+
     private static function publishSlot(
         \Semitexa\Ssr\Domain\Model\DeferredSlotDefinition $slot,
         IsomorphicConfig $config,
@@ -225,6 +318,10 @@ final class DeferredTemplateRegistry
         if ($content === false) {
             return null;
         }
+
+        // The lazy twin of the check in initialize(): ensurePublishedPath()
+        // reaches this for a slot the boot sweep did not cover.
+        self::assertClientCanRender($slot->templateName, $templatePath, $content);
 
         $hash = substr(md5($content), 0, 8);
         $safeName = preg_replace('/[^a-zA-Z0-9_-]/', '_', $slot->slotId);

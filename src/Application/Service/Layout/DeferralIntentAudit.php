@@ -127,6 +127,12 @@ final class DeferralIntentAudit
             foreach ($matches[1] as [$arguments, $offset]) {
                 $slotArgument = self::firstArgument((string) $arguments);
 
+                // A name BUILT from pieces is not a name this can read: see
+                // isReadableName().
+                if (!self::isReadableName($slotArgument)) {
+                    continue;
+                }
+
                 if (!preg_match_all(self::QUOTED_NAME, $slotArgument, $names)) {
                     continue;
                 }
@@ -186,6 +192,25 @@ final class DeferralIntentAudit
         }
 
         return $kept;
+    }
+
+    /**
+     * True when a literal in this expression is a name the call can pass.
+     *
+     * `'sidebar'` is. `slot|default('sidebar')` is — the fallback is a name
+     * the call really passes when the variable is empty, which is the shape
+     * SsrPolygon uses. `'sidebar_' ~ locale` is NOT: the call passes
+     * `sidebar_uk`, never `sidebar_`, so recording the fragment invents a slot
+     * nobody declared and fails --strict on a correct page.
+     *
+     * Concatenation is the whole test, because it is the only operator that
+     * makes a literal a PIECE of the name rather than the name.
+     */
+    private static function isReadableName(string $expression): bool
+    {
+        $outsideLiterals = (string) preg_replace('/[\'"][^\'"]*[\'"]/', ' ', $expression);
+
+        return !str_contains($outsideLiterals, '~');
     }
 
     /**

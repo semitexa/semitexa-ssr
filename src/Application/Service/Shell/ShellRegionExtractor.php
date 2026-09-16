@@ -222,12 +222,19 @@ final class ShellRegionExtractor
                 }
 
                 $url = self::decode($href[1]);
-                if (isset($seenCss[$url])) {
+                $attrs = self::carriedAttributes($link, self::LINK_ATTRIBUTES);
+
+                // Keyed on the URL AND what came with it. The same stylesheet
+                // included once for `screen` and once for `print` is two
+                // different instructions, and dropping the second left a
+                // swapped page unable to print.
+                $key = $url . '|' . json_encode($attrs);
+                if (isset($seenCss[$key])) {
                     continue;
                 }
-                $seenCss[$url] = true;
+                $seenCss[$key] = true;
 
-                $css[] = ['href' => $url, 'attrs' => self::carriedAttributes($link, self::LINK_ATTRIBUTES)];
+                $css[] = ['href' => $url, 'attrs' => $attrs];
             }
         }
 
@@ -236,21 +243,25 @@ final class ShellRegionExtractor
         if (preg_match_all('#<script\b[^>]*\bsrc=["\']([^"\']+)["\'][^>]*>#i', $html, $scripts, PREG_SET_ORDER)) {
             foreach ($scripts as $script) {
                 $src = self::decode($script[1]);
-                if (isset($seen[$src])) {
-                    continue;
-                }
-                $seen[$src] = true;
 
                 $type = '';
                 if (preg_match('#\btype=["\']([^"\']+)["\']#i', $script[0], $m) === 1) {
                     $type = strtolower(trim($m[1]));
                 }
 
-                $js[] = [
-                    'src' => $src,
-                    'type' => $type,
-                    'attrs' => self::carriedAttributes($script[0], self::SCRIPT_ATTRIBUTES),
-                ];
+                $attrs = self::carriedAttributes($script[0], self::SCRIPT_ATTRIBUTES);
+
+                // Same reason as the stylesheets: one URL served as a module
+                // and again with `nomodule` is the standard pair for two
+                // different browsers, and URL-only dedup kept whichever came
+                // first.
+                $key = $src . '|' . $type . '|' . json_encode($attrs);
+                if (isset($seen[$key])) {
+                    continue;
+                }
+                $seen[$key] = true;
+
+                $js[] = ['src' => $src, 'type' => $type, 'attrs' => $attrs];
             }
         }
 

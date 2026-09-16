@@ -159,9 +159,14 @@ final class DeferredTemplateCompatibilityValidator
      */
     private function validateInlineScripts(Source $source): void
     {
-        $code = $source->getCode();
+        $code = self::markupOf($source->getCode());
 
-        if (!preg_match_all('/<script\b([^>\n]*)>/i', $code, $matches, PREG_OFFSET_CAPTURE)) {
+        // DOCUMENT_PATTERN, not the source one: what is left after the Twig
+        // tags are blanked IS markup, so an opening tag wrapped across lines —
+        // ordinary in a hand-formatted template — has to be seen. The
+        // one-line bound exists for text where a `>` may be an operator, and
+        // there is none left here.
+        if (!preg_match_all(ScriptTag::DOCUMENT_PATTERN, $code, $matches, PREG_OFFSET_CAPTURE)) {
             return;
         }
 
@@ -185,6 +190,29 @@ final class DeferredTemplateCompatibilityValidator
                 . 'late-arriving markup, and its code is a module served from its own origin.'
             );
         }
+    }
+
+    /**
+     * The template with its Twig tags blanked out, leaving the markup.
+     *
+     * Two reasons, and they pull the same way. A `{# … #}` comment emits
+     * nothing, so a `<script>` written inside one is a note about a script and
+     * not a script — reported, it teaches people to ignore this check. And a
+     * `>` inside `{{ … }}` or `{% … %}` is a comparison, not the end of a tag,
+     * which is the only thing the one-line bound was ever guarding against.
+     *
+     * `{% verbatim %}` is deliberately NOT blanked: its contents are printed,
+     * so a script tag in there is a real script element on the page.
+     *
+     * Blanked, not cut, so the reported line is still the template's.
+     */
+    private static function markupOf(string $code): string
+    {
+        return (string) preg_replace_callback(
+            '/\{#.*?#\}|\{\{.*?\}\}|\{%.*?%\}/s',
+            static fn (array $m): string => preg_replace('/[^\n]/', ' ', $m[0]) ?? '',
+            $code
+        );
     }
 
     private function validateNode(Node $node, Source $source, Environment $twig, bool $allowPrintFilters = false): void

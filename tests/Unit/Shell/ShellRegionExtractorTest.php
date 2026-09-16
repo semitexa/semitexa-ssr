@@ -98,6 +98,63 @@ final class ShellRegionExtractorTest extends TestCase
     }
 
     #[Test]
+    public function aRegionInsideARegionIsNotLost(): void
+    {
+        // The scan used to resume PAST the region it had just taken, so a
+        // marked element nested in another was never visited and the envelope
+        // quietly promised fewer regions than the document marked.
+        $html = '<main data-shell-region="main"><div data-shell-region="grid">rows</div></main>';
+
+        $regions = $this->extractor->extract($html);
+
+        self::assertSame(
+            [
+                'main' => '<main data-shell-region="main"><div data-shell-region="grid">rows</div></main>',
+                'grid' => '<div data-shell-region="grid">rows</div>',
+            ],
+            $regions
+        );
+    }
+
+    #[Test]
+    public function aClosingTagInsideAScriptDoesNotEndTheRegion(): void
+    {
+        // A string in a script is not markup. Counted as a close, the region
+        // ended mid-script and the client was handed a fragment that will not
+        // parse — with a 200 and no error anywhere.
+        $html = '<div data-shell-region="main"><script>var t = "</div>";</script><p>after</p></div>';
+
+        $regions = $this->extractor->extract($html);
+
+        self::assertSame(
+            ['main' => '<div data-shell-region="main"><script>var t = "</div>";</script><p>after</p></div>'],
+            $regions
+        );
+    }
+
+    #[Test]
+    public function aRegionCommentedOutIsNotARegion(): void
+    {
+        $html = '<body><!-- <div data-shell-region="old">gone</div> --><main data-shell-region="main">x</main></body>';
+
+        self::assertSame(['main' => '<main data-shell-region="main">x</main>'], $this->extractor->extract($html));
+    }
+
+    #[Test]
+    public function assetUrlsComeBackAsUrlsAndNotAsSerialisedAttributes(): void
+    {
+        // The client assigns these to src/href from JavaScript, where nothing
+        // un-escapes them: `&amp;` would be requested literally.
+        $assets = $this->extractor->assets(
+            '<link rel="stylesheet" href="/css/app.css?v=1&amp;theme=dark">'
+            . '<script src="/js/app.js?v=1&amp;b=2"></script>'
+        );
+
+        self::assertSame(['/css/app.css?v=1&theme=dark'], $assets['css']);
+        self::assertSame('/js/app.js?v=1&b=2', $assets['js'][0]['src']);
+    }
+
+    #[Test]
     public function aDocumentWithNoRegionsYieldsNothing(): void
     {
         self::assertSame([], $this->extractor->extract('<html><body><p>plain page</p></body></html>'));

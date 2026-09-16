@@ -36,7 +36,7 @@ final class DeferralIntentAudit
     /** The call, up to its first `)`. Arguments are mined for quoted names separately. */
     private const DEFERRED_CALL = '/layout_slot_deferred\s*\(([^)]*)/';
 
-    /** A slot name written as a literal, anywhere in those arguments. */
+    /** A slot name written as a literal, anywhere in the SLOT argument. */
     private const QUOTED_NAME = '/[\'"]([A-Za-z0-9_.\-]+)[\'"]/';
 
     /** Twig blocks whose contents are shown to a reader, not executed. */
@@ -44,6 +44,9 @@ final class DeferralIntentAudit
         '/\{%-?\s*verbatim\s*-?%\}.*?\{%-?\s*endverbatim\s*-?%\}/s',
         '/\{#.*?#\}/s',
     ];
+
+    /** What Twig EXECUTES: an output tag or a statement tag. Everything else is text it prints. */
+    private const TWIG_CODE = '/\{\{.*?\}\}|\{%.*?%\}/s';
 
     /**
      * @param array<string, string> $declaredDeferred slot name => where it was declared (resource class)
@@ -115,14 +118,16 @@ final class DeferralIntentAudit
                 continue;
             }
 
-            $code = $this->withoutProse($source);
+            $code = $this->onlyTwigCode($this->withoutProse($source));
 
             if (!preg_match_all(self::DEFERRED_CALL, $code, $matches, PREG_OFFSET_CAPTURE)) {
                 continue;
             }
 
             foreach ($matches[1] as [$arguments, $offset]) {
-                if (!preg_match_all(self::QUOTED_NAME, (string) $arguments, $names)) {
+                $slotArgument = self::firstArgument((string) $arguments);
+
+                if (!preg_match_all(self::QUOTED_NAME, $slotArgument, $names)) {
                     continue;
                 }
 
@@ -156,5 +161,82 @@ final class DeferralIntentAudit
         }
 
         return $source;
+    }
+
+    /**
+     * Keep what Twig runs, blank what it prints.
+     *
+     * The audit used to read the whole template, so a page showing readers
+     * `<code>layout_slot_deferred('sidebar')</code>` was counted as deferring
+     * `sidebar` — which both hides a real DeclaredButNeverDeferred finding and
+     * invents a DeferredCallWithoutDeclaration one under `--strict`. Text
+     * outside `{{ … }}` and `{% … %}` is not a call, whatever it spells.
+     * Blanked rather than cut, so line numbers still point at the template.
+     */
+    private function onlyTwigCode(string $source): string
+    {
+        $kept = preg_replace('/[^\n]/', ' ', $source) ?? '';
+
+        if (!preg_match_all(self::TWIG_CODE, $source, $matches, PREG_OFFSET_CAPTURE)) {
+            return $kept;
+        }
+
+        foreach ($matches[0] as [$block, $offset]) {
+            $kept = substr_replace($kept, (string) $block, (int) $offset, strlen((string) $block));
+        }
+
+        return $kept;
+    }
+
+    /**
+     * The slot expression alone — up to the first comma that is not inside
+     * something.
+     *
+     * `layout_slot_deferred('sidebar', {'theme': 'dark'})` is a supported call:
+     * the second argument is extra context. Mining every literal in the
+     * argument list read `dark` as a second slot name and reported a slot
+     * nobody had ever declared. A `|default('…')` on the slot expression still
+     * counts, because it is still the slot.
+     */
+    private static function firstArgument(string $arguments): string
+    {
+        $depth = 0;
+        $quote = null;
+
+        for ($i = 0, $length = strlen($arguments); $i < $length; $i++) {
+            $char = $arguments[$i];
+
+            if ($quote !== null) {
+                if ($char === '\\') {
+                    $i++;
+                    continue;
+                }
+                if ($char === $quote) {
+                    $quote = null;
+                }
+                continue;
+            }
+
+            if ($char === '"' || $char === "'") {
+                $quote = $char;
+                continue;
+            }
+
+            if ($char === '[' || $char === '{' || $char === '(') {
+                $depth++;
+                continue;
+            }
+
+            if ($char === ']' || $char === '}' || $char === ')') {
+                $depth--;
+                continue;
+            }
+
+            if ($char === ',' && $depth === 0) {
+                return substr($arguments, 0, $i);
+            }
+        }
+
+        return $arguments;
     }
 }

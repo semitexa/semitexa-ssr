@@ -332,20 +332,20 @@ final class AssetRenderer
         // inline <script>: under a nonce policy an unstamped block is dropped,
         // and a page that lost only its stylesheet looks broken rather than
         // blocked.
-        $attrs = self::buildAttributes($entry->attributes);
         $safeContent = str_ireplace('</style', '<\/style', $content);
-        return '<style' . $attrs . ScriptNonceSource::attribute() . '>' . $safeContent . '</style>' . "\n";
+        return '<style' . self::inlineNonceAttributes($entry->attributes) . '>' . $safeContent . '</style>' . "\n";
     }
 
     /**
-     * Attribute string for an inline <script>, provider nonce included. The
+     * Attribute string for an inline <script> or <style>, provider nonce
+     * included. The
      * provider's nonce must be the ONLY nonce: with a manifest-declared one
      * also present the browser honours whichever comes first, and a stale
      * manifest value would lose to the CSP header every time.
      *
      * @param array<string, string> $attributes
      */
-    private static function inlineScriptNonceAttributes(array $attributes): string
+    private static function inlineNonceAttributes(array $attributes): string
     {
         $nonceAttr = ScriptNonceSource::attribute();
         if ($nonceAttr !== '') {
@@ -363,7 +363,7 @@ final class AssetRenderer
         }
 
         $safeContent = str_ireplace('</script', '<\/script', $content);
-        return '<script' . self::inlineScriptNonceAttributes($entry->attributes) . '>' . $safeContent . '</script>' . "\n";
+        return '<script' . self::inlineNonceAttributes($entry->attributes) . '>' . $safeContent . '</script>' . "\n";
     }
 
     /**

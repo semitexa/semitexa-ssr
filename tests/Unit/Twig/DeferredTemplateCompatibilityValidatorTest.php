@@ -233,4 +233,52 @@ TWIG,
 
         self::assertSame([], $issues);
     }
+
+    public function testValidateSourceSeesAnOpeningTagWrittenAcrossLines(): void
+    {
+        // A wrapped opening tag is formatting, not a different kind of script.
+        // The one-line bound belongs to source scanning, where a `>` may be an
+        // operator; once the Twig tags are blanked, what is left is markup.
+        $validator = new DeferredTemplateCompatibilityValidator();
+
+        $issues = $validator->validateSource(new Source(
+            "<script\n  type=\"module\"\n  defer>go()</script>",
+            'wrapped-script',
+            '/tmp/wrapped-script.twig'
+        ));
+
+        self::assertCount(1, $issues);
+        self::assertSame('inline_script', $issues[0]->construct);
+    }
+
+    public function testValidateSourceDoesNotReportAScriptTagInsideATwigComment(): void
+    {
+        // A Twig comment emits nothing, so there is no script element to be
+        // inert, to run twice, or to have missed DOMContentLoaded. Reporting
+        // the note ABOUT the rule is how a lint trains people to ignore it.
+        $validator = new DeferredTemplateCompatibilityValidator();
+
+        $issues = $validator->validateSource(new Source(
+            "{# never do this: <script>go()</script> #}\n<div>{{ title }}</div>",
+            'commented-script',
+            '/tmp/commented-script.twig'
+        ));
+
+        self::assertSame([], $issues);
+    }
+
+    public function testValidateSourceStillReportsAScriptInsideVerbatim(): void
+    {
+        // verbatim is not a comment: its contents are PRINTED, so this really
+        // is a script element on the page and carries every consequence.
+        $validator = new DeferredTemplateCompatibilityValidator();
+
+        $issues = $validator->validateSource(new Source(
+            "{% verbatim %}<script>go()</script>{% endverbatim %}",
+            'verbatim-script',
+            '/tmp/verbatim-script.twig'
+        ));
+
+        self::assertCount(1, $issues);
+    }
 }

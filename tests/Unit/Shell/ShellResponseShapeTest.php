@@ -7,6 +7,7 @@ namespace Semitexa\Ssr\Tests\Unit\Shell;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Ssr\Application\Service\Http\Response\HtmlResponse;
+use Semitexa\Ssr\Application\Service\Shell\ShellEnvelope;
 use Semitexa\Ssr\Application\Service\Shell\ShellRequest;
 
 /**
@@ -73,11 +74,18 @@ final class ShellResponseShapeTest extends TestCase
         // The document's Vary is the load-bearing one: it is the response that
         // gets cached, and a cache that does not know the header is part of
         // the key will serve the chrome-less JSON to a real navigation.
+        //
+        // Accept is named too, because this URL answers THREE bodies: the
+        // document, the shell envelope on the header above, and the framework's
+        // page JSON on Accept. A cache told about only one of the two knobs
+        // treats the other's variants as interchangeable.
+        $expected = ShellRequest::HEADER . ', Accept';
+
         ShellRequest::forceForTesting(false);
-        self::assertSame(ShellRequest::HEADER, $this->respond(self::PAGE)->getHeaders()['Vary'] ?? null);
+        self::assertSame($expected, $this->respond(self::PAGE)->getHeaders()['Vary'] ?? null);
 
         ShellRequest::forceForTesting(true);
-        self::assertSame(ShellRequest::HEADER, $this->respond(self::PAGE)->getHeaders()['Vary'] ?? null);
+        self::assertSame($expected, $this->respond(self::PAGE)->getHeaders()['Vary'] ?? null);
     }
 
     #[Test]
@@ -89,7 +97,10 @@ final class ShellResponseShapeTest extends TestCase
         $response->setContent(self::PAGE);
         $response->setHeader('Vary', 'Accept-Encoding');
 
-        self::assertSame('Accept-Encoding, ' . ShellRequest::HEADER, $response->toCoreResponse()->getHeaders()['Vary']);
+        self::assertSame(
+            'Accept-Encoding, ' . ShellRequest::HEADER . ', Accept',
+            $response->toCoreResponse()->getHeaders()['Vary']
+        );
     }
 
     #[Test]
@@ -99,9 +110,11 @@ final class ShellResponseShapeTest extends TestCase
 
         $response = new HtmlResponse();
         $response->setContent(self::PAGE);
-        $response->setHeader('Vary', ShellRequest::HEADER);
+        $response->setHeader('Vary', 'accept, ' . ShellRequest::HEADER);
 
-        self::assertSame(ShellRequest::HEADER, $response->toCoreResponse()->getHeaders()['Vary']);
+        // Matched without regard to case, which is what a header name means,
+        // and neither name is added a second time.
+        self::assertSame('accept, ' . ShellRequest::HEADER, $response->toCoreResponse()->getHeaders()['Vary']);
     }
 
     #[Test]
@@ -114,6 +127,29 @@ final class ShellResponseShapeTest extends TestCase
         $plain = '<!doctype html><html><head><title>Plain</title></head><body><p>no regions</p></body></html>';
 
         self::assertSame($plain, $this->respond($plain)->getContent());
+    }
+
+    #[Test]
+    public function anUnencodableEnvelopeStillFallsBackToValidJson(): void
+    {
+        // The fallback is the branch a client hits when it has already lost:
+        // it must still PARSE, or the client cannot even read that the swap
+        // failed. Hand-assembled with addslashes it did not — an apostrophe in
+        // the URL became `\'`, which JSON has no such escape for, so the
+        // fallback was a second unreadable body.
+        $envelope = new ShellEnvelope(
+            url: "/orders/o'brien?q=" . "\xB1\x31\x8F",
+            title: 'ignored by the fallback',
+            regions: ['main' => "\xB1\x31\x8F"],
+            assets: ['css' => [], 'js' => []],
+        );
+
+        $json = $envelope->toJson();
+        $decoded = json_decode($json, true);
+
+        self::assertIsArray($decoded, 'the fallback body must parse: ' . $json);
+        self::assertTrue($decoded['shell']);
+        self::assertSame([], $decoded['regions'], 'nothing to swap is the honest answer here');
     }
 
     #[Test]

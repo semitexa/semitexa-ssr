@@ -19,7 +19,8 @@
         "semitexa/tenancy": "*"
     },
     "suggest": {
-        "semitexa/scheduler": "Required for automatic scheduled sitemap regeneration (daily cron job)"
+        "semitexa/scheduler": "Required for automatic scheduled sitemap regeneration (daily cron job)",
+        "semitexa/theme": "Publishes theme-base, whose pages/error-page.html.twig this package renders for 404 and 500. Without it those fall back to FallbackErrorPage, a pure-PHP page with no styling. Not a require: semitexa/theme requires this package, and the pair would be a cycle."
     },
     "autoload": {
         "psr-4": {

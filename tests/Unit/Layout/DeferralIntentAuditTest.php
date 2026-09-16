@@ -115,6 +115,36 @@ final class DeferralIntentAuditTest extends TestCase
     }
 
     #[Test]
+    public function extraContextIsNotASecondSlotName(): void
+    {
+        // layout_slot_deferred(context, slot, extraContext) — the third
+        // argument is real and carries literals of its own. Mining every
+        // literal in the argument list invented a slot called `dark` and
+        // failed --strict on a page that was entirely correct.
+        $findings = $this->audit->audit(
+            ['sidebar' => 'App\Slot\SidebarSlot'],
+            ['page.html.twig' => "{{ layout_slot_deferred('sidebar', {'theme': 'dark'}) }}"],
+        );
+
+        self::assertSame([], $findings);
+    }
+
+    #[Test]
+    public function aCallShownAsMarkupIsNotACall(): void
+    {
+        // Outside {{ }} and {% %} a template is printing text, whatever that
+        // text spells. Counted as a call, a docs page satisfied a declaration
+        // that no page actually defers.
+        $findings = $this->audit->audit(
+            ['sidebar' => 'App\Slot\SidebarSlot'],
+            ['docs.html.twig' => "<code>layout_slot_deferred('sidebar')</code>"],
+        );
+
+        self::assertCount(1, $findings);
+        self::assertSame(DeferralIntentKind::DeclaredButNeverDeferred, $findings[0]->kind);
+    }
+
+    #[Test]
     public function theLineNumberSurvivesTheBlanking(): void
     {
         $source = "{% verbatim %}{{ layout_slot_deferred('shown') }}{% endverbatim %}\n\n{{ layout_slot_deferred('real') }}";

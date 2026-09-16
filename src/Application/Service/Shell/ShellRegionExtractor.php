@@ -28,6 +28,11 @@ final class ShellRegionExtractor
 {
     public const ATTRIBUTE = 'data-shell-region';
 
+    /** Elements whose contents are TEXT, not markup, and so hold no tags to count. */
+    private const RAW_TEXT_ELEMENTS = ['script', 'style', 'textarea'];
+
+    private const COMMENT_SPAN = '/<!--.*?-->/s';
+
     /**
      * Every region the document marks, keyed by name, in document order.
      *
@@ -42,13 +47,18 @@ final class ShellRegionExtractor
         $regions = [];
         $offset = 0;
 
+        // Boundaries are found in a copy with the inert spans blanked out, and
+        // the fragment is cut from the ORIGINAL. Same offsets either way,
+        // because the mask replaces byte for byte.
+        $scan = self::withoutInertSpans($html);
+
         while (true) {
-            $start = $this->findRegionStart($html, $offset, $name, $tag);
+            $start = $this->findRegionStart($scan, $offset, $name, $tag);
             if ($start === null) {
                 break;
             }
 
-            $end = $this->findRegionEnd($html, $start, $tag);
+            $end = $this->findRegionEnd($scan, $start, $tag);
             if ($end === null) {
                 // An unbalanced region is a broken document, not a fragment
                 // worth shipping: skip it and keep the rest rather than
@@ -58,10 +68,50 @@ final class ShellRegionExtractor
             }
 
             $regions[$name] ??= substr($html, $start, $end - $start);
-            $offset = $end;
+
+            // Resume just INSIDE this region, not past it. Regions nest — a
+            // page region holding a grid region is the ordinary case — and
+            // jumping to the end meant the inner one was never seen, so the
+            // envelope silently omitted a region the document had marked.
+            $offset = $start + 1;
         }
 
         return $regions;
+    }
+
+    /**
+     * A copy of the document with comments and raw-text element contents
+     * replaced by spaces of the same length.
+     *
+     * The scanner counts tags, and a script holding the TEXT of a closing tag
+     * in a string is not a tag — it is a string that happens to spell one.
+     * Counted as a close, the region ends in the middle of a script and the
+     * client is handed a fragment that will not parse. Blanking these spans
+     * costs one pass and removes the whole class of it; what is left is
+     * markup, where counting is sound.
+     */
+    private static function withoutInertSpans(string $html): string
+    {
+        $patterns = [self::COMMENT_SPAN];
+
+        // Assembled rather than written out, the way InlineScriptScanner spells
+        // its own closing tag in two pieces: a file containing the literal
+        // closer is a file the inline-script lint scans, and the patterns just
+        // above then match as nonce-less script tags — this file reporting
+        // itself.
+        foreach (self::RAW_TEXT_ELEMENTS as $element) {
+            $patterns[] = '#<' . $element . '\b[^>]*>.*?<' . '/' . $element . '\s*>#is';
+        }
+
+        foreach ($patterns as $pattern) {
+            $html = (string) preg_replace_callback(
+                $pattern,
+                static fn (array $m): string => str_repeat(' ', strlen($m[0])),
+                $html
+            );
+        }
+
+        return $html;
     }
 
     /** The document's title, for the address bar and the tab. */
@@ -72,6 +122,19 @@ final class ShellRegionExtractor
         }
 
         return trim(html_entity_decode($m[1], ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+    }
+
+    /**
+     * An attribute as the document SERIALISED it, back to the value it means.
+     *
+     * `/feed?a=1&b=2` is written `a=1&amp;b=2`, and the client assigns these
+     * to `src`/`href` from JavaScript, where no parser is involved — so it
+     * would request a URL with a literal `&amp;` in it and get a 404 for an
+     * asset the page needs.
+     */
+    private static function decode(string $attributeValue): string
+    {
+        return html_entity_decode($attributeValue, ENT_QUOTES | ENT_HTML5, 'UTF-8');
     }
 
     /**
@@ -97,7 +160,7 @@ final class ShellRegionExtractor
         if (preg_match_all('#<link\b[^>]*rel=["\']?stylesheet["\']?[^>]*>#i', $html, $links)) {
             foreach ($links[0] as $link) {
                 if (preg_match('#href=["\']([^"\']+)["\']#i', $link, $href) === 1) {
-                    $css[] = $href[1];
+                    $css[] = self::decode($href[1]);
                 }
             }
         }
@@ -106,7 +169,7 @@ final class ShellRegionExtractor
         $seen = [];
         if (preg_match_all('#<script\b[^>]*\bsrc=["\']([^"\']+)["\'][^>]*>#i', $html, $scripts, PREG_SET_ORDER)) {
             foreach ($scripts as $script) {
-                $src = $script[1];
+                $src = self::decode($script[1]);
                 if (isset($seen[$src])) {
                     continue;
                 }
@@ -153,9 +216,11 @@ final class ShellRegionExtractor
      *
      * Counts opens and closes of the SAME tag name. Assumes the region element
      * is a container that is actually closed — which the server rendered, so
-     * it is — and that no same-named tag appears inside a comment or a script
-     * within it. Both hold for markup a Twig layout produced; neither holds
-     * for arbitrary HTML, and this is not a parser.
+     * it is. Tag-like text inside comments, scripts, styles and textareas is
+     * not an assumption any more: {@see self::withoutInertSpans()} blanks those
+     * before anything is counted. What remains unhandled is a `<` inside an
+     * attribute VALUE, which no server-rendered document of ours produces.
+     * This is still not a parser, and says so.
      */
     private function findRegionEnd(string $html, int $start, string $tag): ?int
     {

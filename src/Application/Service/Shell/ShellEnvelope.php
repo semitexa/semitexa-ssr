@@ -61,7 +61,20 @@ final readonly class ShellEnvelope
             // swap. Say so in the envelope's own shape rather than sending a
             // broken body: the client falls back to a real navigation, which
             // is exactly what it should do when it cannot apply a fragment.
-            return '{"shell":true,"url":"' . addslashes($this->url) . '","title":"","regions":{},"assets":{"css":[],"js":[]}}';
+            // Encoded, not hand-assembled: addslashes writes `\'` for an
+            // apostrophe, which is not a JSON escape, so a URL with one turned
+            // the fallback into a second unparseable body. SUBSTITUTE rather
+            // than THROW because this branch has nowhere left to fall back to.
+            return (string) json_encode(
+                [
+                    'shell' => true,
+                    'url' => $this->url,
+                    'title' => '',
+                    'regions' => (object) [],
+                    'assets' => ['css' => [], 'js' => []],
+                ],
+                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE
+            );
         }
     }
 }

@@ -57,18 +57,36 @@ final class ShellResponder
         $response->setHeader('Content-Type', ShellEnvelope::CONTENT_TYPE);
     }
 
-    /** Adds the shell header to whatever the response already varies on. */
+    /**
+     * Adds what this URL actually varies on to whatever it varied on already.
+     *
+     * `Accept` is in here with the shell header, and leaving it out was a hole
+     * a shared cache falls into. This URL answers THREE bodies, not two: the
+     * document, the shell envelope on `X-Semitexa-Shell`, and the framework's
+     * page JSON on `Accept: application/json`. Declaring only the shell header
+     * tells a cache that the Accept variants are interchangeable, so it can
+     * hand a browser asking for a page the JSON representation of it.
+     *
+     * The same negotiation from the other side is what made the client send no
+     * Accept at all — see {@see ShellRequest}.
+     */
     private function mergedVary(?string $existing): string
     {
         $parts = array_filter(array_map('trim', explode(',', (string) $existing)));
 
-        foreach ($parts as $part) {
-            if (strcasecmp($part, ShellRequest::HEADER) === 0) {
-                return implode(', ', $parts);
+        foreach ([ShellRequest::HEADER, 'Accept'] as $header) {
+            $already = false;
+            foreach ($parts as $part) {
+                if (strcasecmp($part, $header) === 0) {
+                    $already = true;
+                    break;
+                }
+            }
+
+            if (!$already) {
+                $parts[] = $header;
             }
         }
-
-        $parts[] = ShellRequest::HEADER;
 
         return implode(', ', $parts);
     }

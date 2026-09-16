@@ -54,7 +54,7 @@ final class ScriptNonceTest extends TestCase
 
     public function testProviderNonceReplacesAManifestDeclaredOne(): void
     {
-        $m = new \ReflectionMethod(AssetRenderer::class, 'inlineScriptNonceAttributes');
+        $m = new \ReflectionMethod(AssetRenderer::class, 'inlineNonceAttributes');
 
         // Without a provider the manifest's own attribute is kept as-is.
         $attrs = (string) $m->invoke(null, ['nonce' => 'stale-manifest-value', 'defer' => 'defer']);
@@ -67,6 +67,22 @@ final class ScriptNonceTest extends TestCase
         self::assertStringContainsString('nonce="live-nonce"', $attrs);
         self::assertStringNotContainsString('stale-manifest-value', $attrs);
         self::assertStringContainsString('defer', $attrs);
+    }
+
+    public function testInlineCssGetsTheSameSingleNonceTreatment(): void
+    {
+        // The <style> path built its attributes straight from the manifest and
+        // then appended the provider's nonce, so an entry declaring one emitted
+        // two. The browser honours whichever comes first — the stale one — and
+        // style-src drops the block, which reads as a broken page rather than a
+        // blocked one. Same helper as the script path now, for that reason.
+        $m = new \ReflectionMethod(AssetRenderer::class, 'inlineNonceAttributes');
+
+        ScriptNonceSource::register(static fn (): string => 'live-nonce');
+        $attrs = (string) $m->invoke(null, ['nonce' => 'stale-manifest-value']);
+
+        self::assertSame(1, substr_count($attrs, 'nonce='));
+        self::assertStringContainsString('nonce="live-nonce"', $attrs);
     }
 
     public function testNonceIsEscapedAndEmptyNonceIsOmitted(): void

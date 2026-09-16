@@ -181,7 +181,7 @@ final class AssetRenderer
             $safeCss = str_ireplace('</style', '<\/style', $entry['css']);
             $html .= '<style data-asset-key="'
                 . htmlspecialchars($entry['key'], ENT_QUOTES, 'UTF-8')
-                . '">' . $safeCss . '</style>' . "\n";
+                . '"' . ScriptNonceSource::attribute() . '>' . $safeCss . '</style>' . "\n";
         }
 
         return $html;
@@ -328,9 +328,13 @@ final class AssetRenderer
             return '';
         }
 
+        // style-src governs an inline <style> exactly as script-src governs an
+        // inline <script>: under a nonce policy an unstamped block is dropped,
+        // and a page that lost only its stylesheet looks broken rather than
+        // blocked.
         $attrs = self::buildAttributes($entry->attributes);
         $safeContent = str_ireplace('</style', '<\/style', $content);
-        return '<style' . $attrs . '>' . $safeContent . '</style>' . "\n";
+        return '<style' . $attrs . ScriptNonceSource::attribute() . '>' . $safeContent . '</style>' . "\n";
     }
 
     /**
@@ -341,7 +345,7 @@ final class AssetRenderer
      *
      * @param array<string, string> $attributes
      */
-    private static function inlineScriptAttributes(array $attributes): string
+    private static function inlineScriptNonceAttributes(array $attributes): string
     {
         $nonceAttr = ScriptNonceSource::attribute();
         if ($nonceAttr !== '') {
@@ -359,7 +363,7 @@ final class AssetRenderer
         }
 
         $safeContent = str_ireplace('</script', '<\/script', $content);
-        return '<script' . self::inlineScriptAttributes($entry->attributes) . '>' . $safeContent . '</script>' . "\n";
+        return '<script' . self::inlineScriptNonceAttributes($entry->attributes) . '>' . $safeContent . '</script>' . "\n";
     }
 
     /**

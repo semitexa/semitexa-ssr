@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service\Twig;
 
 use Semitexa\Ssr\Application\Service\Layout\LayoutSlotRegistry;
+use Semitexa\Core\Http\ScriptTag;
 use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
 use Twig\Environment;
 use Twig\Error\SyntaxError;
@@ -128,8 +129,62 @@ final class DeferredTemplateCompatibilityValidator
         }
 
         $this->validateNode($module, $source, $twig);
+        $this->validateInlineScripts($source);
 
         return array_values($this->issues);
+    }
+
+    /**
+     * An inline `<script>` inside a template that arrives by SSE.
+     *
+     * Markup inserted into a live document changes what a script tag means,
+     * and none of it is discoverable — it is learned by watching something not
+     * work:
+     *
+     *   - A script parsed out of a fragment and inserted is INERT. It has to
+     *     be re-created to run at all, and re-created carrying THIS document's
+     *     nonce rather than the one it was parsed with. A page under a strict
+     *     CSP therefore works while reporting a blocked script on every swap.
+     *   - It will run MORE THAN ONCE per document, so every binding it makes
+     *     has to be idempotent. A listener on `document` accumulates silently,
+     *     once per arrival.
+     *   - `DOMContentLoaded` fired long ago. A real case: an autocomplete
+     *     partial bound its fields only on that event and simply stopped
+     *     binding for any page that arrived by swap.
+     *
+     * The framework already answers all three: `#[AsUiBehavior]` plus the
+     * behavior runtime's document MutationObserver connect late-arriving
+     * markup with no ceremony and no nonce problem, because the code is a
+     * module served from its own origin.
+     */
+    private function validateInlineScripts(Source $source): void
+    {
+        $code = $source->getCode();
+
+        if (!preg_match_all('/<script\b([^>\n]*)>/i', $code, $matches, PREG_OFFSET_CAPTURE)) {
+            return;
+        }
+
+        foreach ($matches[0] as $index => [$tag, $offset]) {
+            $attributes = (string) $matches[1][$index][0];
+
+            // A data block is inert by design and a src= script is re-created
+            // with its URL intact; neither carries the three consequences.
+            if (!ScriptTag::isExecutable($attributes) || ScriptTag::hasSrc($attributes)) {
+                continue;
+            }
+
+            $this->addIssue(
+                $source,
+                substr_count($code, "\n", 0, (int) $offset) + 1,
+                'inline_script',
+                'script',
+                'This template can arrive by SSE, and an inline script in markup that arrives later is inert '
+                . 'until re-created, then runs once per arrival, and has already missed DOMContentLoaded. '
+                . 'Declare the behaviour with #[AsUiBehavior] instead — the behavior runtime connects '
+                . 'late-arriving markup, and its code is a module served from its own origin.'
+            );
+        }
     }
 
     private function validateNode(Node $node, Source $source, Environment $twig, bool $allowPrintFilters = false): void

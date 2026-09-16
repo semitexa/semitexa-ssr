@@ -54,7 +54,7 @@ final class ScriptNonceTest extends TestCase
 
     public function testProviderNonceReplacesAManifestDeclaredOne(): void
     {
-        $m = new \ReflectionMethod(AssetRenderer::class, 'inlineScriptAttributes');
+        $m = new \ReflectionMethod(AssetRenderer::class, 'inlineScriptNonceAttributes');
 
         // Without a provider the manifest's own attribute is kept as-is.
         $attrs = (string) $m->invoke(null, ['nonce' => 'stale-manifest-value', 'defer' => 'defer']);

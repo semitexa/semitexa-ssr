@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Layout;
 
+use Semitexa\Core\Pipeline\RequestTracerInterface;
 use Semitexa\Ssr\Domain\Model\DeferredSlotDefinition;
 use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
 
@@ -28,6 +29,20 @@ use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
 class LayoutSlotRegistry
 {
     public const GLOBAL_HANDLE = '*';
+
+    /**
+     * Set at worker boot when something registered a tracer; null in
+     * production, where nothing does.
+     *
+     * Wired rather than resolved: this class is static and reached from Twig,
+     * the same arrangement the SSE server uses.
+     */
+    private static ?RequestTracerInterface $tracer = null;
+
+    public static function setRequestTracer(?RequestTracerInterface $tracer): void
+    {
+        self::$tracer = $tracer;
+    }
 
     /**
      * @worker-scoped Populated at boot by AttributeDiscovery, read-only during requests.
@@ -117,10 +132,36 @@ class LayoutSlotRegistry
         $html = '';
         foreach ($entries as $entry) {
             $context = array_merge($baseContext, $entry['context'], $inlineContext);
-            if (($entry['resourceClass'] ?? null) !== null) {
-                $html .= SlotRenderer::renderEntry($entry, $context);
-            } else {
-                $html .= $twig->render($entry['template'], $context);
+
+            // TIMED because "should this region be deferred" is a question
+            // with a number as its answer, and nothing had the number.
+            // Deferring is sold as strictly better and is not: a skeleton buys
+            // patience for a region that takes time, and for one that does not
+            // it costs a round trip and a frame of placeholder to hide work
+            // that had already finished. Measured on a real console
+            // 2026-09-16, no region on it was slow enough to deserve one.
+            //
+            // A slot renders inside Twig, outside every pipeline seam, so the
+            // waterfall showed a single `response.render` and no way to say
+            // which region paid for it. One null check per slot when nothing
+            // registered a tracer, which is every production worker.
+            self::$tracer?->begin('slot.render', [
+                'slot' => $slotKey,
+                'handle' => $pageHandle,
+                'template' => $entry['template'] ?? '',
+                'resource' => $entry['resourceClass'] ?? null,
+                'deferred' => (bool) ($entry['deferred'] ?? false),
+            ]);
+
+            try {
+                $html .= ($entry['resourceClass'] ?? null) !== null
+                    ? SlotRenderer::renderEntry($entry, $context)
+                    : $twig->render($entry['template'], $context);
+            } finally {
+                // finally: a slot that renders by throwing is the one whose
+                // duration matters most, and an unclosed span would nest every
+                // later span under a region that stopped rendering.
+                self::$tracer?->end('slot.render');
             }
         }
 

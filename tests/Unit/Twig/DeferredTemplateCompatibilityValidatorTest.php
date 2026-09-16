@@ -194,4 +194,43 @@ TWIG,
         self::assertContains('set-capture', $names);
         self::assertContains('for-else', $names);
     }
+
+    /**
+     * A deferred slot's template arrives in a live document over SSE. An
+     * inline script in it is inert until re-created, then runs once per
+     * arrival, and has already missed DOMContentLoaded — none of which is
+     * discoverable. It is learned by watching something not work.
+     */
+    public function testValidateSourceFlagsAnInlineScriptInADeferredTemplate(): void
+    {
+        $validator = new DeferredTemplateCompatibilityValidator();
+
+        $issues = $validator->validateSource(new Source(
+            "<div class=\"card\">{{ title }}</div>\n<script>document.addEventListener('click', go);</script>",
+            'inline-script',
+            '/tmp/inline-script.twig'
+        ));
+
+        self::assertCount(1, $issues);
+        self::assertSame('inline_script', $issues[0]->construct);
+        self::assertSame(2, $issues[0]->line);
+        self::assertStringContainsString('once per arrival', $issues[0]->message);
+        self::assertStringContainsString('AsUiBehavior', $issues[0]->message);
+    }
+
+    public function testValidateSourceLeavesDataBlocksAndExternalScriptsAlone(): void
+    {
+        // A data block never executes, and a src= script is re-created with
+        // its URL intact. Neither carries the three consequences, and a lint
+        // that flagged them would be one people switch off.
+        $validator = new DeferredTemplateCompatibilityValidator();
+
+        $issues = $validator->validateSource(new Source(
+            "<script type=\"application/json\" data-props>{}</script>\n<script src=\"/assets/x.js\"></script>",
+            'safe-scripts',
+            '/tmp/safe-scripts.twig'
+        ));
+
+        self::assertSame([], $issues);
+    }
 }

@@ -8,6 +8,7 @@ use Semitexa\Ssr\Application\Service\Async\SseServer;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Log\LoggerInterface;
+use Semitexa\Core\Pipeline\RequestTracerInterface;
 use Semitexa\Ssr\Application\Service\Async\SseAsyncResultDelivery;
 use Semitexa\Ssr\Application\Service\Component\ComponentHtmlRenderer;
 use Semitexa\Ssr\Application\Service\UiEvent\UiSseSessionState;
@@ -39,6 +40,17 @@ final class DeferredBlockOrchestrator
 
     #[InjectAsReadonly]
     protected LoggerInterface $logger;
+
+    /**
+     * Set at worker boot when something registered a tracer; null in
+     * production, where nothing does.
+     */
+    private ?RequestTracerInterface $tracer = null;
+
+    public function setRequestTracer(?RequestTracerInterface $tracer): void
+    {
+        $this->tracer = $tracer;
+    }
 
     /**
      * Called after SSE connection established.
@@ -583,28 +595,48 @@ final class DeferredBlockOrchestrator
         array $pageContext,
         ?array $requestSnapshot = null,
     ): array {
-        if ($slot->resourceClass !== null) {
-            $slotInstance = SlotResourceFactory::create($slot->resourceClass);
-            if ($pageContext !== []) {
-                $slotInstance = $slotInstance->withRenderContext($pageContext);
+        // Timed for the same reason the inline path is: "is this region slow
+        // enough to deserve a skeleton" is a question with a number as its
+        // answer, and this is where the number lives for a slot that is
+        // ALREADY deferred. A slot resolving in two milliseconds is one whose
+        // skeleton costs a round trip to hide work that had already finished.
+        $this->tracer?->begin('slot.resolve', [
+            'slot' => $slot->slotId,
+            'resource' => $slot->resourceClass,
+            'mode' => $slot->mode,
+            'deferred' => true,
+        ]);
+
+        try {
+            if ($slot->resourceClass !== null) {
+                $slotInstance = SlotResourceFactory::create($slot->resourceClass);
+                if ($pageContext !== []) {
+                    $slotInstance = $slotInstance->withRenderContext($pageContext);
+                }
+                $slotInstance = SlotHandlerPipeline::execute($slotInstance);
+                SlotAssetCollector::collectFromSlot($slotInstance);
+
+                return array_merge($slotInstance->getStaticContext(), $slotInstance->getRenderContext());
             }
-            $slotInstance = SlotHandlerPipeline::execute($slotInstance);
-            SlotAssetCollector::collectFromSlot($slotInstance);
-            return array_merge($slotInstance->getStaticContext(), $slotInstance->getRenderContext());
+
+            $provider = $this->dataProviderRegistry->resolve($slot->slotId, $pageHandle);
+            if ($provider === null) {
+                return [];
+            }
+
+            $context = new DataProviderContext(
+                request: $requestSnapshot,
+                slotId: $slot->slotId,
+                pageHandle: $pageHandle,
+            );
+
+            return $provider->resolve($context, $pageContext);
+        } finally {
+            // In a finally because a slot resolving by throwing is the case
+            // where the duration matters most, and an unclosed span would
+            // nest every later slot underneath this one.
+            $this->tracer?->end('slot.resolve');
         }
-
-        $provider = $this->dataProviderRegistry->resolve($slot->slotId, $pageHandle);
-        if ($provider === null) {
-            return [];
-        }
-
-        $context = new DataProviderContext(
-            request: $requestSnapshot,
-            slotId: $slot->slotId,
-            pageHandle: $pageHandle,
-        );
-
-        return $provider->resolve($context, $pageContext);
     }
 
     private function applyLocale(?string $locale): void

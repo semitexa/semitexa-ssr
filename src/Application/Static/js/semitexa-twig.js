@@ -27,6 +27,37 @@
     // fill still-pending slots via the XHR fallback so placeholders never hang.
     var SHARED_STREAM_FALLBACK_MS = 6000;
 
+    // ── The manifest ───────────────────────────────────────────────────────
+    //
+    // The server emits it as <script type="application/json"
+    // data-ssr-deferred-manifest>, NOT as an executable assignment: a strict
+    // script-src refuses the second one without a nonce, and refuses it
+    // silently. window.__SSR_DEFERRED stays the contract every reader already
+    // uses — this function is what fills it, and it memoizes so whichever
+    // runtime runs first (this one, or platform-ui's event-runtime.js, which
+    // carries the same reader for the same reason) pays the parse once.
+    var MANIFEST_SELECTOR = 'script[type="application/json"][data-ssr-deferred-manifest]';
+
+    function readManifest() {
+        if (window.__SSR_DEFERRED) return window.__SSR_DEFERRED;
+        // This file is also loaded by the isomorphic renderer under Node,
+        // where `document` is a stub with no query methods. Reading the
+        // global first kept that host working by accident; the block below
+        // has to say so on purpose.
+        if (typeof document === 'undefined' || typeof document.querySelector !== 'function') return null;
+        var el = document.querySelector(MANIFEST_SELECTOR);
+        if (!el) return null;
+        var parsed;
+        try {
+            parsed = JSON.parse(el.textContent || '');
+        } catch (e) {
+            return null;
+        }
+        if (!parsed || typeof parsed !== 'object') return null;
+        window.__SSR_DEFERRED = parsed;
+        return parsed;
+    }
+
     // ── HTML Escaping ──────────────────────────────────────────────────
     var ESC_MAP = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'};
     // PHP's string cast, which is what Twig prints - NOT JavaScript's.
@@ -933,7 +964,7 @@
 
         setLocale: function (locale) {
             if (!locale) return;
-            var manifest = this._manifest || window.__SSR_DEFERRED;
+            var manifest = this._manifest || readManifest();
             if (!manifest || !manifest.requestId || !manifest.sessionId) return;
 
             if (!this._connected) {
@@ -958,17 +989,19 @@
         }
     };
 
+    SemitexaSSR.readManifest = readManifest;
     window.SemitexaSSR = SemitexaSSR;
 
     // Auto-initialize when manifest is available. Consume the unified owner's
     // shared stream when present; otherwise self-open the legacy stream. See
     // the header comment for the conditional.
     function bootstrapDeferred() {
-        if (!window.__SSR_DEFERRED) return;
+        var manifest = readManifest();
+        if (!manifest) return;
         if (SemitexaSSR._hasUnifiedOwner()) {
-            SemitexaSSR._consume(window.__SSR_DEFERRED);
+            SemitexaSSR._consume(manifest);
         } else {
-            SemitexaSSR._connect(window.__SSR_DEFERRED);
+            SemitexaSSR._connect(manifest);
         }
     }
     if (document.readyState === 'loading') {

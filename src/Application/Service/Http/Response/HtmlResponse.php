@@ -14,6 +14,7 @@ use Semitexa\Ssr\Context\IsomorphicContextStore;
 use Semitexa\Ssr\Context\PageRenderContextStore;
 use Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore;
 use Semitexa\Ssr\Application\Service\Asset\AssetRenderer;
+use Semitexa\Ssr\Application\Service\Shell\ShellResponder;
 use Semitexa\Ssr\Application\Service\Component\ComponentInstanceStore;
 use Semitexa\Ssr\Application\Service\Component\ComponentRegistry;
 use Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry;
@@ -223,6 +224,14 @@ class HtmlResponse extends ResourceResponse
         ) {
             $this->renderTemplate($this->declaredTemplate);
         }
+
+        // One renderer, two shapes. The document above is the whole truth and
+        // is rendered exactly as it always was; when the client asked for the
+        // chrome-less shape, the regions the layout marked are read back OUT
+        // of it. The rule and the Vary bookkeeping live in the shell service —
+        // this is the seam, not the owner.
+        (new ShellResponder())->apply($this);
+
         return parent::toCoreResponse();
     }
 

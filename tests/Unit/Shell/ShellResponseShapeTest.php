@@ -1,0 +1,129 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Semitexa\Ssr\Tests\Unit\Shell;
+
+use PHPUnit\Framework\Attributes\Test;
+use PHPUnit\Framework\TestCase;
+use Semitexa\Ssr\Application\Service\Http\Response\HtmlResponse;
+use Semitexa\Ssr\Application\Service\Shell\ShellRequest;
+
+/**
+ * The two shapes of one page, at the seam where the choice is made.
+ *
+ * The rule these tests hold the mechanism to: the DOCUMENT is the whole truth.
+ * A direct hit, a bookmark, a crawler and a visitor with no JavaScript get
+ * exactly what they got before the shell existed, from the same route, the
+ * same handler and the same template. The chrome-less shape is derived from
+ * that document and never rendered its own way.
+ */
+final class ShellResponseShapeTest extends TestCase
+{
+    private const PAGE = '<!doctype html><html><head><title>Orders</title>'
+        . '<link rel="stylesheet" href="/assets/app.css"></head>'
+        . '<body><nav>chrome that never changes</nav>'
+        . '<main data-shell-region="main"><h1>Orders</h1></main>'
+        . '<script src="/assets/app.js"></script></body></html>';
+
+    protected function tearDown(): void
+    {
+        ShellRequest::forceForTesting(null);
+    }
+
+    private function respond(string $html): \Semitexa\Core\HttpResponse
+    {
+        $response = new HtmlResponse();
+        $response->setContent($html);
+
+        return $response->toCoreResponse();
+    }
+
+    #[Test]
+    public function anOrdinaryRequestGetsTheDocumentUntouched(): void
+    {
+        ShellRequest::forceForTesting(false);
+
+        $response = $this->respond(self::PAGE);
+
+        self::assertSame(self::PAGE, $response->getContent());
+        self::assertStringContainsString('text/html', $response->getHeaders()['Content-Type']);
+    }
+
+    #[Test]
+    public function aShellRequestGetsTheRegionsAndNotTheChrome(): void
+    {
+        ShellRequest::forceForTesting(true);
+
+        $response = $this->respond(self::PAGE);
+        $payload = json_decode($response->getContent(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertTrue($payload['shell']);
+        self::assertSame('Orders', $payload['title']);
+        self::assertSame('<main data-shell-region="main"><h1>Orders</h1></main>', $payload['regions']['main']);
+        self::assertStringNotContainsString('chrome that never changes', $response->getContent());
+        self::assertSame(['/assets/app.css'], $payload['assets']['css']);
+        self::assertSame([['src' => '/assets/app.js', 'type' => '']], $payload['assets']['js']);
+        self::assertStringContainsString('application/json', $response->getHeaders()['Content-Type']);
+    }
+
+    #[Test]
+    public function bothShapesDeclareThatTheUrlVariesOnTheHeader(): void
+    {
+        // The document's Vary is the load-bearing one: it is the response that
+        // gets cached, and a cache that does not know the header is part of
+        // the key will serve the chrome-less JSON to a real navigation.
+        ShellRequest::forceForTesting(false);
+        self::assertSame(ShellRequest::HEADER, $this->respond(self::PAGE)->getHeaders()['Vary'] ?? null);
+
+        ShellRequest::forceForTesting(true);
+        self::assertSame(ShellRequest::HEADER, $this->respond(self::PAGE)->getHeaders()['Vary'] ?? null);
+    }
+
+    #[Test]
+    public function anExistingVaryIsAppendedToRatherThanOverwritten(): void
+    {
+        ShellRequest::forceForTesting(false);
+
+        $response = new HtmlResponse();
+        $response->setContent(self::PAGE);
+        $response->setHeader('Vary', 'Accept-Encoding');
+
+        self::assertSame('Accept-Encoding, ' . ShellRequest::HEADER, $response->toCoreResponse()->getHeaders()['Vary']);
+    }
+
+    #[Test]
+    public function theHeaderIsNotDeclaredTwice(): void
+    {
+        ShellRequest::forceForTesting(true);
+
+        $response = new HtmlResponse();
+        $response->setContent(self::PAGE);
+        $response->setHeader('Vary', ShellRequest::HEADER);
+
+        self::assertSame(ShellRequest::HEADER, $response->toCoreResponse()->getHeaders()['Vary']);
+    }
+
+    #[Test]
+    public function aPageThatMarksNoRegionGetsItsDocumentEvenOnAShellRequest(): void
+    {
+        // There is nothing to swap. Answering with an empty envelope would
+        // have the client replace a working page with nothing at all.
+        ShellRequest::forceForTesting(true);
+
+        $plain = '<!doctype html><html><head><title>Plain</title></head><body><p>no regions</p></body></html>';
+
+        self::assertSame($plain, $this->respond($plain)->getContent());
+    }
+
+    #[Test]
+    public function anEmptyResponseIsLeftAlone(): void
+    {
+        ShellRequest::forceForTesting(true);
+
+        $response = new HtmlResponse();
+        $response->disableAutoRender();
+
+        self::assertSame('', $response->toCoreResponse()->getContent());
+    }
+}

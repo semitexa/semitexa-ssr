@@ -111,6 +111,7 @@ final class ShellResponder
             title: $this->extractor->title($html),
             regions: $regions,
             assets: $this->extractor->assets($html),
+            deferredManifest: $this->extractor->deferredManifest($html),
         );
     }
 

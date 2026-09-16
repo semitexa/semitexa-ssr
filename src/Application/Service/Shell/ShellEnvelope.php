@@ -21,18 +21,20 @@ final readonly class ShellEnvelope
     public const CONTENT_TYPE = 'application/json; charset=UTF-8';
 
     /**
-     * @param array<string, string>                                            $regions name => outer HTML
-     * @param array{css: list<string>, js: list<array{src: string, type: string}>} $assets
+     * @param array<string, string> $regions name => outer HTML
+     * @param array{css: list<array{href: string, attrs: array<string, string>}>, js: list<array{src: string, type: string, attrs: array<string, string>}>} $assets
+     * @param string $deferredManifest the page's deferred-slot manifest JSON, or '' when it defers nothing
      */
     public function __construct(
         public string $url,
         public string $title,
         public array $regions,
         public array $assets,
+        public string $deferredManifest = '',
     ) {}
 
     /**
-     * @return array{shell: true, url: string, title: string, regions: array<string, string>, assets: array{css: list<string>, js: list<array{src: string, type: string}>}}
+     * @return array{shell: true, url: string, title: string, regions: array<string, string>, assets: array{css: list<array{href: string, attrs: array<string, string>}>, js: list<array{src: string, type: string, attrs: array<string, string>}>}, deferredManifest: string}
      */
     public function toArray(): array
     {
@@ -46,6 +48,10 @@ final readonly class ShellEnvelope
             'title' => $this->title,
             'regions' => $this->regions,
             'assets' => $this->assets,
+            // The manifest lives outside every region, so a swap that carried
+            // only regions left the arriving skeletons bound to the PREVIOUS
+            // page's request. Empty when the page defers nothing.
+            'deferredManifest' => $this->deferredManifest,
         ];
     }
 
@@ -72,6 +78,7 @@ final readonly class ShellEnvelope
                     'title' => '',
                     'regions' => (object) [],
                     'assets' => ['css' => [], 'js' => []],
+                    'deferredManifest' => '',
                 ],
                 JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE
             );

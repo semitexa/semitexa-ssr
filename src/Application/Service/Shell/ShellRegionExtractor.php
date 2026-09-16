@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Shell;
 
+use Semitexa\Ssr\Application\Service\Isomorphic\PlaceholderRenderer;
+
 /**
  * Pulls the per-page regions out of a rendered document.
  *
@@ -29,9 +31,36 @@ final class ShellRegionExtractor
     public const ATTRIBUTE = 'data-shell-region';
 
     /** Elements whose contents are TEXT, not markup, and so hold no tags to count. */
-    private const RAW_TEXT_ELEMENTS = ['script', 'style', 'textarea'];
+    /**
+     * Elements whose CONTENT is text rather than markup.
+     *
+     * `iframe`, `noembed`, `noframes` and `xmp` are here because HTML says so,
+     * not because anything has hit them yet: the point of the mask is that a
+     * closing tag written as TEXT inside one of them cannot be counted, and a
+     * list that stops at the three obvious ones leaves the other four able to
+     * truncate a region exactly the same way.
+     */
+    private const RAW_TEXT_ELEMENTS = ['script', 'style', 'textarea', 'title', 'iframe', 'noembed', 'noframes', 'xmp'];
 
     private const COMMENT_SPAN = '/<!--.*?-->/s';
+
+    /**
+     * A closing tag's opening two characters, spelled in two pieces.
+     *
+     * Written whole, this file would CONTAIN a closer — which is the condition
+     * `lint:inline-script` uses to decide a file emits markup at all. It would
+     * then scan this file and report the patterns above as nonce-less script
+     * tags: the extractor filing findings against itself. Three times in one
+     * day, so the pieces live in a constant rather than in each author's
+     * memory.
+     */
+    private const CLOSER = '<' . '/';
+
+    /** Script attributes that change what the file IS or when it runs. */
+    private const SCRIPT_ATTRIBUTES = ['integrity', 'crossorigin', 'referrerpolicy', 'defer', 'async', 'nomodule'];
+
+    /** Stylesheet attributes that change whether and how it applies. */
+    private const LINK_ATTRIBUTES = ['media', 'integrity', 'crossorigin', 'referrerpolicy'];
 
     /**
      * Every region the document marks, keyed by name, in document order.
@@ -67,7 +96,11 @@ final class ShellRegionExtractor
                 continue;
             }
 
-            $regions[$name] ??= substr($html, $start, $end - $start);
+            // Decoded like the title and the asset URLs: the attribute is
+            // SERIALISED in the document, so a region named `orders&returns`
+            // reads back as `orders&amp;returns`. The DOM gives the client the
+            // decoded name, so the envelope key never matched the element.
+            $regions[self::decode((string) $name)] ??= substr($html, $start, $end - $start);
 
             // Resume just INSIDE this region, not past it. Regions nest — a
             // page region holding a grid region is the ordinary case — and
@@ -94,13 +127,9 @@ final class ShellRegionExtractor
     {
         $patterns = [self::COMMENT_SPAN];
 
-        // Assembled rather than written out, the way InlineScriptScanner spells
-        // its own closing tag in two pieces: a file containing the literal
-        // closer is a file the inline-script lint scans, and the patterns just
-        // above then match as nonce-less script tags — this file reporting
-        // itself.
+        // Assembled from self::CLOSER for the reason spelled out there.
         foreach (self::RAW_TEXT_ELEMENTS as $element) {
-            $patterns[] = '#<' . $element . '\b[^>]*>.*?<' . '/' . $element . '\s*>#is';
+            $patterns[] = '#<' . $element . '\b[^>]*>.*?' . self::CLOSER . $element . '\s*>#is';
         }
 
         foreach ($patterns as $pattern) {
@@ -125,6 +154,26 @@ final class ShellRegionExtractor
     }
 
     /**
+     * The deferred-slot manifest this document carries, or ''.
+     *
+     * It is emitted at body end, OUTSIDE every marked region, so a swap that
+     * carried only the regions left the new page's skeletons waiting on a
+     * request id, session and bind token that belonged to the page before it.
+     * The skeletons simply sat there — no error, no frame, and nothing on the
+     * server able to notice.
+     *
+     * Returned as the JSON it already is, because the client replaces the
+     * element wholesale and re-reads it.
+     */
+    public function deferredManifest(string $html): string
+    {
+        $pattern = '#<script\b[^>]*\b' . preg_quote(PlaceholderRenderer::MANIFEST_ATTRIBUTE, '#')
+            . '\b[^>]*>(.*?)' . self::CLOSER . 'script\s*>#is';
+
+        return preg_match($pattern, $html, $m) === 1 ? trim($m[1]) : '';
+    }
+
+    /**
      * An attribute as the document SERIALISED it, back to the value it means.
      *
      * `/feed?a=1&b=2` is written `a=1&amp;b=2`, and the client assigns these
@@ -145,23 +194,40 @@ final class ShellRegionExtractor
      * with, and re-running one on every swap is the bug that makes a swapped
      * page slower than a reload.
      *
-     * EACH SCRIPT CARRIES ITS TYPE, and that is not bookkeeping. The pipeline
-     * emits `type="module"` for the ESM runtimes and a plain `defer` script
-     * for a page's own file, and the two are not interchangeable: adding a
-     * classic script as a module changes its scope and its timing, and adding
-     * a module as a classic script is a syntax error the moment it imports
-     * anything. A client cannot tell from the URL, so the server says.
+     * EACH ASSET CARRIES THE ATTRIBUTES THAT CHANGE WHAT IT IS, and that is
+     * not bookkeeping. The client RE-CREATES the tag, so anything it is not
+     * told is lost: `type` decides whether a file is a module or a classic
+     * script (adding one as the other changes its scope and its timing, and a
+     * module added as a classic script is a syntax error the moment it
+     * imports); `integrity` is the difference between a checked file and an
+     * unchecked one; `defer`, `async` and `nomodule` decide when and whether
+     * it runs at all; `media` decides whether a stylesheet applies. A client
+     * cannot tell any of that from the URL, so the server says.
      *
-     * @return array{css: list<string>, js: list<array{src: string, type: string}>}
+     * `nonce` is deliberately NOT forwarded. It belongs to the response this
+     * document came from, and the client stamps the one the LIVE document
+     * carries — copying the old value would hand the browser a nonce its own
+     * policy never issued.
+     *
+     * @return array{css: list<array{href: string, attrs: array<string, string>}>, js: list<array{src: string, type: string, attrs: array<string, string>}>}
      */
     public function assets(string $html): array
     {
         $css = [];
+        $seenCss = [];
         if (preg_match_all('#<link\b[^>]*rel=["\']?stylesheet["\']?[^>]*>#i', $html, $links)) {
             foreach ($links[0] as $link) {
-                if (preg_match('#href=["\']([^"\']+)["\']#i', $link, $href) === 1) {
-                    $css[] = self::decode($href[1]);
+                if (preg_match('#href=["\']([^"\']+)["\']#i', $link, $href) !== 1) {
+                    continue;
                 }
+
+                $url = self::decode($href[1]);
+                if (isset($seenCss[$url])) {
+                    continue;
+                }
+                $seenCss[$url] = true;
+
+                $css[] = ['href' => $url, 'attrs' => self::carriedAttributes($link, self::LINK_ATTRIBUTES)];
             }
         }
 
@@ -180,14 +246,39 @@ final class ShellRegionExtractor
                     $type = strtolower(trim($m[1]));
                 }
 
-                $js[] = ['src' => $src, 'type' => $type];
+                $js[] = [
+                    'src' => $src,
+                    'type' => $type,
+                    'attrs' => self::carriedAttributes($script[0], self::SCRIPT_ATTRIBUTES),
+                ];
             }
         }
 
-        return [
-            'css' => array_values(array_unique($css)),
-            'js' => $js,
-        ];
+        return ['css' => $css, 'js' => $js];
+    }
+
+    /**
+     * @param list<string> $wanted
+     * @return array<string, string>
+     */
+    private static function carriedAttributes(string $tag, array $wanted): array
+    {
+        $out = [];
+
+        foreach ($wanted as $name) {
+            $quoted = preg_quote($name, '#');
+            if (preg_match('#(?<![\w-])' . $quoted . '=["\']([^"\']*)["\']#i', $tag, $m) === 1) {
+                $out[$name] = self::decode($m[1]);
+                continue;
+            }
+
+            // A boolean attribute: present, no value.
+            if (preg_match('#(?<![\w-])' . $quoted . '(?=[\s/>])#i', $tag) === 1) {
+                $out[$name] = '';
+            }
+        }
+
+        return $out;
     }
 
     /**

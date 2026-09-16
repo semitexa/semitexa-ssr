@@ -161,17 +161,13 @@ final class DeferredTemplateCompatibilityValidator
     {
         $code = self::markupOf($source->getCode());
 
-        // DOCUMENT_PATTERN, not the source one: what is left after the Twig
-        // tags are blanked IS markup, so an opening tag wrapped across lines —
-        // ordinary in a hand-formatted template — has to be seen. The
-        // one-line bound exists for text where a `>` may be an operator, and
-        // there is none left here.
-        if (!preg_match_all(ScriptTag::DOCUMENT_PATTERN, $code, $matches, PREG_OFFSET_CAPTURE)) {
-            return;
-        }
-
-        foreach ($matches[0] as $index => [$tag, $offset]) {
-            $attributes = (string) $matches[1][$index][0];
+        // The document scanner, not the source pattern: what is left after the
+        // Twig tags are blanked IS markup. It sees an opening tag wrapped
+        // across lines — ordinary in a hand-formatted template — it does not
+        // end a tag on a `>` inside a quoted value, and it does not read the
+        // text inside a script body as another tag.
+        foreach (ScriptTag::documentTags($code) as $tag) {
+            $attributes = $tag['attributes'];
 
             // A data block is inert by design and a src= script is re-created
             // with its URL intact; neither carries the three consequences.
@@ -181,7 +177,7 @@ final class DeferredTemplateCompatibilityValidator
 
             $this->addIssue(
                 $source,
-                substr_count($code, "\n", 0, (int) $offset) + 1,
+                substr_count($code, "\n", 0, $tag['start']) + 1,
                 'inline_script',
                 'script',
                 'This template can arrive by SSE, and an inline script in markup that arrives later is inert '

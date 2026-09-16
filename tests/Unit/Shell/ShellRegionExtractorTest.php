@@ -150,7 +150,7 @@ final class ShellRegionExtractorTest extends TestCase
             . '<script src="/js/app.js?v=1&amp;b=2"></script>'
         );
 
-        self::assertSame(['/css/app.css?v=1&theme=dark'], $assets['css']);
+        self::assertSame('/css/app.css?v=1&theme=dark', $assets['css'][0]['href']);
         self::assertSame('/js/app.js?v=1&b=2', $assets['js'][0]['src']);
     }
 
@@ -187,8 +187,8 @@ final class ShellRegionExtractorTest extends TestCase
 
         self::assertSame(
             [
-                'css' => ['/assets/app.css?v=1'],
-                'js' => [['src' => '/assets/app.js?v=2', 'type' => '']],
+                'css' => [['href' => '/assets/app.css?v=1', 'attrs' => []]],
+                'js' => [['src' => '/assets/app.js?v=2', 'type' => '', 'attrs' => ['defer' => '']]],
             ],
             $this->extractor->assets($html),
         );
@@ -199,7 +199,7 @@ final class ShellRegionExtractorTest extends TestCase
     {
         $html = '<script src="/a.js"></script><script src="/a.js"></script>';
 
-        self::assertSame([['src' => '/a.js', 'type' => '']], $this->extractor->assets($html)['js']);
+        self::assertSame([['src' => '/a.js', 'type' => '', 'attrs' => []]], $this->extractor->assets($html)['js']);
     }
 
     #[Test]
@@ -212,10 +212,54 @@ final class ShellRegionExtractorTest extends TestCase
 
         self::assertSame(
             [
-                ['src' => '/runtime.js', 'type' => 'module'],
-                ['src' => '/legacy.js', 'type' => ''],
+                ['src' => '/runtime.js', 'type' => 'module', 'attrs' => []],
+                ['src' => '/legacy.js', 'type' => '', 'attrs' => ['defer' => '']],
             ],
             $this->extractor->assets($html)['js'],
         );
+    }
+
+    #[Test]
+    public function anAssetKeepsTheAttributesThatDecideWhatItIs(): void
+    {
+        // The client RE-CREATES the tag, so anything the envelope does not
+        // name is lost: an integrity hash that was required, a module that
+        // must not run for module-aware browsers, a stylesheet meant for
+        // print only. The envelope used to carry src and type and nothing
+        // else.
+        $html = '<link rel="stylesheet" href="/print.css" media="print" integrity="sha384-css">'
+            . '<script src="/legacy.js" nomodule integrity="sha384-js" crossorigin="anonymous" async></script>';
+
+        $assets = $this->extractor->assets($html);
+
+        self::assertSame(['media' => 'print', 'integrity' => 'sha384-css'], $assets['css'][0]['attrs']);
+        self::assertSame(
+            ['integrity' => 'sha384-js', 'crossorigin' => 'anonymous', 'async' => '', 'nomodule' => ''],
+            $assets['js'][0]['attrs'],
+        );
+    }
+
+    #[Test]
+    public function theNonceIsNotCarriedForwardWithAnAsset(): void
+    {
+        // It belongs to the response this document came from. The client
+        // stamps the LIVE document's nonce; copying the old one would hand the
+        // browser a value its own policy never issued.
+        $html = '<script src="/a.js" nonce="from-the-old-response"></script>';
+
+        self::assertSame([], $this->extractor->assets($html)['js'][0]['attrs']);
+    }
+
+    #[Test]
+    public function theDeferredManifestTravelsWithTheEnvelope(): void
+    {
+        // It sits at body end, outside every marked region, so a swap that
+        // carried only regions left the arriving skeletons bound to the
+        // previous page's request — waiting for frames that would never come.
+        $html = '<main data-shell-region="main">x</main>'
+            . '<script type="application/json" data-ssr-deferred-manifest>{"requestId":"r-2"}</script>';
+
+        self::assertSame('{"requestId":"r-2"}', $this->extractor->deferredManifest($html));
+        self::assertSame('', $this->extractor->deferredManifest('<main data-shell-region="main">x</main>'));
     }
 }

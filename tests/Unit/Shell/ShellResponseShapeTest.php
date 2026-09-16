@@ -63,8 +63,9 @@ final class ShellResponseShapeTest extends TestCase
         self::assertSame('Orders', $payload['title']);
         self::assertSame('<main data-shell-region="main"><h1>Orders</h1></main>', $payload['regions']['main']);
         self::assertStringNotContainsString('chrome that never changes', $response->getContent());
-        self::assertSame(['/assets/app.css'], $payload['assets']['css']);
-        self::assertSame([['src' => '/assets/app.js', 'type' => '']], $payload['assets']['js']);
+        self::assertSame([['href' => '/assets/app.css', 'attrs' => []]], $payload['assets']['css']);
+        self::assertSame([['src' => '/assets/app.js', 'type' => '', 'attrs' => []]], $payload['assets']['js']);
+        self::assertSame('', $payload['deferredManifest'], 'this page defers nothing');
         self::assertStringContainsString('application/json', $response->getHeaders()['Content-Type']);
     }
 

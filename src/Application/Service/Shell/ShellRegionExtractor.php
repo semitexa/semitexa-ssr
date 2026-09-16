@@ -170,7 +170,15 @@ final class ShellRegionExtractor
         $pattern = '#<script\b[^>]*\b' . preg_quote(PlaceholderRenderer::MANIFEST_ATTRIBUTE, '#')
             . '\b[^>]*>(.*?)' . self::CLOSER . 'script\s*>#is';
 
-        return preg_match($pattern, $html, $m) === 1 ? trim($m[1]) : '';
+        // The LAST one. A response can append an updated manifest after an
+        // earlier block is already in the document, and taking the first
+        // handed the client a request id, session and bind token that the
+        // server had already replaced.
+        if (preg_match_all($pattern, $html, $matches) !== 1 && $matches[1] === []) {
+            return '';
+        }
+
+        return trim((string) end($matches[1]));
     }
 
     /**

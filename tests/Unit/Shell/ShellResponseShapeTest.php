@@ -119,6 +119,27 @@ final class ShellResponseShapeTest extends TestCase
     }
 
     #[Test]
+    public function aLowerCaseVaryIsMergedRatherThanShadowedBySecondHeader(): void
+    {
+        ShellRequest::forceForTesting(false);
+
+        // Header names are case-insensitive and this response's array is not,
+        // so a `vary` set by anything upstream was missed and a second `Vary`
+        // entry was added beside it. Swoole's header() is case-insensitive in
+        // turn: the later one wins and the response ships without `Cookie`, so
+        // a shared cache serves one visitor's page to another.
+        $response = new HtmlResponse();
+        $response->setContent(self::PAGE);
+        $response->setHeader('vary', 'Cookie');
+
+        $headers = $response->toCoreResponse()->getHeaders();
+        $names = array_filter(array_keys($headers), static fn (string $n): bool => strcasecmp($n, 'Vary') === 0);
+
+        self::assertCount(1, $names, 'one Vary, however it is spelled');
+        self::assertSame('Cookie, ' . ShellRequest::HEADER . ', Accept', $headers[array_values($names)[0]]);
+    }
+
+    #[Test]
     public function aPageThatMarksNoRegionGetsItsDocumentEvenOnAShellRequest(): void
     {
         // There is nothing to swap. Answering with an empty envelope would

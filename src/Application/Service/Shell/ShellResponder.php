@@ -38,10 +38,16 @@ final class ShellResponder
      */
     public function apply(ResourceResponse $response): void
     {
-        $response->setHeader(
-            ShellRequest::VARY_HEADER,
-            $this->mergedVary($response->getHeaders()[ShellRequest::VARY_HEADER] ?? null),
-        );
+        // Found case-insensitively and rewritten UNDER ITS OWN KEY. Header
+        // names do not care about case and ResourceResponse's array does, so
+        // a response that already said `vary: Cookie` was missed here and got
+        // a second `Vary: …` entry beside it. Swoole's header() is
+        // case-insensitive in turn, so the later one wins and the response
+        // ships without `Cookie` — a shared cache then serves one visitor's
+        // page to another. One key, merged in place.
+        $key = $this->varyHeaderKey($response->getHeaders());
+
+        $response->setHeader($key, $this->mergedVary($response->getHeaders()[$key] ?? null));
 
         $html = $response->getContent();
         if ($html === '') {
@@ -55,6 +61,22 @@ final class ShellResponder
 
         $response->setContent($envelope->toJson());
         $response->setHeader('Content-Type', ShellEnvelope::CONTENT_TYPE);
+    }
+
+    /**
+     * The key this response already spells `Vary` with, or ours if it has none.
+     *
+     * @param array<string, string> $headers
+     */
+    private function varyHeaderKey(array $headers): string
+    {
+        foreach (array_keys($headers) as $name) {
+            if (strcasecmp($name, ShellRequest::VARY_HEADER) === 0) {
+                return $name;
+            }
+        }
+
+        return ShellRequest::VARY_HEADER;
     }
 
     /**

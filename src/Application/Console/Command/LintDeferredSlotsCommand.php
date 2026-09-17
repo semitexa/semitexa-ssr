@@ -173,9 +173,20 @@ final class LintDeferredSlotsCommand extends Command
                 }
 
                 $contents = @file_get_contents($file->getPathname());
-                if ($contents !== false) {
-                    $sources[$file->getPathname()] = $contents;
+
+                // A template it cannot READ is not a template it can clear.
+                // Omitted silently, the one file holding the disagreement
+                // leaves the audit reporting `clean: true` — and `--strict`
+                // succeeds too, because no finding exists to block on. The
+                // catch around this reports the failure instead.
+                if ($contents === false) {
+                    throw new \RuntimeException(sprintf(
+                        'Could not read the template %s. The audit cannot clear a file it cannot open.',
+                        $file->getPathname()
+                    ));
                 }
+
+                $sources[$file->getPathname()] = $contents;
             }
         }
 

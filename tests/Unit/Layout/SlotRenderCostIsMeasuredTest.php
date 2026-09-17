@@ -11,7 +11,9 @@ use Semitexa\Core\Discovery\ClassDiscovery;
 use Semitexa\Core\ModuleRegistry;
 use Semitexa\Ssr\Application\Service\Layout\LayoutSlotRegistry;
 use Semitexa\Ssr\Application\Service\Extension\TwigExtensionRegistry;
+use Semitexa\Ssr\Application\Service\Template\ModuleTemplateCatalog;
 use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
+use Semitexa\Ssr\Application\Service\Extension\TwigExtensionCatalog;
 
 /**
  * Deferring is a decision that deserves a number.
@@ -33,23 +35,43 @@ final class SlotRenderCostIsMeasuredTest extends TestCase
     /** @var array<string, mixed> */
     private array $registrySnapshot = [];
 
+    private ?ModuleTemplateCatalog $templateCatalog = null;
+
+    private ?TwigExtensionCatalog $extensionCatalog = null;
+
     protected function setUp(): void
     {
+        // Snapshot BEFORE the mutation, restore after. Both of these hold a
+        // process-global catalog, and the setup below replaces it: reset()
+        // drops the template catalog outright and setClassDiscovery() writes
+        // through to the extension one. Left as this test finds convenient,
+        // they are what every LATER test in the process gets — the shape that
+        // passes alone and fails in company. The slot registry beside them has
+        // no reset() on purpose, for the same reason.
+        $this->templateCatalog = $this->catalogOf(ModuleTemplateRegistry::class);
+        $this->extensionCatalog = $this->catalogOf(TwigExtensionRegistry::class);
+        $this->registrySnapshot = $this->registryProperty()->getValue();
+
         ModuleTemplateRegistry::reset();
         ModuleTemplateRegistry::setModuleRegistry(new ModuleRegistry());
         TwigExtensionRegistry::setClassDiscovery(new ClassDiscovery());
-
-        // The slot registry is worker-global and populated by discovery. It has
-        // no reset() on purpose — emptying it would empty it for every test in
-        // this process, which is how a suite starts failing in company and
-        // passing alone. Snapshot and restore instead.
-        $this->registrySnapshot = $this->registryProperty()->getValue();
     }
 
     protected function tearDown(): void
     {
         LayoutSlotRegistry::setRequestTracer(null);
         $this->registryProperty()->setValue(null, $this->registrySnapshot);
+        (new \ReflectionProperty(ModuleTemplateRegistry::class, 'catalog'))->setValue(null, $this->templateCatalog);
+        (new \ReflectionProperty(TwigExtensionRegistry::class, 'catalog'))->setValue(null, $this->extensionCatalog);
+    }
+
+    /** @param class-string $registry */
+    private function catalogOf(string $registry): ?object
+    {
+        /** @var object|null $catalog */
+        $catalog = (new \ReflectionProperty($registry, 'catalog'))->getValue();
+
+        return $catalog;
     }
 
     private function registryProperty(): \ReflectionProperty

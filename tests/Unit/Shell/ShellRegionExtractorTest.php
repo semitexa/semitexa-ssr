@@ -251,6 +251,38 @@ final class ShellRegionExtractorTest extends TestCase
     }
 
     #[Test]
+    public function aRawTextElementCanCarryARegion(): void
+    {
+        // The mask used to blank raw-text elements WHOLE, taking their opening
+        // tags with them — so an element that marks a region was invisible to
+        // the scan and silently absent from the envelope, with no error
+        // anywhere to say a marked region had not been shipped. Blanking only
+        // the CONTENTS keeps the same guarantee (tag-like text inside is still
+        // not a tag) and lets the element be found.
+        $html = '<textarea data-shell-region="draft">a </textarea> b</textarea><p>after</p>';
+
+        self::assertSame(
+            ['draft' => '<textarea data-shell-region="draft">a </textarea>'],
+            $this->extractor->extract($html)
+        );
+    }
+
+    #[Test]
+    public function tagLikeTextInsideAScriptStillDoesNotCloseTheRegion(): void
+    {
+        // The guarantee the mask exists for, asserted after the change to it:
+        // a closing tag SPELLED in a script string is text, and counting it as
+        // a close ends the region mid-script and hands the client a fragment
+        // that will not parse.
+        $html = '<div data-shell-region="main"><textarea>"</div>"</textarea><p>after</p></div>';
+
+        self::assertSame(
+            ['main' => '<div data-shell-region="main"><textarea>"</div>"</textarea><p>after</p></div>'],
+            $this->extractor->extract($html)
+        );
+    }
+
+    #[Test]
     public function theDeferredManifestTravelsWithTheEnvelope(): void
     {
         // It sits at body end, outside every marked region, so a swap that

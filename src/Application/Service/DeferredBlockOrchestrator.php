@@ -600,12 +600,16 @@ final class DeferredBlockOrchestrator
         // answer, and this is where the number lives for a slot that is
         // ALREADY deferred. A slot resolving in two milliseconds is one whose
         // skeleton costs a round trip to hide work that had already finished.
-        $this->tracer?->begin('slot.resolve', [
-            'slot' => $slot->slotId,
-            'resource' => $slot->resourceClass,
-            'mode' => $slot->mode,
-            'deferred' => true,
-        ]);
+        //
+        // A MARK carrying its own duration, not a begin/end pair. The whole
+        // point of this path is that the slots resolve CONCURRENTLY — one
+        // coroutine per slot, all sharing the request's tracer — and a span
+        // stack matched by NAME cannot survive that: two coroutines opening
+        // `slot.resolve` and closing it in the other order have each closed
+        // the other's span, so the trace reports nesting that never happened
+        // and durations belonging to a different slot. A mark touches no
+        // stack, which is what makes it safe here.
+        $startedAt = hrtime(true);
 
         try {
             if ($slot->resourceClass !== null) {
@@ -633,9 +637,14 @@ final class DeferredBlockOrchestrator
             return $provider->resolve($context, $pageContext);
         } finally {
             // In a finally because a slot resolving by throwing is the case
-            // where the duration matters most, and an unclosed span would
-            // nest every later slot underneath this one.
-            $this->tracer?->end('slot.resolve');
+            // where the duration matters most.
+            $this->tracer?->mark('slot.resolve', [
+                'slot' => $slot->slotId,
+                'resource' => $slot->resourceClass,
+                'mode' => $slot->mode,
+                'deferred' => true,
+                'ms' => (hrtime(true) - $startedAt) / 1_000_000,
+            ]);
         }
     }
 

@@ -89,10 +89,18 @@ final class ShellRegionExtractor
         $regions = [];
         $offset = 0;
 
-        // Boundaries are found in a copy with the inert spans blanked out, and
+        // Boundaries are found in a copy with the inert TEXT blanked out, and
         // the fragment is cut from the ORIGINAL. Same offsets either way,
         // because the mask replaces byte for byte.
-        $scan = self::withoutInertSpans($html);
+        //
+        // Text, not whole spans. Blanking the elements entirely took their
+        // opening tags with them, so a raw-text element could not CARRY a
+        // region — `<textarea data-shell-region="editor">` was invisible to
+        // the scan and silently absent from the envelope. Blanking only the
+        // contents removes the same thing this was for (a closing tag spelled
+        // inside a script is text, not a tag) and leaves the markup that
+        // marks a region where the scanner can see it.
+        $scan = self::withoutInertText($html);
 
         while (true) {
             $start = $this->findRegionStart($scan, $offset, $name, $tag);
@@ -126,38 +134,14 @@ final class ShellRegionExtractor
     }
 
     /**
-     * A copy of the document with comments and raw-text element contents
-     * replaced by spaces of the same length.
+     * Comments gone, raw-text CONTENT gone, tags kept.
      *
      * The scanner counts tags, and a script holding the TEXT of a closing tag
      * in a string is not a tag — it is a string that happens to spell one.
      * Counted as a close, the region ends in the middle of a script and the
-     * client is handed a fragment that will not parse. Blanking these spans
+     * client is handed a fragment that will not parse. Blanking the contents
      * costs one pass and removes the whole class of it; what is left is
      * markup, where counting is sound.
-     */
-    private static function withoutInertSpans(string $html): string
-    {
-        $patterns = [self::COMMENT_SPAN];
-
-        // Assembled from self::CLOSER for the reason spelled out there.
-        foreach (self::RAW_TEXT_ELEMENTS as $element) {
-            $patterns[] = '#<' . $element . '\b[^>]*>.*?' . self::CLOSER . $element . '\s*>#is';
-        }
-
-        foreach ($patterns as $pattern) {
-            $html = (string) preg_replace_callback(
-                $pattern,
-                static fn (array $m): string => str_repeat(' ', strlen($m[0])),
-                $html
-            );
-        }
-
-        return $html;
-    }
-
-    /**
-     * Comments gone, raw-text CONTENT gone, tags kept.
      *
      * The asset and manifest readers need the opening tags — that is what they
      * are looking for — but not what those elements CONTAIN. Without this a
@@ -386,8 +370,8 @@ final class ShellRegionExtractor
      * Counts opens and closes of the SAME tag name. Assumes the region element
      * is a container that is actually closed — which the server rendered, so
      * it is. Tag-like text inside comments, scripts, styles and textareas is
-     * not an assumption any more: {@see self::withoutInertSpans()} blanks those
-     * before anything is counted. What remains unhandled is a `<` inside an
+     * not an assumption any more: {@see self::withoutInertText()} blanks those
+     * contents before anything is counted. What remains unhandled is a `<` inside an
      * attribute VALUE, which no server-rendered document of ours produces.
      * This is still not a parser, and says so.
      */

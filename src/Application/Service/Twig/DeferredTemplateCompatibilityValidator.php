@@ -204,11 +204,29 @@ final class DeferredTemplateCompatibilityValidator
      */
     private static function markupOf(string $code): string
     {
-        return (string) preg_replace_callback(
-            '/\{#.*?#\}|\{\{.*?\}\}|\{%.*?%\}/s',
+        // Quoted runs are blanked BEFORE the delimiters are found, because Twig
+        // accepts a delimiter inside a string: `{% set m = '%}<script>go()' %}`
+        // ended its span at the quoted `%}`, and the validator then reported a
+        // script the template never emits.
+        $masked = (string) preg_replace_callback(
+            '/"(?:\\\\.|[^"\\\\])*"|\'(?:\\\\.|[^\'\\\\])*\'/s',
             static fn (array $m): string => preg_replace('/[^\n]/', ' ', $m[0]) ?? '',
             $code
         );
+
+        $out = $code;
+        if (preg_match_all('/\{#.*?#\}|\{\{.*?\}\}|\{%.*?%\}/s', $masked, $spans, PREG_OFFSET_CAPTURE)) {
+            foreach ($spans[0] as [$span, $offset]) {
+                $out = substr_replace(
+                    $out,
+                    preg_replace('/[^\n]/', ' ', (string) $span) ?? '',
+                    (int) $offset,
+                    strlen((string) $span)
+                );
+            }
+        }
+
+        return $out;
     }
 
     private function validateNode(Node $node, Source $source, Environment $twig, bool $allowPrintFilters = false): void

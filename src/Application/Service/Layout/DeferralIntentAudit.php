@@ -210,7 +210,25 @@ final class DeferralIntentAudit
     {
         $outsideLiterals = (string) preg_replace('/[\'"][^\'"]*[\'"]/', ' ', $expression);
 
-        return !str_contains($outsideLiterals, '~');
+        if (str_contains($outsideLiterals, '~')) {
+            return false;
+        }
+
+        // `|default(…)` is the one filter whose literal the call really
+        // passes. Any other TRANSFORMS the name — `slot|replace({'a':'b'})`
+        // passes neither `a` nor `b` — so reading its literals invents slots
+        // and fails --strict on a page that is correct.
+        foreach (preg_split('/\|/', $outsideLiterals) ?: [] as $index => $segment) {
+            if ($index === 0) {
+                continue;
+            }
+
+            if (preg_match('/^\s*default\s*\(/', $segment) !== 1) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

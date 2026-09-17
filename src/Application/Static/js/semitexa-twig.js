@@ -44,8 +44,24 @@
         // where `document` is a stub with no query methods. Reading the
         // global first kept that host working by accident; the block below
         // has to say so on purpose.
-        if (typeof document === 'undefined' || typeof document.querySelector !== 'function') return null;
-        var el = document.querySelector(MANIFEST_SELECTOR);
+        if (typeof document === 'undefined' || !document.scripts) return null;
+        // The LAST block, which is what the server treats as authoritative: a
+        // response can append an updated manifest after an earlier one is
+        // already in the document. Reading the first left this runtime on a
+        // requestId, session and bind token that had already been replaced,
+        // and its slots then waited for frames that would never come.
+        //
+        // Walked over `document.scripts` rather than queried, so both readers
+        // of this manifest — here and platform-ui's — agree without either
+        // running a selector against the document.
+        var el = null;
+        for (var i = document.scripts.length - 1; i >= 0; i--) {
+            var candidate = document.scripts[i];
+            if (candidate.type === 'application/json' && candidate.hasAttribute('data-ssr-deferred-manifest')) {
+                el = candidate;
+                break;
+            }
+        }
         if (!el) return null;
         var parsed;
         try {

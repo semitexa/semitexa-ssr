@@ -349,7 +349,15 @@ final class AssetRenderer
     {
         $nonceAttr = ScriptNonceSource::attribute();
         if ($nonceAttr !== '') {
-            unset($attributes['nonce']);
+            // Every spelling of it. A manifest keeps the author's casing and
+            // HTML reads `Nonce` and `NONCE` as the same attribute — leaving
+            // one behind meant two, and the browser honours the first, which
+            // is the stale one this block exists to drop.
+            foreach (array_keys($attributes) as $name) {
+                if (strcasecmp((string) $name, 'nonce') === 0) {
+                    unset($attributes[$name]);
+                }
+            }
         }
 
         return self::buildAttributes($attributes) . $nonceAttr;

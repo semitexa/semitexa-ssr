@@ -56,6 +56,19 @@ final class ShellRegionExtractor
      */
     private const CLOSER = '<' . '/';
 
+    /**
+     * An attribute name starts HERE, not in the middle of a longer one.
+     *
+     * Without it `data-src`, `data-href`, `data-type` and even
+     * `x-data-shell-region` matched: a lazy `<script data-src="/lazy.js">`
+     * became an asset the client would go and fetch, and a decoy attribute
+     * could name a region.
+     */
+    private const ATTR_START = '(?<![\w-])';
+
+    /** Attributes up to the one being matched, without crossing out of the tag. */
+    private const ATTR = '[^>]*';
+
     /** Script attributes that change what the file IS or when it runs. */
     private const SCRIPT_ATTRIBUTES = ['integrity', 'crossorigin', 'referrerpolicy', 'defer', 'async', 'nomodule'];
 
@@ -143,6 +156,40 @@ final class ShellRegionExtractor
         return $html;
     }
 
+    /**
+     * Comments gone, raw-text CONTENT gone, tags kept.
+     *
+     * The asset and manifest readers need the opening tags — that is what they
+     * are looking for — but not what those elements CONTAIN. Without this a
+     * `<textarea>` holding the text of a script tag produced an asset the
+     * client would go and fetch, and a manifest written inside a comment could
+     * win over the real one.
+     *
+     * @param list<string> $keepContentOf elements whose body is the answer, not noise
+     */
+    private static function withoutInertText(string $html, array $keepContentOf = []): string
+    {
+        $html = (string) preg_replace_callback(
+            self::COMMENT_SPAN,
+            static fn (array $m): string => str_repeat(' ', strlen($m[0])),
+            $html
+        );
+
+        foreach (self::RAW_TEXT_ELEMENTS as $element) {
+            if (in_array($element, $keepContentOf, true)) {
+                continue;
+            }
+
+            $html = (string) preg_replace_callback(
+                '#(<' . $element . '\b[^>]*>)(.*?)(' . self::CLOSER . $element . '\s*>)#is',
+                static fn (array $m): string => $m[1] . str_repeat(' ', strlen($m[2])) . $m[3],
+                $html
+            );
+        }
+
+        return $html;
+    }
+
     /** The document's title, for the address bar and the tab. */
     public function title(string $html): string
     {
@@ -167,8 +214,14 @@ final class ShellRegionExtractor
      */
     public function deferredManifest(string $html): string
     {
-        $pattern = '#<script\b[^>]*\b' . preg_quote(PlaceholderRenderer::MANIFEST_ATTRIBUTE, '#')
-            . '\b[^>]*>(.*?)' . self::CLOSER . 'script\s*>#is';
+        // The manifest IS a script body, so scripts keep their contents here
+        // while comments and the other raw-text elements lose theirs: a
+        // manifest written inside a comment is not the page's manifest, and
+        // taking the LAST block made a commented one able to win.
+        $html = self::withoutInertText($html, ['script']);
+
+        $pattern = '#<script\b[^>]*' . self::ATTR_START . preg_quote(PlaceholderRenderer::MANIFEST_ATTRIBUTE, '#')
+            . '(?![\w-])[^>]*>(.*?)' . self::CLOSER . 'script\s*>#is';
 
         // The LAST one. A response can append an updated manifest after an
         // earlier block is already in the document, and taking the first
@@ -221,11 +274,17 @@ final class ShellRegionExtractor
      */
     public function assets(string $html): array
     {
+        // Tags kept, their CONTENTS blanked. These patterns had no idea what
+        // a comment or a raw-text body is, so
+        // `<textarea><script src="/x.js"></textarea>` became a live asset the
+        // client would go and fetch.
+        $html = self::withoutInertText($html);
+
         $css = [];
         $seenCss = [];
-        if (preg_match_all('#<link\b[^>]*rel=["\']?stylesheet["\']?[^>]*>#i', $html, $links)) {
+        if (preg_match_all('#<link\b' . self::ATTR . 'rel=["\']?stylesheet["\']?[^>]*>#i', $html, $links)) {
             foreach ($links[0] as $link) {
-                if (preg_match('#href=["\']([^"\']+)["\']#i', $link, $href) !== 1) {
+                if (preg_match('#' . self::ATTR_START . 'href=["\']([^"\']+)["\']#i', $link, $href) !== 1) {
                     continue;
                 }
 
@@ -248,12 +307,12 @@ final class ShellRegionExtractor
 
         $js = [];
         $seen = [];
-        if (preg_match_all('#<script\b[^>]*\bsrc=["\']([^"\']+)["\'][^>]*>#i', $html, $scripts, PREG_SET_ORDER)) {
+        if (preg_match_all('#<script\b[^>]*' . self::ATTR_START . 'src=["\']([^"\']+)["\'][^>]*>#i', $html, $scripts, PREG_SET_ORDER)) {
             foreach ($scripts as $script) {
                 $src = self::decode($script[1]);
 
                 $type = '';
-                if (preg_match('#\btype=["\']([^"\']+)["\']#i', $script[0], $m) === 1) {
+                if (preg_match('#' . self::ATTR_START . 'type=["\']([^"\']+)["\']#i', $script[0], $m) === 1) {
                     $type = strtolower(trim($m[1]));
                 }
 
@@ -286,13 +345,13 @@ final class ShellRegionExtractor
 
         foreach ($wanted as $name) {
             $quoted = preg_quote($name, '#');
-            if (preg_match('#(?<![\w-])' . $quoted . '=["\']([^"\']*)["\']#i', $tag, $m) === 1) {
+            if (preg_match('#' . self::ATTR_START . $quoted . '=["\']([^"\']*)["\']#i', $tag, $m) === 1) {
                 $out[$name] = self::decode($m[1]);
                 continue;
             }
 
             // A boolean attribute: present, no value.
-            if (preg_match('#(?<![\w-])' . $quoted . '(?=[\s/>])#i', $tag) === 1) {
+            if (preg_match('#' . self::ATTR_START . $quoted . '(?=[\s/>])#i', $tag) === 1) {
                 $out[$name] = '';
             }
         }
@@ -306,7 +365,7 @@ final class ShellRegionExtractor
      */
     private function findRegionStart(string $html, int $offset, ?string &$name, ?string &$tag): ?int
     {
-        $pattern = '#<([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*\b' . preg_quote(self::ATTRIBUTE, '#') . '=["\']([^"\']+)["\'][^>]*>#';
+        $pattern = '#<([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*' . self::ATTR_START . preg_quote(self::ATTRIBUTE, '#') . '=["\']([^"\']+)["\'][^>]*>#';
 
         if (preg_match($pattern, $html, $m, PREG_OFFSET_CAPTURE, $offset) !== 1) {
             $name = null;

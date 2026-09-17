@@ -120,12 +120,15 @@ final class DeferralIntentAudit
 
             $code = $this->onlyTwigCode($this->withoutProse($source));
 
-            if (!preg_match_all(self::DEFERRED_CALL, $code, $matches, PREG_OFFSET_CAPTURE)) {
+            // Matched against the literal-free copy so a call NAME written
+            // inside a string is not a call; the arguments are then read back
+            // out of $code, where the literals are intact.
+            if (!preg_match_all(self::DEFERRED_CALL, self::withoutStringLiterals($code), $matches, PREG_OFFSET_CAPTURE)) {
                 continue;
             }
 
             foreach ($matches[1] as [$arguments, $offset]) {
-                $slotArgument = self::firstArgument((string) $arguments);
+                $slotArgument = self::firstArgument(substr($code, (int) $offset, strlen((string) $arguments)));
 
                 // A name BUILT from pieces is not a name this can read: see
                 // isReadableName().
@@ -183,15 +186,37 @@ final class DeferralIntentAudit
     {
         $kept = preg_replace('/[^\n]/', ' ', $source) ?? '';
 
-        if (!preg_match_all(self::TWIG_CODE, $source, $matches, PREG_OFFSET_CAPTURE)) {
+        if (!preg_match_all(self::TWIG_CODE, self::withoutStringLiterals($source), $matches, PREG_OFFSET_CAPTURE)) {
             return $kept;
         }
 
+        // Boundaries from the masked copy — a `}}` inside a literal cannot end
+        // its own block — but the TEXT comes from the source, because a call's
+        // argument is a literal and has to survive.
         foreach ($matches[0] as [$block, $offset]) {
-            $kept = substr_replace($kept, (string) $block, (int) $offset, strlen((string) $block));
+            $length = strlen((string) $block);
+            $kept = substr_replace($kept, substr($source, (int) $offset, $length), (int) $offset, $length);
         }
 
         return $kept;
+    }
+
+    /**
+     * The same text with every quoted run blanked, byte for byte.
+     *
+     * Used to decide WHERE things are, never what they say: a call name inside
+     * a literal is not a call — `{{ "layout_slot_deferred('sidebar')" }}` is a
+     * block Twig really runs, and what it runs is a sentence being printed.
+     * Counted as a call it satisfied a declaration no page defers, and hid the
+     * finding this audit exists for.
+     */
+    private static function withoutStringLiterals(string $source): string
+    {
+        return (string) preg_replace_callback(
+            '/"[^"]*"|\'[^\']*\'/',
+            static fn (array $m): string => preg_replace('/[^\n]/', ' ', $m[0]) ?? '',
+            $source,
+        );
     }
 
     /**

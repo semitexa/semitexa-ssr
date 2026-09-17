@@ -145,6 +145,22 @@ final class DeferralIntentAuditTest extends TestCase
     }
 
     #[Test]
+    public function aCallInsideAStringIsPrintedAndNotRun(): void
+    {
+        // `{{ "…" }}` is a block Twig really executes, and what it executes is
+        // a sentence being printed. Counted as a call it satisfied a
+        // declaration that no page actually defers — hiding the finding this
+        // audit exists for, which is worse than inventing one.
+        $findings = $this->audit->audit(
+            ['sidebar' => 'App\Slot\SidebarSlot'],
+            ['docs.html.twig' => '{{ "layout_slot_deferred(\'sidebar\')" }}'],
+        );
+
+        self::assertCount(1, $findings);
+        self::assertSame(DeferralIntentKind::DeclaredButNeverDeferred, $findings[0]->kind);
+    }
+
+    #[Test]
     public function theLineNumberSurvivesTheBlanking(): void
     {
         $source = "{% verbatim %}{{ layout_slot_deferred('shown') }}{% endverbatim %}\n\n{{ layout_slot_deferred('real') }}";

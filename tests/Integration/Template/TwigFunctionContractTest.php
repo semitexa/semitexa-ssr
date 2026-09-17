@@ -56,6 +56,15 @@ final class TwigFunctionContractTest extends TestCase
                 'asset_head',
                 'asset_body',
                 'asset_require',
+                // content-security-policy — the nonce a template stamps on the
+                // script tag it writes itself, so the page survives a policy
+                // with no unsafe-inline
+                'csp_nonce_attr',
+                'csp_nonce',
+                // app shell — the one mark a layout makes to say which of its
+                // regions change per page
+                'shell_region',
+                'is_shell_request',
                 // urls
                 'url',
                 'current_url',

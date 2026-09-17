@@ -24,6 +24,7 @@ use Semitexa\Ssr\Application\Service\Component\ComponentRenderer;
 use Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator;
 use Semitexa\Ssr\Application\Service\Extension\TwigExtensionCatalog;
 use Semitexa\Ssr\Application\Service\Extension\TwigExtensionRegistry;
+use Semitexa\Ssr\Application\Service\Layout\LayoutSlotRegistry;
 use Semitexa\Ssr\Application\Service\Routing\RouteUrlBuilder;
 use Semitexa\Ssr\Application\Service\Routing\UrlGenerator;
 use Semitexa\Ssr\Application\Service\Template\ModuleTemplateCatalog;
@@ -139,5 +140,14 @@ final class WireCoreInstancesListener implements ServerLifecycleListenerInterfac
             ? $this->container->get(RequestTracerInterface::class)
             : null;
         $this->sseServer->setRequestTracer($tracer);
+        // Slot renders are the part of a page a developer is deciding about
+        // when they reach for `deferred: true`, and they happen inside Twig,
+        // outside every pipeline seam. Without this the waterfall shows one
+        // `response.render` and no way to tell which region paid for it.
+        LayoutSlotRegistry::setRequestTracer($tracer);
+        // The deferred half of the same question: a slot that is already
+        // deferred resolves here, in the SSE process, and its duration is what
+        // says whether the skeleton was worth a round trip.
+        $this->deferredBlockOrchestrator->setRequestTracer($tracer);
     }
 }

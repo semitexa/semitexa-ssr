@@ -27,6 +27,71 @@
     // fill still-pending slots via the XHR fallback so placeholders never hang.
     var SHARED_STREAM_FALLBACK_MS = 6000;
 
+    // ── The manifest ───────────────────────────────────────────────────────
+    //
+    // The server emits it as <script type="application/json"
+    // data-ssr-deferred-manifest>, NOT as an executable assignment: a strict
+    // script-src refuses the second one without a nonce, and refuses it
+    // silently. window.__SSR_DEFERRED stays the contract every reader already
+    // uses — this function is what fills it, and it memoizes so whichever
+    // runtime runs first (this one, or platform-ui's event-runtime.js, which
+    // carries the same reader for the same reason) pays the parse once.
+    var MANIFEST_SELECTOR = 'script[type="application/json"][data-ssr-deferred-manifest]';
+
+    /**
+     * Forget the parsed manifest, because the document no longer holds it.
+     *
+     * A shell navigation replaces the manifest block along with the rest of
+     * the page. Both caches outlived it: readManifest() answered from
+     * window.__SSR_DEFERRED and setLocale() preferred SemitexaSSR._manifest,
+     * so placeholders arriving on the NEW page bound to the previous page's
+     * requestId, session and bind token — and waited for frames nobody would
+     * ever send. Cleared together, because either one alone still answers.
+     */
+    function forgetManifest() {
+        try {
+            window.__SSR_DEFERRED = null;
+        } catch (e) { /* a frozen global is still better than throwing here */ }
+
+        if (window.SemitexaSSR) window.SemitexaSSR._manifest = null;
+    }
+
+    function readManifest() {
+        if (window.__SSR_DEFERRED) return window.__SSR_DEFERRED;
+        // This file is also loaded by the isomorphic renderer under Node,
+        // where `document` is a stub with no query methods. Reading the
+        // global first kept that host working by accident; the block below
+        // has to say so on purpose.
+        if (typeof document === 'undefined' || !document.scripts) return null;
+        // The LAST block, which is what the server treats as authoritative: a
+        // response can append an updated manifest after an earlier one is
+        // already in the document. Reading the first left this runtime on a
+        // requestId, session and bind token that had already been replaced,
+        // and its slots then waited for frames that would never come.
+        //
+        // Walked over `document.scripts` rather than queried, so both readers
+        // of this manifest — here and platform-ui's — agree without either
+        // running a selector against the document.
+        var el = null;
+        for (var i = document.scripts.length - 1; i >= 0; i--) {
+            var candidate = document.scripts[i];
+            if (candidate.type === 'application/json' && candidate.hasAttribute('data-ssr-deferred-manifest')) {
+                el = candidate;
+                break;
+            }
+        }
+        if (!el) return null;
+        var parsed;
+        try {
+            parsed = JSON.parse(el.textContent || '');
+        } catch (e) {
+            return null;
+        }
+        if (!parsed || typeof parsed !== 'object') return null;
+        window.__SSR_DEFERRED = parsed;
+        return parsed;
+    }
+
     // ── HTML Escaping ──────────────────────────────────────────────────
     var ESC_MAP = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'};
     // PHP's string cast, which is what Twig prints - NOT JavaScript's.
@@ -933,7 +998,7 @@
 
         setLocale: function (locale) {
             if (!locale) return;
-            var manifest = this._manifest || window.__SSR_DEFERRED;
+            var manifest = this._manifest || readManifest();
             if (!manifest || !manifest.requestId || !manifest.sessionId) return;
 
             if (!this._connected) {
@@ -958,22 +1023,34 @@
         }
     };
 
+    SemitexaSSR.readManifest = readManifest;
     window.SemitexaSSR = SemitexaSSR;
 
     // Auto-initialize when manifest is available. Consume the unified owner's
     // shared stream when present; otherwise self-open the legacy stream. See
     // the header comment for the conditional.
     function bootstrapDeferred() {
-        if (!window.__SSR_DEFERRED) return;
+        var manifest = readManifest();
+        if (!manifest) return;
         if (SemitexaSSR._hasUnifiedOwner()) {
-            SemitexaSSR._consume(window.__SSR_DEFERRED);
+            SemitexaSSR._consume(manifest);
         } else {
-            SemitexaSSR._connect(window.__SSR_DEFERRED);
+            SemitexaSSR._connect(manifest);
         }
     }
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', bootstrapDeferred);
     } else {
         bootstrapDeferred();
+    }
+
+    // A shell navigation swaps the document's regions without a reload, so
+    // nothing here would otherwise notice that the manifest it parsed belongs
+    // to a page that is gone. Same signal the other runtimes listen to.
+    if (typeof document !== 'undefined' && document.addEventListener) {
+        document.addEventListener('semitexa:navigation:committed', function () {
+            forgetManifest();
+            bootstrapDeferred();
+        });
     }
 })();

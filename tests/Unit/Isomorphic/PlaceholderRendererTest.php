@@ -73,7 +73,7 @@ HTML;
     public function testInjectIfMissingInsertsFragmentBeforeBodyClose(): void
     {
         $html = "<!doctype html><html><body><p>hi</p></body></html>";
-        $fragment = '<script>window.__SSR_DEFERRED={"slots":[]};</script>';
+        $fragment = '<script type="application/json" data-ssr-deferred-manifest>{"slots":[]}</script>';
 
         $out = PlaceholderRenderer::injectIfMissing($html, $fragment);
 
@@ -83,7 +83,7 @@ HTML;
 
     public function testInjectIfMissingIsNoopWhenFragmentAlreadyPresent(): void
     {
-        $fragment = '<script>window.__SSR_DEFERRED={"slots":[]};</script>';
+        $fragment = '<script type="application/json" data-ssr-deferred-manifest>{"slots":[]}</script>';
         $html = "<!doctype html><html><body><p>hi</p>{$fragment}</body></html>";
 
         $out = PlaceholderRenderer::injectIfMissing($html, $fragment);
@@ -95,7 +95,7 @@ HTML;
     public function testInjectIfMissingAppendsWhenNoBodyClose(): void
     {
         $html = '<div>partial fragment with no body tag</div>';
-        $fragment = '<script>window.__SSR_DEFERRED={"slots":[]};</script>';
+        $fragment = '<script type="application/json" data-ssr-deferred-manifest>{"slots":[]}</script>';
 
         $out = PlaceholderRenderer::injectIfMissing($html, $fragment);
 
@@ -114,7 +114,7 @@ HTML;
     public function testInjectIfMissingHandlesUppercaseBodyClose(): void
     {
         $html = "<!doctype html><html><BODY><p>hi</p></BODY></html>";
-        $fragment = '<script>window.__SSR_DEFERRED={"slots":[]};</script>';
+        $fragment = '<script type="application/json" data-ssr-deferred-manifest>{"slots":[]}</script>';
 
         $out = PlaceholderRenderer::injectIfMissing($html, $fragment);
 

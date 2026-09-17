@@ -194,4 +194,126 @@ TWIG,
         self::assertContains('set-capture', $names);
         self::assertContains('for-else', $names);
     }
+
+    /**
+     * A deferred slot's template arrives in a live document over SSE. An
+     * inline script in it is inert until re-created, then runs once per
+     * arrival, and has already missed DOMContentLoaded — none of which is
+     * discoverable. It is learned by watching something not work.
+     */
+    public function testValidateSourceFlagsAnInlineScriptInADeferredTemplate(): void
+    {
+        $validator = new DeferredTemplateCompatibilityValidator();
+
+        $issues = $validator->validateSource(new Source(
+            "<div class=\"card\">{{ title }}</div>\n<script>document.addEventListener('click', go);</script>",
+            'inline-script',
+            '/tmp/inline-script.twig'
+        ));
+
+        self::assertCount(1, $issues);
+        self::assertSame('inline_script', $issues[0]->construct);
+        self::assertSame(2, $issues[0]->line);
+        self::assertStringContainsString('once per arrival', $issues[0]->message);
+        self::assertStringContainsString('AsUiBehavior', $issues[0]->message);
+    }
+
+    public function testValidateSourceLeavesDataBlocksAndExternalScriptsAlone(): void
+    {
+        // A data block never executes, and a src= script is re-created with
+        // its URL intact. Neither carries the three consequences, and a lint
+        // that flagged them would be one people switch off.
+        $validator = new DeferredTemplateCompatibilityValidator();
+
+        $issues = $validator->validateSource(new Source(
+            "<script type=\"application/json\" data-props>{}</script>\n<script src=\"/assets/x.js\"></script>",
+            'safe-scripts',
+            '/tmp/safe-scripts.twig'
+        ));
+
+        self::assertSame([], $issues);
+    }
+
+    public function testValidateSourceSeesAnOpeningTagWrittenAcrossLines(): void
+    {
+        // A wrapped opening tag is formatting, not a different kind of script.
+        // The one-line bound belongs to source scanning, where a `>` may be an
+        // operator; once the Twig tags are blanked, what is left is markup.
+        $validator = new DeferredTemplateCompatibilityValidator();
+
+        $issues = $validator->validateSource(new Source(
+            "<script\n  type=\"module\"\n  defer>go()</script>",
+            'wrapped-script',
+            '/tmp/wrapped-script.twig'
+        ));
+
+        self::assertCount(1, $issues);
+        self::assertSame('inline_script', $issues[0]->construct);
+    }
+
+    public function testProseApostrophesDoNotHideATwigComment(): void
+    {
+        // Quoted runs used to be blanked across the WHOLE template before the
+        // Twig spans were found, so the apostrophes in `Don't` and `user's`
+        // read as one string spanning the comment between them. The comment
+        // was then never found, never blanked, and the script written inside
+        // it was reported as an emission the page makes — a lint crying about
+        // a note about a script.
+        $validator = new DeferredTemplateCompatibilityValidator();
+
+        $issues = $validator->validateSource(new Source(
+            "Don't {# <script>go()</script> #} read the user's page",
+            'prose-apostrophes',
+            '/tmp/prose-apostrophes.twig'
+        ));
+
+        self::assertSame([], $issues, 'the script lives inside a comment, which emits nothing');
+    }
+
+    public function testADelimiterInsideAStringStillDoesNotEndItsSpan(): void
+    {
+        // The guarantee the old masking existed for, kept after replacing it
+        // with a scanner: Twig accepts `%}` inside a string, and reading it as
+        // the end of the span reported a script the template never emits.
+        $validator = new DeferredTemplateCompatibilityValidator();
+
+        $issues = $validator->validateSource(new Source(
+            "{% set m = '%}<script>go()' %}after",
+            'delimiter-in-string',
+            '/tmp/delimiter-in-string.twig'
+        ));
+
+        self::assertSame([], $issues);
+    }
+
+    public function testValidateSourceDoesNotReportAScriptTagInsideATwigComment(): void
+    {
+        // A Twig comment emits nothing, so there is no script element to be
+        // inert, to run twice, or to have missed DOMContentLoaded. Reporting
+        // the note ABOUT the rule is how a lint trains people to ignore it.
+        $validator = new DeferredTemplateCompatibilityValidator();
+
+        $issues = $validator->validateSource(new Source(
+            "{# never do this: <script>go()</script> #}\n<div>{{ title }}</div>",
+            'commented-script',
+            '/tmp/commented-script.twig'
+        ));
+
+        self::assertSame([], $issues);
+    }
+
+    public function testValidateSourceStillReportsAScriptInsideVerbatim(): void
+    {
+        // verbatim is not a comment: its contents are PRINTED, so this really
+        // is a script element on the page and carries every consequence.
+        $validator = new DeferredTemplateCompatibilityValidator();
+
+        $issues = $validator->validateSource(new Source(
+            "{% verbatim %}<script>go()</script>{% endverbatim %}",
+            'verbatim-script',
+            '/tmp/verbatim-script.twig'
+        ));
+
+        self::assertCount(1, $issues);
+    }
 }

@@ -44,6 +44,7 @@ final class SlotRenderer
                 'exception' => $e::class,
                 'message' => $e->getMessage(),
             ]);
+
             return '';
         }
     }

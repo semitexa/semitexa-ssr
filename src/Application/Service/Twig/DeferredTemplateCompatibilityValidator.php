@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service\Twig;
 
 use Semitexa\Ssr\Application\Service\Layout\LayoutSlotRegistry;
+use Semitexa\Core\Http\ScriptTag;
 use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
 use Twig\Environment;
 use Twig\Error\SyntaxError;
@@ -128,8 +129,177 @@ final class DeferredTemplateCompatibilityValidator
         }
 
         $this->validateNode($module, $source, $twig);
+        $this->validateInlineScripts($source);
 
         return array_values($this->issues);
+    }
+
+    /**
+     * An inline `<script>` inside a template that arrives by SSE.
+     *
+     * Markup inserted into a live document changes what a script tag means,
+     * and none of it is discoverable — it is learned by watching something not
+     * work:
+     *
+     *   - A script parsed out of a fragment and inserted is INERT. It has to
+     *     be re-created to run at all, and re-created carrying THIS document's
+     *     nonce rather than the one it was parsed with. A page under a strict
+     *     CSP therefore works while reporting a blocked script on every swap.
+     *   - It will run MORE THAN ONCE per document, so every binding it makes
+     *     has to be idempotent. A listener on `document` accumulates silently,
+     *     once per arrival.
+     *   - `DOMContentLoaded` fired long ago. A real case: an autocomplete
+     *     partial bound its fields only on that event and simply stopped
+     *     binding for any page that arrived by swap.
+     *
+     * The framework already answers all three: `#[AsUiBehavior]` plus the
+     * behavior runtime's document MutationObserver connect late-arriving
+     * markup with no ceremony and no nonce problem, because the code is a
+     * module served from its own origin.
+     */
+    private function validateInlineScripts(Source $source): void
+    {
+        $code = self::markupOf($source->getCode());
+
+        // The document scanner, not the source pattern: what is left after the
+        // Twig tags are blanked IS markup. It sees an opening tag wrapped
+        // across lines — ordinary in a hand-formatted template — it does not
+        // end a tag on a `>` inside a quoted value, and it does not read the
+        // text inside a script body as another tag.
+        foreach (ScriptTag::documentTags($code) as $tag) {
+            $attributes = $tag['attributes'];
+
+            // A data block is inert by design and a src= script is re-created
+            // with its URL intact; neither carries the three consequences.
+            if (!ScriptTag::isExecutable($attributes) || ScriptTag::hasSrc($attributes)) {
+                continue;
+            }
+
+            $this->addIssue(
+                $source,
+                substr_count($code, "\n", 0, $tag['start']) + 1,
+                'inline_script',
+                'script',
+                'This template can arrive by SSE, and an inline script in markup that arrives later is inert '
+                . 'until re-created, then runs once per arrival, and has already missed DOMContentLoaded. '
+                . 'Declare the behaviour with #[AsUiBehavior] instead — the behavior runtime connects '
+                . 'late-arriving markup, and its code is a module served from its own origin.'
+            );
+        }
+    }
+
+    /**
+     * The template with its Twig tags blanked out, leaving the markup.
+     *
+     * Two reasons, and they pull the same way. A `{# … #}` comment emits
+     * nothing, so a `<script>` written inside one is a note about a script and
+     * not a script — reported, it teaches people to ignore this check. And a
+     * `>` inside `{{ … }}` or `{% … %}` is a comparison, not the end of a tag,
+     * which is the only thing the one-line bound was ever guarding against.
+     *
+     * `{% verbatim %}` is deliberately NOT blanked: its contents are printed,
+     * so a script tag in there is a real script element on the page.
+     *
+     * Blanked, not cut, so the reported line is still the template's.
+     */
+    private static function markupOf(string $code): string
+    {
+        $out = $code;
+
+        foreach (self::twigSpans($code) as [$offset, $length]) {
+            $out = substr_replace(
+                $out,
+                preg_replace('/[^\n]/', ' ', substr($code, $offset, $length)) ?? '',
+                $offset,
+                $length
+            );
+        }
+
+        return $out;
+    }
+
+    /**
+     * Where each Twig span starts and how long it is, found by scanning.
+     *
+     * Quotes are honoured INSIDE a span and ignored outside it, and that
+     * distinction is the whole reason this is a scanner rather than two
+     * regexes. Blanking every quoted run first — which is what it used to do,
+     * to stop `{% set m = '%}<script>go()' %}` ending its span at the quoted
+     * `%}` — also treated ordinary prose as code. In
+     *
+     *     Don't {# <script>go()</script> #} user's page
+     *
+     * the two apostrophes in `Don't` and `user's` read as one string spanning
+     * the comment, so the comment was never found, never blanked, and the
+     * script written inside it was reported as an emission the page makes.
+     * A check that cries about a note about a script is a check people switch
+     * off.
+     *
+     * A comment is raw text to Twig, so quotes are not honoured inside `{# #}`
+     * either — that is what makes the apostrophes above harmless.
+     *
+     * @return list<array{int, int}> offset and length, in document order
+     */
+    private static function twigSpans(string $code): array
+    {
+        $spans = [];
+        $length = strlen($code);
+        $i = 0;
+
+        while ($i < $length - 1) {
+            if ($code[$i] !== '{') {
+                $i++;
+                continue;
+            }
+
+            $opener = $code[$i + 1];
+            if ($opener !== '#' && $opener !== '{' && $opener !== '%') {
+                $i++;
+                continue;
+            }
+
+            $closer = $opener === '#' ? '#}' : ($opener === '{' ? '}}' : '%}');
+            $quote = null;
+            $end = null;
+            $j = $i + 2;
+
+            while ($j < $length) {
+                $char = $code[$j];
+
+                if ($quote !== null) {
+                    // An escaped character cannot close the string.
+                    $j += $char === '\\' ? 2 : 1;
+                    if ($quote !== null && ($code[$j - 1] ?? '') === $quote) {
+                        $quote = null;
+                    }
+                    continue;
+                }
+
+                if ($opener !== '#' && ($char === '"' || $char === "'")) {
+                    $quote = $char;
+                    $j++;
+                    continue;
+                }
+
+                if ($char === $closer[0] && ($code[$j + 1] ?? '') === $closer[1]) {
+                    $end = $j + 2;
+                    break;
+                }
+
+                $j++;
+            }
+
+            // Unterminated: not a span, and the `{` may still open a later one.
+            if ($end === null) {
+                $i++;
+                continue;
+            }
+
+            $spans[] = [$i, $end - $i];
+            $i = $end;
+        }
+
+        return $spans;
     }
 
     private function validateNode(Node $node, Source $source, Environment $twig, bool $allowPrintFilters = false): void

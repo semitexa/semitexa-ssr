@@ -181,7 +181,7 @@ final class AssetRenderer
             $safeCss = str_ireplace('</style', '<\/style', $entry['css']);
             $html .= '<style data-asset-key="'
                 . htmlspecialchars($entry['key'], ENT_QUOTES, 'UTF-8')
-                . '">' . $safeCss . '</style>' . "\n";
+                . '"' . ScriptNonceSource::attribute() . '>' . $safeCss . '</style>' . "\n";
         }
 
         return $html;
@@ -328,24 +328,36 @@ final class AssetRenderer
             return '';
         }
 
-        $attrs = self::buildAttributes($entry->attributes);
+        // style-src governs an inline <style> exactly as script-src governs an
+        // inline <script>: under a nonce policy an unstamped block is dropped,
+        // and a page that lost only its stylesheet looks broken rather than
+        // blocked.
         $safeContent = str_ireplace('</style', '<\/style', $content);
-        return '<style' . $attrs . '>' . $safeContent . '</style>' . "\n";
+        return '<style' . self::inlineNonceAttributes($entry->attributes) . '>' . $safeContent . '</style>' . "\n";
     }
 
     /**
-     * Attribute string for an inline <script>, provider nonce included. The
+     * Attribute string for an inline <script> or <style>, provider nonce
+     * included. The
      * provider's nonce must be the ONLY nonce: with a manifest-declared one
      * also present the browser honours whichever comes first, and a stale
      * manifest value would lose to the CSP header every time.
      *
      * @param array<string, string> $attributes
      */
-    private static function inlineScriptAttributes(array $attributes): string
+    private static function inlineNonceAttributes(array $attributes): string
     {
         $nonceAttr = ScriptNonceSource::attribute();
         if ($nonceAttr !== '') {
-            unset($attributes['nonce']);
+            // Every spelling of it. A manifest keeps the author's casing and
+            // HTML reads `Nonce` and `NONCE` as the same attribute — leaving
+            // one behind meant two, and the browser honours the first, which
+            // is the stale one this block exists to drop.
+            foreach (array_keys($attributes) as $name) {
+                if (strcasecmp((string) $name, 'nonce') === 0) {
+                    unset($attributes[$name]);
+                }
+            }
         }
 
         return self::buildAttributes($attributes) . $nonceAttr;
@@ -359,7 +371,7 @@ final class AssetRenderer
         }
 
         $safeContent = str_ireplace('</script', '<\/script', $content);
-        return '<script' . self::inlineScriptAttributes($entry->attributes) . '>' . $safeContent . '</script>' . "\n";
+        return '<script' . self::inlineNonceAttributes($entry->attributes) . '>' . $safeContent . '</script>' . "\n";
     }
 
     /**

@@ -25,10 +25,7 @@ final readonly class AssetEntry
      * @param string   $scope        global | module | page
      * @param string   $position     head | body
      * @param int      $priority     Lower values emit earlier (default: 100)
-     * @param array<string, mixed> $attributes Extra HTML attributes, keyed by attribute
-     *                              name. A value may be a bool — `['defer' => true]` renders
-     *                              the bare attribute — so this is deliberately not narrowed
-     *                              to strings.
+     * @param array    $attributes   Extra HTML attributes (e.g. ["type" => "module", "defer" => true])
      * @param string[] $dependencies Canonical keys of assets that must load before this one
      * @param ?string  $specifier    Bare import-map specifier (e.g. "platform-ui/core") — when set,
      *                               the page's server-generated <script type="importmap"> maps it to

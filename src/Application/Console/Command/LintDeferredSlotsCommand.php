@@ -157,8 +157,11 @@ final class LintDeferredSlotsCommand extends Command
         $sources = [];
 
         foreach (ModuleTemplateRegistry::getModulePaths() as $module) {
-            $path = $module['path'] ?? null;
-            if (!is_string($path) || !is_dir($path)) {
+            // getModulePaths() declares `path` as a present string, so the
+            // null-coalesce and the is_string() guard that used to stand here
+            // were dead. What is NOT guaranteed is that the directory exists.
+            $path = $module['path'];
+            if (!is_dir($path)) {
                 continue;
             }
 

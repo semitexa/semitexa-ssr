@@ -343,7 +343,9 @@ final class AssetRenderer
      * also present the browser honours whichever comes first, and a stale
      * manifest value would lose to the CSP header every time.
      *
-     * @param array<string, string> $attributes
+     * @param array<string, mixed> $attributes as {@see AssetEntry::$attributes}
+     *        carries them — a value may be a bool, e.g. `['defer' => true]`,
+     *        which is why this is not narrowed to strings
      */
     private static function inlineNonceAttributes(array $attributes): string
     {

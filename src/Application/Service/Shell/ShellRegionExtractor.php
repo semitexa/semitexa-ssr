@@ -108,7 +108,10 @@ final class ShellRegionExtractor
                 break;
             }
 
-            $end = $this->findRegionEnd($scan, $start, $tag);
+            // findRegionStart() only answers non-null after writing both
+            // by-reference names, but its signature cannot say so — hence the
+            // narrowing here rather than a nullable parameter downstream.
+            $end = $this->findRegionEnd($scan, $start, (string) $tag);
             if ($end === null) {
                 // An unbalanced region is a broken document, not a fragment
                 // worth shipping: skip it and keep the rest rather than

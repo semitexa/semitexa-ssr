@@ -148,9 +148,9 @@ class LayoutSlotRegistry
             self::$tracer?->begin('slot.render', [
                 'slot' => $slotKey,
                 'handle' => $pageHandle,
-                'template' => $entry['template'] ?? '',
+                'template' => $entry['template'],
                 'resource' => $entry['resourceClass'] ?? null,
-                'deferred' => (bool) ($entry['deferred'] ?? false),
+                'deferred' => $entry['deferred'],
             ]);
 
             try {

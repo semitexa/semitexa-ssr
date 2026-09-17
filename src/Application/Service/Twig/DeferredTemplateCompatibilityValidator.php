@@ -269,7 +269,7 @@ final class DeferredTemplateCompatibilityValidator
                 if ($quote !== null) {
                     // An escaped character cannot close the string.
                     $j += $char === '\\' ? 2 : 1;
-                    if ($quote !== null && ($code[$j - 1] ?? '') === $quote) {
+                    if (($code[$j - 1] ?? '') === $quote) {
                         $quote = null;
                     }
                     continue;

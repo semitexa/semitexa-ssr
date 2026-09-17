@@ -77,6 +77,9 @@ final class ManifestIsADataBlockTest extends TestCase
 
         $html = $this->manifest();
 
+        // Asserted present before asserted clean: an empty render satisfies
+        // the negative below and would hide the manifest going missing.
+        self::assertStringContainsString('data-ssr-deferred-manifest', $html, 'the block is rendered at all');
         self::assertStringNotContainsString(
             'nonce',
             $html,
@@ -140,6 +143,9 @@ final class ManifestIsADataBlockTest extends TestCase
     {
         $html = PlaceholderRenderer::renderRuntimeScript();
 
+        // Same rule as above: prove the script is there before proving what
+        // it does not carry.
+        self::assertStringContainsString('src=', $html, 'the runtime script is rendered at all');
         self::assertStringNotContainsString('nonce', $html, 'zero cost for a consumer with no policy');
     }
 

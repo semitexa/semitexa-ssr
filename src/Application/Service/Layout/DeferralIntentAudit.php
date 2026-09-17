@@ -33,8 +33,17 @@ use Semitexa\Ssr\Domain\Model\DeferralIntentKind;
  */
 final class DeferralIntentAudit
 {
-    /** The call, up to its first `)`. Arguments are mined for quoted names separately. */
-    private const DEFERRED_CALL = '/layout_slot_deferred\s*\(([^)]*)/';
+    /**
+     * The call, up to its first `)`. Arguments are mined for quoted names separately.
+     *
+     * Bounded on the left, because a suffix match is not a call to this
+     * function: `custom_layout_slot_deferred('sidebar')` and
+     * `helper.layout_slot_deferred('sidebar')` both recorded `sidebar` as
+     * deferred, so a slot DECLARED deferred and never actually deferred by any
+     * template produced no finding and `--strict` passed on it. `(?<![\w.])`
+     * refuses both the longer identifier and the member access.
+     */
+    private const DEFERRED_CALL = '/(?<![\w.])layout_slot_deferred\s*\(([^)]*)/';
 
     /** A slot name written as a literal, anywhere in the SLOT argument. */
     private const QUOTED_NAME = '/[\'"]([A-Za-z0-9_.\-]+)[\'"]/';

@@ -38,6 +38,24 @@
     // carries the same reader for the same reason) pays the parse once.
     var MANIFEST_SELECTOR = 'script[type="application/json"][data-ssr-deferred-manifest]';
 
+    /**
+     * Forget the parsed manifest, because the document no longer holds it.
+     *
+     * A shell navigation replaces the manifest block along with the rest of
+     * the page. Both caches outlived it: readManifest() answered from
+     * window.__SSR_DEFERRED and setLocale() preferred SemitexaSSR._manifest,
+     * so placeholders arriving on the NEW page bound to the previous page's
+     * requestId, session and bind token — and waited for frames nobody would
+     * ever send. Cleared together, because either one alone still answers.
+     */
+    function forgetManifest() {
+        try {
+            window.__SSR_DEFERRED = null;
+        } catch (e) { /* a frozen global is still better than throwing here */ }
+
+        if (window.SemitexaSSR) window.SemitexaSSR._manifest = null;
+    }
+
     function readManifest() {
         if (window.__SSR_DEFERRED) return window.__SSR_DEFERRED;
         // This file is also loaded by the isomorphic renderer under Node,
@@ -1024,5 +1042,15 @@
         document.addEventListener('DOMContentLoaded', bootstrapDeferred);
     } else {
         bootstrapDeferred();
+    }
+
+    // A shell navigation swaps the document's regions without a reload, so
+    // nothing here would otherwise notice that the manifest it parsed belongs
+    // to a page that is gone. Same signal the other runtimes listen to.
+    if (typeof document !== 'undefined' && document.addEventListener) {
+        document.addEventListener('semitexa:navigation:committed', function () {
+            forgetManifest();
+            bootstrapDeferred();
+        });
     }
 })();

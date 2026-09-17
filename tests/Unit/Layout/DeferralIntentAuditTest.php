@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Tests\Unit\Layout;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Ssr\Application\Service\Layout\DeferralIntentAudit;
@@ -26,6 +27,30 @@ final class DeferralIntentAuditTest extends TestCase
     protected function setUp(): void
     {
         $this->audit = new DeferralIntentAudit();
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function callsThatOnlyLookLikeTheGlobalOne(): iterable
+    {
+        yield 'a longer identifier ending in the same name' => ['{{ custom_layout_slot_deferred(\'sidebar\') }}'];
+        yield 'a method on a value the template was handed' => ['{{ helper.layout_slot_deferred(\'sidebar\') }}'];
+    }
+
+    #[Test]
+    #[DataProvider('callsThatOnlyLookLikeTheGlobalOne')]
+    public function aSuffixMatchIsNotACallToTheGlobalFunction(string $template): void
+    {
+        // Matched by suffix, both of these recorded `sidebar` as deferred. A
+        // slot DECLARED deferred and deferred by no template then produced no
+        // finding at all, so `--strict` passed on exactly the state this audit
+        // exists to catch.
+        $findings = $this->audit->audit(
+            ['sidebar' => 'App\Slot\SidebarSlot'],
+            ['page.html.twig' => $template],
+        );
+
+        self::assertCount(1, $findings, $template . ' does not defer anything');
+        self::assertSame(DeferralIntentKind::DeclaredButNeverDeferred, $findings[0]->kind);
     }
 
     #[Test]

@@ -204,29 +204,102 @@ final class DeferredTemplateCompatibilityValidator
      */
     private static function markupOf(string $code): string
     {
-        // Quoted runs are blanked BEFORE the delimiters are found, because Twig
-        // accepts a delimiter inside a string: `{% set m = '%}<script>go()' %}`
-        // ended its span at the quoted `%}`, and the validator then reported a
-        // script the template never emits.
-        $masked = (string) preg_replace_callback(
-            '/"(?:\\\\.|[^"\\\\])*"|\'(?:\\\\.|[^\'\\\\])*\'/s',
-            static fn (array $m): string => preg_replace('/[^\n]/', ' ', $m[0]) ?? '',
-            $code
-        );
-
         $out = $code;
-        if (preg_match_all('/\{#.*?#\}|\{\{.*?\}\}|\{%.*?%\}/s', $masked, $spans, PREG_OFFSET_CAPTURE)) {
-            foreach ($spans[0] as [$span, $offset]) {
-                $out = substr_replace(
-                    $out,
-                    preg_replace('/[^\n]/', ' ', (string) $span) ?? '',
-                    (int) $offset,
-                    strlen((string) $span)
-                );
-            }
+
+        foreach (self::twigSpans($code) as [$offset, $length]) {
+            $out = substr_replace(
+                $out,
+                preg_replace('/[^\n]/', ' ', substr($code, $offset, $length)) ?? '',
+                $offset,
+                $length
+            );
         }
 
         return $out;
+    }
+
+    /**
+     * Where each Twig span starts and how long it is, found by scanning.
+     *
+     * Quotes are honoured INSIDE a span and ignored outside it, and that
+     * distinction is the whole reason this is a scanner rather than two
+     * regexes. Blanking every quoted run first — which is what it used to do,
+     * to stop `{% set m = '%}<script>go()' %}` ending its span at the quoted
+     * `%}` — also treated ordinary prose as code. In
+     *
+     *     Don't {# <script>go()</script> #} user's page
+     *
+     * the two apostrophes in `Don't` and `user's` read as one string spanning
+     * the comment, so the comment was never found, never blanked, and the
+     * script written inside it was reported as an emission the page makes.
+     * A check that cries about a note about a script is a check people switch
+     * off.
+     *
+     * A comment is raw text to Twig, so quotes are not honoured inside `{# #}`
+     * either — that is what makes the apostrophes above harmless.
+     *
+     * @return list<array{int, int}> offset and length, in document order
+     */
+    private static function twigSpans(string $code): array
+    {
+        $spans = [];
+        $length = strlen($code);
+        $i = 0;
+
+        while ($i < $length - 1) {
+            if ($code[$i] !== '{') {
+                $i++;
+                continue;
+            }
+
+            $opener = $code[$i + 1];
+            if ($opener !== '#' && $opener !== '{' && $opener !== '%') {
+                $i++;
+                continue;
+            }
+
+            $closer = $opener === '#' ? '#}' : ($opener === '{' ? '}}' : '%}');
+            $quote = null;
+            $end = null;
+            $j = $i + 2;
+
+            while ($j < $length) {
+                $char = $code[$j];
+
+                if ($quote !== null) {
+                    // An escaped character cannot close the string.
+                    $j += $char === '\\' ? 2 : 1;
+                    if ($quote !== null && ($code[$j - 1] ?? '') === $quote) {
+                        $quote = null;
+                    }
+                    continue;
+                }
+
+                if ($opener !== '#' && ($char === '"' || $char === "'")) {
+                    $quote = $char;
+                    $j++;
+                    continue;
+                }
+
+                if ($char === $closer[0] && ($code[$j + 1] ?? '') === $closer[1]) {
+                    $end = $j + 2;
+                    break;
+                }
+
+                $j++;
+            }
+
+            // Unterminated: not a span, and the `{` may still open a later one.
+            if ($end === null) {
+                $i++;
+                continue;
+            }
+
+            $spans[] = [$i, $end - $i];
+            $i = $end;
+        }
+
+        return $spans;
     }
 
     private function validateNode(Node $node, Source $source, Environment $twig, bool $allowPrintFilters = false): void

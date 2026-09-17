@@ -45,6 +45,11 @@ final class ShellRegionExtractorTest extends TestCase
 
         $extracted = implode('', $this->extractor->extract($html));
 
+        // Non-empty first. With no regions extracted, `$extracted` is '' and
+        // both assertions below pass — the test would accept losing every
+        // region on the page as a success.
+        self::assertNotSame('', $extracted, 'the region itself must come back');
+        self::assertStringContainsString('page', $extracted, 'and it must be the marked one');
         self::assertStringNotContainsString('sidebar', $extracted);
         self::assertLessThan(strlen($html) / 4, strlen($extracted));
     }

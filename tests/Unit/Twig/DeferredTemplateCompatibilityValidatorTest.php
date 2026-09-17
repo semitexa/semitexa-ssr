@@ -251,6 +251,41 @@ TWIG,
         self::assertSame('inline_script', $issues[0]->construct);
     }
 
+    public function testProseApostrophesDoNotHideATwigComment(): void
+    {
+        // Quoted runs used to be blanked across the WHOLE template before the
+        // Twig spans were found, so the apostrophes in `Don't` and `user's`
+        // read as one string spanning the comment between them. The comment
+        // was then never found, never blanked, and the script written inside
+        // it was reported as an emission the page makes — a lint crying about
+        // a note about a script.
+        $validator = new DeferredTemplateCompatibilityValidator();
+
+        $issues = $validator->validateSource(new Source(
+            "Don't {# <script>go()</script> #} read the user's page",
+            'prose-apostrophes',
+            '/tmp/prose-apostrophes.twig'
+        ));
+
+        self::assertSame([], $issues, 'the script lives inside a comment, which emits nothing');
+    }
+
+    public function testADelimiterInsideAStringStillDoesNotEndItsSpan(): void
+    {
+        // The guarantee the old masking existed for, kept after replacing it
+        // with a scanner: Twig accepts `%}` inside a string, and reading it as
+        // the end of the span reported a script the template never emits.
+        $validator = new DeferredTemplateCompatibilityValidator();
+
+        $issues = $validator->validateSource(new Source(
+            "{% set m = '%}<script>go()' %}after",
+            'delimiter-in-string',
+            '/tmp/delimiter-in-string.twig'
+        ));
+
+        self::assertSame([], $issues);
+    }
+
     public function testValidateSourceDoesNotReportAScriptTagInsideATwigComment(): void
     {
         // A Twig comment emits nothing, so there is no script element to be

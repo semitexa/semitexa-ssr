@@ -106,6 +106,10 @@ final class DefaultSkeletonReachesThePageTest extends TestCase
             $collector,
         );
 
+        // The page FIRST, then the absence. An empty return satisfies the
+        // negative on its own, so without this the test would pass through a
+        // regression that drops the document entirely.
+        self::assertStringContainsString('<p>plain</p>', $html, 'finalisation keeps the page it was given');
         self::assertStringNotContainsString('ssr-skeleton', $html, 'zero cost for a page that defers nothing');
     }
 }

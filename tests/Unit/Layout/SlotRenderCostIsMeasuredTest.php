@@ -39,6 +39,8 @@ final class SlotRenderCostIsMeasuredTest extends TestCase
 
     private ?TwigExtensionCatalog $extensionCatalog = null;
 
+    private ?RequestTracerInterface $tracerSnapshot = null;
+
     protected function setUp(): void
     {
         // Snapshot BEFORE the mutation, restore after. Both of these hold a
@@ -51,6 +53,15 @@ final class SlotRenderCostIsMeasuredTest extends TestCase
         $this->templateCatalog = $this->catalogOf(ModuleTemplateRegistry::class);
         $this->extensionCatalog = $this->catalogOf(TwigExtensionRegistry::class);
         $this->registrySnapshot = $this->registryProperty()->getValue();
+        $this->tracerSnapshot = (new \ReflectionProperty(LayoutSlotRegistry::class, 'tracer'))->getValue();
+
+        // FRESH catalogs installed before anything is mutated, so the saved
+        // ones are never touched. Keeping the reference was not enough:
+        // reset() and setClassDiscovery() mutate the catalog OBJECT, so
+        // putting the same object back in tearDown() restored a pointer to
+        // state this test had already changed.
+        ModuleTemplateRegistry::setCatalog(new ModuleTemplateCatalog());
+        TwigExtensionRegistry::setCatalog(new TwigExtensionCatalog());
 
         ModuleTemplateRegistry::reset();
         ModuleTemplateRegistry::setModuleRegistry(new ModuleRegistry());
@@ -59,7 +70,9 @@ final class SlotRenderCostIsMeasuredTest extends TestCase
 
     protected function tearDown(): void
     {
-        LayoutSlotRegistry::setRequestTracer(null);
+        // The tracer that was there BEFORE, not null: writing null discarded
+        // whatever a worker or an earlier fixture had installed.
+        LayoutSlotRegistry::setRequestTracer($this->tracerSnapshot);
         $this->registryProperty()->setValue(null, $this->registrySnapshot);
         (new \ReflectionProperty(ModuleTemplateRegistry::class, 'catalog'))->setValue(null, $this->templateCatalog);
         (new \ReflectionProperty(TwigExtensionRegistry::class, 'catalog'))->setValue(null, $this->extensionCatalog);

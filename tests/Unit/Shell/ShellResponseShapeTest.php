@@ -29,10 +29,28 @@ final class ShellResponseShapeTest extends TestCase
         . '<main data-shell-region="main"><h1>Orders</h1></main>'
         . '<script src="/assets/app.js"></script></body></html>';
 
+    private ?Request $requestBefore = null;
+
+    protected function setUp(): void
+    {
+        // The store is process-global, and these tests write to it. Whatever a
+        // test that ran earlier in this process left there is put back, rather
+        // than cleared — a suite that repairs global state to a value of its
+        // own choosing is only tidier by accident.
+        $this->requestBefore = CurrentRequestStore::get();
+    }
+
     protected function tearDown(): void
     {
         ShellRequest::forceForTesting(null);
-        CurrentRequestStore::clear();
+
+        if ($this->requestBefore === null) {
+            CurrentRequestStore::clear();
+
+            return;
+        }
+
+        CurrentRequestStore::set($this->requestBefore);
     }
 
     private function respond(string $html): \Semitexa\Core\HttpResponse

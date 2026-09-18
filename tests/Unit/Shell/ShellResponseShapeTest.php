@@ -6,6 +6,8 @@ namespace Semitexa\Ssr\Tests\Unit\Shell;
 
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+use Semitexa\Core\Lifecycle\CurrentRequestStore;
+use Semitexa\Core\Request;
 use Semitexa\Ssr\Application\Service\Http\Response\HtmlResponse;
 use Semitexa\Ssr\Application\Service\Shell\ShellEnvelope;
 use Semitexa\Ssr\Application\Service\Shell\ShellRequest;
@@ -30,6 +32,7 @@ final class ShellResponseShapeTest extends TestCase
     protected function tearDown(): void
     {
         ShellRequest::forceForTesting(null);
+        CurrentRequestStore::clear();
     }
 
     private function respond(string $html): \Semitexa\Core\HttpResponse
@@ -38,6 +41,19 @@ final class ShellResponseShapeTest extends TestCase
         $response->setContent($html);
 
         return $response->toCoreResponse();
+    }
+
+    private function served(string $uri): Request
+    {
+        return new Request(
+            method: 'GET',
+            uri: $uri,
+            headers: [],
+            query: [],
+            post: [],
+            server: ['request_uri' => $uri],
+            cookies: [],
+        );
     }
 
     #[Test]
@@ -67,6 +83,35 @@ final class ShellResponseShapeTest extends TestCase
         self::assertSame([['src' => '/assets/app.js', 'type' => '', 'attrs' => []]], $payload['assets']['js']);
         self::assertSame('', $payload['deferredManifest'], 'this page defers nothing');
         self::assertStringContainsString('application/json', $response->getHeaders()['Content-Type']);
+    }
+
+    #[Test]
+    public function theEnvelopeReportsTheAddressTheVisitorIsAt(): void
+    {
+        // The request reaching a handler has been rebased onto the path the
+        // ROUTER matched, and the locale layer strips a URL prefix to build
+        // it. Reporting that one answered `/ka/gallery` with `url: /gallery`;
+        // the client pushState's that value, and under LOCALE_URL_PREFIX=true
+        // an unprefixed path IS the default language — so the page stayed
+        // Georgian and the reload, or the link the visitor shared, came back
+        // in another language. Silent until someone reloads.
+        ShellRequest::forceForTesting(true);
+        CurrentRequestStore::set($this->served('/ka/gallery?sort=price_asc')->withPath('/gallery'));
+
+        $payload = json_decode($this->respond(self::PAGE)->getContent(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame('/ka/gallery?sort=price_asc', $payload['url']);
+    }
+
+    #[Test]
+    public function anUnprefixedRequestStillReportsItself(): void
+    {
+        ShellRequest::forceForTesting(true);
+        CurrentRequestStore::set($this->served('/gallery'));
+
+        $payload = json_decode($this->respond(self::PAGE)->getContent(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame('/gallery', $payload['url']);
     }
 
     #[Test]

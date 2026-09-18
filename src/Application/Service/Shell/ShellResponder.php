@@ -143,6 +143,14 @@ final class ShellResponder
      * Read from the request rather than echoed from the client: the two differ
      * whenever anything canonicalises a path, and the address bar has to show
      * the second one.
+     *
+     * getServedPath(), not getPath(): the request reaching a handler has been
+     * rebased onto the path the ROUTER matched, and the locale layer strips a
+     * URL prefix to produce it. Reporting that one made `/ka/gallery` answer
+     * `url: /gallery`, the client pushState'd it, and under
+     * `LOCALE_URL_PREFIX=true` an unprefixed path means the default language —
+     * so the page stayed Georgian and the next reload, or the link the visitor
+     * shared, came back in another language. Silent until someone reloads.
      */
     private function currentUrl(): string
     {
@@ -151,7 +159,7 @@ final class ShellResponder
             return '';
         }
 
-        $path = $request->getPath();
+        $path = $request->getServedPath();
         $query = $request->getQueryString();
 
         return $query === '' ? $path : $path . '?' . $query;

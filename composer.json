@@ -31,6 +31,11 @@
         "semitexa-module": {
             "name": "core-frontend",
             "description": "Server-Side Rendering capabilities using Twig"
+        },
+        "semitexa": {
+            "floors": {
+                "semitexa/core": "next"
+            }
         }
     },
     "keywords": [

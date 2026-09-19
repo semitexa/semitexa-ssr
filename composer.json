@@ -12,7 +12,7 @@
     "require": {
         "php": "^8.4",
         "twig/twig": "^3.10",
-        "semitexa/core": ">=2026.09.17.1037 || dev-master",
+        "semitexa/core": ">=2026.09.19.1020 || dev-master",
         "semitexa/scheduler": "*",
         "semitexa/locale": "*",
         "semitexa/platform-settings": "*",
@@ -34,7 +34,7 @@
         },
         "semitexa": {
             "floors": {
-                "semitexa/core": "next"
+                "semitexa/core": "2026.09.19.1020"
             }
         }
     },

@@ -11,8 +11,6 @@ use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Discovery\ClassDiscovery;
 use Semitexa\Ssr\Attribute\AsTwigExtension;
 use Semitexa\Core\Log\StaticLoggerBridge;
-use Twig\TwigFunction;
-use Twig\TwigFilter;
 
 #[AsService]
 final class TwigExtensionCatalog

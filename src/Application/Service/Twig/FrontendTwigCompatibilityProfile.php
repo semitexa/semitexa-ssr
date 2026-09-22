@@ -14,7 +14,6 @@ use Twig\Node\Expression\Binary\LessEqualBinary;
 use Twig\Node\Expression\Binary\NotEqualBinary;
 use Twig\Node\Expression\Binary\NotInBinary;
 use Twig\Node\Expression\Binary\OrBinary;
-use Twig\Node\Expression\Filter\RawFilter;
 use Twig\Node\Expression\Unary\NotUnary;
 
 final class FrontendTwigCompatibilityProfile

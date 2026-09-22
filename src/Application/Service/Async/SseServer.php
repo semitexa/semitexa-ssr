@@ -6,7 +6,6 @@ namespace Semitexa\Ssr\Application\Service\Async;
 
 use Semitexa\Core\Support\Row;
 use Semitexa\Core\Attribute\AsService;
-use Semitexa\Core\HttpResponse;
 use Semitexa\Core\Pipeline\ReRun\ReRunContext;
 use Semitexa\Core\Pipeline\ReRun\ReRunnerInterface;
 use Semitexa\Core\Pipeline\RequestTracerInterface;

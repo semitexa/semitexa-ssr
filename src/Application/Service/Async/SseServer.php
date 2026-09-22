@@ -6,6 +6,8 @@ namespace Semitexa\Ssr\Application\Service\Async;
 
 use Semitexa\Core\Support\Row;
 use Semitexa\Core\Attribute\AsService;
+use Semitexa\Core\Attribute\InjectAsReadonly;
+use Semitexa\Core\Container\SemitexaContainer;
 use Semitexa\Core\Pipeline\ReRun\ReRunContext;
 use Semitexa\Core\Pipeline\ReRun\ReRunnerInterface;
 use Semitexa\Core\Pipeline\RequestTracerInterface;
@@ -206,6 +208,10 @@ final class SseServer
 
     /** `ep-slay-sse-god-class` — the extracted per-session coroutine tracker. */
     private ?SseSessionCoroutines $sessionCoroutines = null;
+
+    // Session coroutines replay the spawning request's execution context from it.
+    #[InjectAsReadonly]
+    protected SemitexaContainer $container;
 
     /** `ep-slay-sse-god-class` — the extracted per-worker session/queue/buffer state. */
     private ?SseSessionRegistry $sessionRegistry = null;
@@ -2050,7 +2056,7 @@ final class SseServer
 
     private function sessionCoroutines(): SseSessionCoroutines
     {
-        return $this->sessionCoroutines ??= new SseSessionCoroutines();
+        return $this->sessionCoroutines ??= new SseSessionCoroutines(isset($this->container) ? $this->container : null);
     }
 
     private function sessionRegistry(): SseSessionRegistry

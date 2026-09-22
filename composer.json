@@ -16,7 +16,8 @@
         "semitexa/scheduler": "*",
         "semitexa/locale": "*",
         "semitexa/platform-settings": "*",
-        "semitexa/tenancy": "*"
+        "semitexa/tenancy": "*",
+        "matthiasmullie/minify": "^1.3"
     },
     "suggest": {
         "semitexa/scheduler": "Required for automatic scheduled sitemap regeneration (daily cron job)",

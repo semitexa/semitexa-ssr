@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Asset;
 
+use Semitexa\Core\Environment;
 use Semitexa\Core\Log\StaticLoggerBridge;
 
 /**
@@ -40,6 +41,11 @@ final class AssetRenderer
         $html = self::renderImportMap($entries);
         $renderedKeys = [];
 
+        // Worked out before the loop so the links can go where the first
+        // stylesheet would have: moving them would move the cascade.
+        $bundleUrls = self::bundleHeadCss($entries);
+        $bundleEmitted = false;
+
         foreach ($entries as $entry) {
             $signature = self::buildRenderSignature($entry);
             if (isset($renderedKeys[$signature])) {
@@ -57,6 +63,16 @@ final class AssetRenderer
             }
 
             $renderedKeys[$signature] = true;
+
+            if ($entry->type === 'css' && $bundleUrls !== null) {
+                if (!$bundleEmitted) {
+                    $bundleEmitted = true;
+                    foreach ($bundleUrls as $url) {
+                        $html .= '<link rel="stylesheet" href="' . htmlspecialchars($url, ENT_QUOTES, 'UTF-8') . '">' . "\n";
+                    }
+                }
+                continue;
+            }
 
             $html .= match ($entry->type) {
                 'css'        => self::renderCssLink($entry),
@@ -248,6 +264,56 @@ final class AssetRenderer
         $json = json_encode(['imports' => $imports], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
 
         return '<script type="importmap"' . ScriptNonceSource::attribute() . '>' . str_ireplace('</script', '<\/script', $json) . '</script>' . "\n";
+    }
+
+    /**
+     * The stylesheets this head is about to link, as one or two bundles.
+     *
+     * Null means link them one by one: too few to be worth it, bundling
+     * turned off, or the bundler declined because something was unreadable.
+     * Late-arriving CSS is not included — it is resolved after this pass and
+     * keeps its own link, which is what makes it visible as dynamic.
+     *
+     * @param  list<AssetEntry> $entries
+     * @return list<string>|null
+     */
+    private static function bundleHeadCss(array $entries): ?array
+    {
+        if (!self::bundlingEnabled()) {
+            return null;
+        }
+
+        $seen = [];
+        $css = [];
+        foreach ($entries as $entry) {
+            if ($entry->type !== 'css') {
+                continue;
+            }
+            $signature = self::buildRenderSignature($entry);
+            if (isset($seen[$signature])) {
+                continue;
+            }
+            $seen[$signature] = true;
+            $css[] = $entry;
+        }
+
+        return AssetBundler::bundle($css);
+    }
+
+    /**
+     * On everywhere but a development tree, where individual files are worth
+     * more than the round trips: a stack trace pointing at demo.css:4120 beats
+     * one pointing into a minified bundle. SEMITEXA_ASSET_BUNDLE=1 forces it
+     * on to check the real thing locally, =0 forces it off anywhere.
+     */
+    private static function bundlingEnabled(): bool
+    {
+        $explicit = Environment::getEnvValue('SEMITEXA_ASSET_BUNDLE', null);
+        if (is_string($explicit) && $explicit !== '') {
+            return in_array(strtolower($explicit), ['1', 'true', 'yes', 'on'], true);
+        }
+
+        return strtolower((string) Environment::getEnvValue('APP_ENV', 'prod')) !== 'dev';
     }
 
     private static function renderCssLink(AssetEntry $entry): string

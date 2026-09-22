@@ -83,6 +83,10 @@ final class TwigFunctionContractTest extends TestCase
                 'primitive',
                 'icon',
                 'inject_scripts',
+                // the release the application is running, for a footer to
+                // print; null on a working tree, where core resolves to a dev
+                // version rather than a tag
+                'semitexa_version',
                 'ui_part',
                 'ui_part_props',
                 'ui_component_instance',

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Layout;
 
-use Semitexa\Ssr\Application\Service\Http\Response\HtmlSlotResponse;
 use Semitexa\Core\Log\StaticLoggerBridge;
 
 /**

@@ -7,6 +7,9 @@ namespace Semitexa\Ssr\Tests\Unit\Async;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+use Semitexa\Core\Auth\GuestAuthContext;
+use Semitexa\Core\Container\ExecutionContext;
+use Semitexa\Core\Container\SemitexaContainer;
 use Semitexa\Ssr\Application\Service\Async\SseSessionCoroutines;
 use Swoole\Coroutine;
 
@@ -215,6 +218,54 @@ final class SseSessionCoroutinesTest extends TestCase
         yield 'mixed case' => [new \RuntimeException('CANCELLED'), true];
         yield 'an ordinary failure' => [new \RuntimeException('database is down'), false];
         yield 'an empty message' => [new \RuntimeException(''), false];
+    }
+
+    #[Test]
+    public function a_spawned_coroutine_sees_the_parents_execution_context(): void
+    {
+        // Execution context is coroutine-local. Without the replay, a deferred slot
+        // whose handler injects AuthContextInterface was refused with "No execution
+        // context value" and its region rendered empty — on every page, silently.
+        $this->requireSwoole();
+        $container = new SemitexaContainer();
+        $tracker = new SseSessionCoroutines($container);
+        $auth = GuestAuthContext::getInstance();
+        $seen = null;
+
+        Coroutine\run(static function () use ($container, $tracker, $auth, &$seen): void {
+            $container->setExecutionContext(new ExecutionContext(authContext: $auth));
+            $done = new Coroutine\Channel(1);
+            $tracker->create(static function () use ($container, $done, &$seen): void {
+                $seen = $container->captureExecutionContext()->authContext;
+                $done->push(true);
+            }, 'sess-ctx');
+            $done->pop(1.0);
+        });
+
+        self::assertSame($auth, $seen);
+    }
+
+    #[Test]
+    public function without_a_container_a_spawned_coroutine_starts_bare(): void
+    {
+        // The facade's `new SseServer()` fallback and older callers pass nothing;
+        // they keep today's behaviour rather than failing.
+        $this->requireSwoole();
+        $container = new SemitexaContainer();
+        $tracker = new SseSessionCoroutines();
+        $seen = 'unset';
+
+        Coroutine\run(static function () use ($container, $tracker, &$seen): void {
+            $container->setExecutionContext(new ExecutionContext(authContext: GuestAuthContext::getInstance()));
+            $done = new Coroutine\Channel(1);
+            $tracker->create(static function () use ($container, $done, &$seen): void {
+                $seen = $container->captureExecutionContext()->authContext;
+                $done->push(true);
+            }, 'sess-bare');
+            $done->pop(1.0);
+        });
+
+        self::assertNull($seen);
     }
 
     private function requireSwoole(): void

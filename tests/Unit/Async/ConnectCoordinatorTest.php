@@ -20,7 +20,6 @@ use Semitexa\Ssr\Application\Service\Server\Lifecycle\CreateTrackRTablesListener
 use Semitexa\Ssr\Application\Service\Server\Lifecycle\TrackRSharedTables;
 use Semitexa\Ssr\Domain\Contract\ChannelSubscriptionControllerInterface;
 use Semitexa\Ssr\Domain\Contract\SessionControlDeliveryInterface;
-use Semitexa\Ssr\Domain\Model\SubscriberRef;
 use Semitexa\Ssr\Domain\Model\SubscriptionRecord;
 
 /**

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Semitexa\Core\Container\SemitexaContainer;
 use Swoole\Coroutine;
 
 /**
@@ -41,6 +42,14 @@ final class SseSessionCoroutines
     private array $bySession = [];
 
     /**
+     * @param SemitexaContainer|null $container carries the parent's execution context
+     *        into each spawned coroutine; null (tests, the facade fallback) spawns bare
+     */
+    public function __construct(
+        private readonly ?SemitexaContainer $container = null,
+    ) {}
+
+    /**
      * Run `$callback` in a coroutine tracked against `$sessionId`.
      *
      * @return int|false the coroutine id, or `false` when it ran inline.
@@ -53,15 +62,26 @@ final class SseSessionCoroutines
             return false;
         }
 
+        // Execution context (auth, tenant, locale, session) is coroutine-local, so a
+        // spawned coroutine starts without it. Measured: a deferred slot whose handler
+        // injects AuthContextInterface was refused ("No execution context value") and
+        // its region rendered empty. Carry the parent's context into the child.
+        $container = $this->container;
+        $context = $container?->captureExecutionContext();
+
         /** @var int|false $result */
-        $result = Coroutine::create(function () use ($callback, $sessionId): void {
+        $result = Coroutine::create(function () use ($callback, $sessionId, $container, $context): void {
             $cid = self::currentCid();
             if ($cid >= 0) {
                 $this->bySession[$sessionId][$cid] = true;
             }
 
             try {
-                $callback();
+                if ($container !== null && $context !== null) {
+                    $container->runWithExecutionContext($context, $callback);
+                } else {
+                    $callback();
+                }
             } catch (\Throwable $e) {
                 if (!self::isCancellation($e)) {
                     throw $e;

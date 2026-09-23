@@ -274,7 +274,7 @@ final class AssetRenderer
      * Late-arriving CSS is not included — it is resolved after this pass and
      * keeps its own link, which is what makes it visible as dynamic.
      *
-     * @param  list<AssetEntry> $entries
+     * @param  array<AssetEntry> $entries keys are ignored; the bundle keeps their order
      * @return list<string>|null
      */
     private static function bundleHeadCss(array $entries): ?array

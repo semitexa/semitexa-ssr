@@ -73,6 +73,18 @@ final class SlotHandlerPipeline
                     );
                 }
                 $slot = $result;
+            } catch (\Swoole\Coroutine\CanceledException) {
+                // Not a failure of the handler: the coroutine was cancelled —
+                // a worker draining on restart, or the client gone. Logged as
+                // an error it put a line in the error log on every restart
+                // that caught a deferred slot mid-render. Nothing after this
+                // can run in a cancelled coroutine either, so stop here.
+                StaticLoggerBridge::info('ssr', 'Slot render cancelled; region left as it was', [
+                    'handler' => $handlerClass,
+                    'slot' => $slotClass,
+                ]);
+
+                return $slot;
             } catch (\Throwable $e) {
                 // Error, not debug. A failed slot renders as an empty region, so
                 // at any normal log level this used to be indistinguishable from

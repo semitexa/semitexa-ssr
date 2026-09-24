@@ -9,7 +9,7 @@ use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Pipeline\AuthCheck;
 use Semitexa\Core\Pipeline\PipelineListenerInterface;
 use Semitexa\Core\Pipeline\RequestPipelineContext;
-use Semitexa\Platform\Settings\Domain\Contract\SettingsStoreInterface;
+use Semitexa\Ssr\Application\Service\Seo\SiteHead\SiteHeadReader;
 use Semitexa\Ssr\Application\Service\Seo\SiteHead\SiteHeadStore;
 use Semitexa\Ssr\Domain\Model\SiteHead;
 
@@ -20,20 +20,17 @@ use Semitexa\Ssr\Domain\Model\SiteHead;
  * {@see BindRequestToComponentRendererListener}: the value is per request and
  * per tenant, and the documents it lands in are finalized by static response
  * code with no container. Binding a reader rather than reading here keeps
- * requests that never render a page off the settings table. SettingsStore is
- * tenant-scoped, so the values are this site's without any tenant handling.
+ * requests that never render a page off the settings table.
  */
 #[AsPipelineListener(phase: AuthCheck::class, priority: 100)]
 final class BindSiteHeadListener implements PipelineListenerInterface
 {
     #[InjectAsReadonly]
-    protected SettingsStoreInterface $settings;
+    protected SiteHeadReader $reader;
 
     public function handle(RequestPipelineContext $context): void
     {
-        $settings = $this->settings;
-        SiteHeadStore::bind(static fn (): SiteHead => SiteHead::fromSettings(
-            $settings->getAll(SiteHead::SETTINGS_MODULE),
-        ));
+        $reader = $this->reader;
+        SiteHeadStore::bind(static fn (): SiteHead => $reader->current());
     }
 }

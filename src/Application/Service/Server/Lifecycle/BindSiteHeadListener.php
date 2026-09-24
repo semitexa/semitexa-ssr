@@ -22,7 +22,9 @@ use Semitexa\Ssr\Domain\Model\SiteHead;
  * code with no container. Binding a reader rather than reading here keeps
  * requests that never render a page off the settings table.
  */
-#[AsPipelineListener(phase: AuthCheck::class, priority: 100)]
+// First in the phase (ascending order): an authorization or CSRF refusal later
+// in AuthCheck renders an error page, and that page is the site's too.
+#[AsPipelineListener(phase: AuthCheck::class, priority: -1000)]
 final class BindSiteHeadListener implements PipelineListenerInterface
 {
     #[InjectAsReadonly]

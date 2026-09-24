@@ -36,7 +36,9 @@ final readonly class SiteHead
      */
     public const KEYS = [
         self::GA4_MEASUREMENT_ID => '/^G-[A-Z0-9]{4,20}$/',
-        self::PLAUSIBLE_DOMAIN => '/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/',
+        // One domain, or Plausible's comma-separated rollup; punycode TLDs
+        // (.xn--j1amh = .укр) included. Compared lowercased, see normalize().
+        self::PLAUSIBLE_DOMAIN => '/^(?=[^,]{1,253}(?:,|$))(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})(?:,(?=[^,]{1,253}(?:,|$))(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59}))*$/',
         self::GOOGLE_SITE_VERIFICATION => '/^[A-Za-z0-9_-]{16,128}$/',
         self::BING_SITE_VERIFICATION => '/^[A-Fa-f0-9]{32}$/',
         self::YANDEX_VERIFICATION => '/^[A-Za-z0-9]{8,64}$/',
@@ -74,7 +76,7 @@ final readonly class SiteHead
                 continue;
             }
             if (is_string($raw) && trim($raw) !== '') {
-                $values[$key] = trim($raw);
+                $values[$key] = self::normalize($key, $raw);
             }
         }
 
@@ -96,11 +98,21 @@ final readonly class SiteHead
         if (!is_string($value)) {
             return sprintf('"%s" must be a string, got %s', $key, get_debug_type($value));
         }
-        if (preg_match(self::KEYS[$key], trim($value)) !== 1) {
+        if (preg_match(self::KEYS[$key], self::normalize($key, $value)) !== 1) {
             return sprintf('"%s" does not look like a %s: %s', $key, str_replace('_', ' ', $key), trim($value));
         }
 
         return null;
+    }
+
+    /** The form a value is checked and stored in: trimmed; a domain list lowercased, without spaces. */
+    public static function normalize(string $key, string $value): string
+    {
+        $value = trim($value);
+
+        return $key === self::PLAUSIBLE_DOMAIN
+            ? strtolower((string) preg_replace('/\s*,\s*/', ',', $value))
+            : $value;
     }
 
     public function get(string $key): ?string

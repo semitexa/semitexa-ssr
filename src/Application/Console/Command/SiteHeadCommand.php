@@ -34,7 +34,13 @@ final class SiteHeadCommand extends Command
             ->addOption('set', null, InputOption::VALUE_REQUIRED | InputOption::VALUE_IS_ARRAY, 'key=value to store (repeatable)')
             ->addOption('unset', null, InputOption::VALUE_REQUIRED | InputOption::VALUE_IS_ARRAY, 'key to remove (repeatable)')
             ->addOption('json', null, InputOption::VALUE_NONE, 'Output as JSON')
-            ->setHelp('Keys: ' . implode(', ', array_keys(SiteHead::KEYS)));
+            ->setHelp(
+                'Keys: ' . implode(', ', array_keys(SiteHead::KEYS)) . "\n\n"
+                . 'The scripts carry the request\'s CSP nonce, but a site that sends a Content-Security-Policy '
+                . 'must still allow the vendor\'s hosts (connect-src, and script-src for the loader): '
+                . 'www.googletagmanager.com and *.google-analytics.com for GA4, plausible.io for Plausible. '
+                . 'Without them the page loads and analytics stays silent.',
+            );
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -61,7 +67,7 @@ final class SiteHeadCommand extends Command
                 $errors[] = $why;
                 continue;
             }
-            $writes[$key] = $value;
+            $writes[$key] = SiteHead::normalize($key, $value);
         }
         foreach ($unsets as $key) {
             if (!array_key_exists($key, SiteHead::KEYS)) {

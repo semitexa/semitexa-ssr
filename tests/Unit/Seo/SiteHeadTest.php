@@ -142,4 +142,59 @@ final class SiteHeadTest extends TestCase
 
         self::assertSame(self::DOCUMENT, SiteHeadStore::inject(self::DOCUMENT));
     }
+
+    /**
+     * A handler that renders another full document first (an iframe body, an
+     * error re-render) must not leave the page without the tags — and the
+     * settings are still read once.
+     */
+    #[Test]
+    public function every_document_of_the_request_gets_the_tags_from_one_read(): void
+    {
+        $reads = 0;
+        SiteHeadStore::bind(static function () use (&$reads): SiteHead {
+            $reads++;
+
+            return self::head();
+        });
+
+        $first = SiteHeadStore::inject(self::DOCUMENT);
+        $second = SiteHeadStore::inject(str_replace('<title>t</title>', '<title>page</title>', self::DOCUMENT));
+
+        self::assertStringContainsString('google-site-verification', $first);
+        self::assertStringContainsString('google-site-verification', $second);
+        self::assertSame(1, $reads);
+    }
+
+    /** A failed read is logged once per request, not once per document. */
+    #[Test]
+    public function a_failed_read_is_attempted_once_per_request(): void
+    {
+        $reads = 0;
+        SiteHeadStore::bind(static function () use (&$reads): SiteHead {
+            $reads++;
+            throw new \RuntimeException('settings table unavailable');
+        });
+
+        SiteHeadStore::inject(self::DOCUMENT);
+        SiteHeadStore::inject(self::DOCUMENT);
+
+        self::assertSame(1, $reads);
+    }
+
+    /** Plausible: uppercase input, the comma-separated rollup and punycode TLDs are real domains. */
+    #[Test]
+    public function plausible_accepts_the_domains_it_is_given(): void
+    {
+        foreach (['Example.COM', 'a.com, b.org', 'museum.xn--j1amh', 'sub.example.co.uk'] as $domain) {
+            self::assertNull(SiteHead::whyRejected(SiteHead::PLAUSIBLE_DOMAIN, $domain), $domain);
+        }
+        foreach (['a.com,', ',a.com', 'a.com,,b.com', 'no spaces.com'] as $domain) {
+            self::assertNotNull(SiteHead::whyRejected(SiteHead::PLAUSIBLE_DOMAIN, $domain), $domain);
+        }
+        self::assertSame(
+            'a.com,b.org',
+            SiteHead::fromSettings([SiteHead::PLAUSIBLE_DOMAIN => ' A.com , b.ORG '])->get(SiteHead::PLAUSIBLE_DOMAIN),
+        );
+    }
 }

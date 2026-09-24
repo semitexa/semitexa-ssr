@@ -184,9 +184,10 @@ final class SlotHandlerPipelineTest extends TestCase
      * A cancelled coroutine (a worker draining on restart) is not a handler
      * failure. Logged as an error it put a line in the error log on every
      * restart that caught a deferred slot mid-render (10 since 2026-09-23).
+     * And it must propagate: cancel() throws INTO the coroutine so it unwinds.
      */
     #[Test]
-    public function a_cancelled_render_is_not_logged_as_a_failure(): void
+    public function a_cancelled_render_propagates_and_is_not_logged_as_a_failure(): void
     {
         $snapshot = self::snapshotRegistry();
         SlotHandlerRegistry::reset();
@@ -207,10 +208,13 @@ final class SlotHandlerPipelineTest extends TestCase
             SlotHandlerRegistry::register(ConcreteSlotFixture::class, CancelledSlotHandlerFixture::class, 0);
             SlotHandlerRegistry::register(ConcreteSlotFixture::class, RecordingSlotHandlerFixture::class, 10);
 
-            $slot = new ConcreteSlotFixture();
-            self::assertSame($slot, SlotHandlerPipeline::execute($slot));
+            try {
+                SlotHandlerPipeline::execute(new ConcreteSlotFixture());
+                self::fail('a cancellation must propagate so the coroutine unwinds');
+            } catch (\Swoole\Coroutine\CanceledException) {
+            }
 
-            self::assertSame(['info'], $logger->levels);
+            self::assertSame(['info'], $logger->levels, 'logged as info, never as an error');
             self::assertFalse(RecordingSlotHandlerFixture::$ran, 'nothing runs after a cancellation');
         } finally {
             StaticLoggerBridge::reset();

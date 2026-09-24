@@ -191,6 +191,19 @@ final class SseSessionCoroutines
     }
 
     /**
+     * Let a cancellation keep unwinding. For a catch-all that logs failures:
+     * a cancel is thrown INTO a coroutine so it stops, and caught there it read
+     * as a failed slot on every restart while the coroutine carried on. The
+     * session and stream entry points end it quietly.
+     */
+    public static function rethrowIfCancellation(\Throwable $e): void
+    {
+        if (self::isCancellation($e)) {
+            throw $e;
+        }
+    }
+
+    /**
      * Whether a throwable is Swoole signalling a cancellation rather than a real
      * failure. Public because the deferred-block trigger runs its own catch and
      * needs the same distinction — one definition, not two drifting copies.

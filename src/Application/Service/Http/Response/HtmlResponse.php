@@ -692,7 +692,7 @@ class HtmlResponse extends ResourceResponse
         }
 
         $excludedTopLevelKeys = [
-            'navSections',
+            'navSections', 'docsSearchIndex',
             'featureTree',
             'sections',
             'features',

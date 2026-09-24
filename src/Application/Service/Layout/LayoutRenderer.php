@@ -173,10 +173,7 @@ class LayoutRenderer
                 }
             }
 
-            $html = \Semitexa\Ssr\Application\Service\Asset\AssetRenderer::finalizeDynamicCss(
-                $html,
-                \Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore::get(),
-            );
+            $html = PageDocumentFinalizer::finalize($html);
 
             return $html;
         } catch (\Throwable $e) {

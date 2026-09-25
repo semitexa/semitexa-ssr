@@ -10,7 +10,8 @@ use Semitexa\Ssr\Application\Service\Seo\SiteHead\SiteHeadStore;
 
 /**
  * The last pass over a rendered page: styles registered after the head had
- * already rendered, then the site's own head tags.
+ * already rendered, the site's own head tags, then whatever registered page
+ * contributors place before </body>.
  *
  * Every full-page render path ends here — HtmlResponse::render(),
  * renderString() and LayoutRenderer — so a page gets both whichever way it was
@@ -22,6 +23,6 @@ final class PageDocumentFinalizer
     {
         $html = AssetRenderer::finalizeDynamicCss($html, AssetCollectorStore::get());
 
-        return SiteHeadStore::inject($html);
+        return PageBodyEndStore::inject(SiteHeadStore::inject($html));
     }
 }

@@ -75,7 +75,7 @@ final class SseSessionCoroutinesTest extends TestCase
 
         Coroutine\run(static function () use ($tracker): void {
             $tracker->create(static function (): void {
-                throw new \RuntimeException('coroutine cancelled');
+                throw new \Swoole\Coroutine\CanceledException();
             }, 'sess-1');
             Coroutine::sleep(0.05);
         });
@@ -200,7 +200,7 @@ final class SseSessionCoroutinesTest extends TestCase
 
     #[Test]
     #[DataProvider('cancellationShapes')]
-    public function cancellation_is_recognised_by_class_or_message(\Throwable $e, bool $expected): void
+    public function cancellation_is_recognised_by_class_not_message(\Throwable $e, bool $expected): void
     {
         self::assertSame($expected, SseSessionCoroutines::isCancellation($e));
     }
@@ -210,12 +210,17 @@ final class SseSessionCoroutinesTest extends TestCase
      */
     public static function cancellationShapes(): iterable
     {
-        // The check is loose on purpose: Swoole has not been consistent about
-        // the exception type across versions, so both the class name and the
-        // message are consulted.
-        yield 'message says cancelled' => [new \RuntimeException('Coroutine is cancelled'), true];
-        yield 'message says cancel' => [new \RuntimeException('cancel requested'), true];
-        yield 'mixed case' => [new \RuntimeException('CANCELLED'), true];
+        // By exact type, through the previous-chain. Neither message nor a
+        // class name that merely CONTAINS "cancel": a failure that mentions
+        // cancelling is a failure — rethrowing it as a cancellation would
+        // abort a render.
+        if (class_exists(\Swoole\Coroutine\CanceledException::class)) {
+            yield 'swoole cancellation, empty message' => [new \Swoole\Coroutine\CanceledException(), true];
+            yield 'a wrapped cancellation' => [new \RuntimeException('slot failed', 0, new \Swoole\Coroutine\CanceledException()), true];
+        }
+        yield 'a class named like a cancellation' => [new PaymentCancellationFailedException('declined'), false];
+        yield 'a failure that mentions cancelling' => [new \RuntimeException('Payment cancellation failed'), false];
+        yield 'message says cancelled' => [new \RuntimeException('Coroutine is cancelled'), false];
         yield 'an ordinary failure' => [new \RuntimeException('database is down'), false];
         yield 'an empty message' => [new \RuntimeException(''), false];
     }
@@ -274,4 +279,8 @@ final class SseSessionCoroutinesTest extends TestCase
             self::markTestSkipped('Swoole extension is required.');
         }
     }
+}
+
+final class PaymentCancellationFailedException extends \RuntimeException
+{
 }

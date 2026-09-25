@@ -10,6 +10,8 @@ use ReflectionMethod;
 use ReflectionProperty;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
+use Semitexa\Core\Log\LoggerInterface;
+use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Ssr\Application\Service\Http\Response\HtmlSlotResponse;
 use Semitexa\Ssr\Application\Service\Layout\SlotHandlerPipeline;
 use Semitexa\Ssr\Application\Service\Layout\SlotHandlerRegistry;
@@ -176,6 +178,64 @@ final class SlotHandlerPipelineTest extends TestCase
             self::restoreRegistry($snapshot);
             RecordingSlotHandlerFixture::$ran = false;
         }
+    }
+
+    /**
+     * A cancelled coroutine (a worker draining on restart) is not a handler
+     * failure. Logged as an error it put a line in the error log on every
+     * restart that caught a deferred slot mid-render (10 since 2026-09-23).
+     * And it must propagate: cancel() throws INTO the coroutine so it unwinds.
+     */
+    #[Test]
+    public function a_cancelled_render_propagates_and_is_not_logged_as_a_failure(): void
+    {
+        if (!class_exists(\Swoole\Coroutine\CanceledException::class)) {
+            self::markTestSkipped('Swoole is not loaded; there is no coroutine cancellation to propagate.');
+        }
+        $snapshot = self::snapshotRegistry();
+        SlotHandlerRegistry::reset();
+        RecordingSlotHandlerFixture::$ran = false;
+        $logger = new class implements LoggerInterface {
+            /** @var list<string> */
+            public array $levels = [];
+            public function error(string $message, array $context = []): void { $this->levels[] = 'error'; }
+            public function critical(string $message, array $context = []): void { $this->levels[] = 'critical'; }
+            public function warning(string $message, array $context = []): void { $this->levels[] = 'warning'; }
+            public function info(string $message, array $context = []): void { $this->levels[] = 'info'; }
+            public function notice(string $message, array $context = []): void { $this->levels[] = 'notice'; }
+            public function debug(string $message, array $context = []): void { $this->levels[] = 'debug'; }
+        };
+        // Snapshot the process-wide logger and put it back after: reset() alone
+        // would drop a logger an earlier test (or the bootstrap) installed.
+        $bridgeLogger = new ReflectionProperty(StaticLoggerBridge::class, 'logger');
+        $previousLogger = $bridgeLogger->getValue();
+        StaticLoggerBridge::set($logger);
+
+        try {
+            SlotHandlerRegistry::register(ConcreteSlotFixture::class, CancelledSlotHandlerFixture::class, 0);
+            SlotHandlerRegistry::register(ConcreteSlotFixture::class, RecordingSlotHandlerFixture::class, 10);
+
+            try {
+                SlotHandlerPipeline::execute(new ConcreteSlotFixture());
+                self::fail('a cancellation must propagate so the coroutine unwinds');
+            } catch (\Swoole\Coroutine\CanceledException) {
+            }
+
+            self::assertSame(['info'], $logger->levels, 'logged as info, never as an error');
+            self::assertFalse(RecordingSlotHandlerFixture::$ran, 'nothing runs after a cancellation');
+        } finally {
+            $bridgeLogger->setValue(null, $previousLogger);
+            self::restoreRegistry($snapshot);
+            RecordingSlotHandlerFixture::$ran = false;
+        }
+    }
+}
+
+final class CancelledSlotHandlerFixture implements TypedSlotHandlerInterface
+{
+    public function handle(object $slot): object
+    {
+        throw new \Swoole\Coroutine\CanceledException('cancelled');
     }
 }
 

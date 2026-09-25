@@ -13,6 +13,7 @@ use Semitexa\Core\Attribute\InjectAsMutable;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Container\ContainerFactory;
 use Semitexa\Core\Log\StaticLoggerBridge;
+use Semitexa\Ssr\Application\Service\Async\SseSessionCoroutines;
 use Semitexa\Ssr\Application\Service\Http\Response\HtmlSlotResponse;
 use Semitexa\Ssr\Domain\Contract\TypedSlotHandlerInterface;
 
@@ -74,6 +75,21 @@ final class SlotHandlerPipeline
                 }
                 $slot = $result;
             } catch (\Throwable $e) {
+                // A cancelled coroutine — a worker draining on restart, or an
+                // SSE session torn down — is not a failure of the handler. It
+                // used to be logged as one on every restart that caught a slot
+                // mid-render. Rethrown, not swallowed: cancel() throws INTO the
+                // coroutine precisely so it unwinds, and the session and stream
+                // entry points end it quietly (SseSessionCoroutines, SseDeferredDoor).
+                if (SseSessionCoroutines::isCancellation($e)) {
+                    StaticLoggerBridge::info('ssr', 'Slot render cancelled', [
+                        'handler' => $handlerClass,
+                        'slot' => $slotClass,
+                    ]);
+
+                    throw $e;
+                }
+
                 // Error, not debug. A failed slot renders as an empty region, so
                 // at any normal log level this used to be indistinguishable from
                 // a slot that had nothing to show — the failure was only findable

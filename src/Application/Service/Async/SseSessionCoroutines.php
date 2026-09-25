@@ -191,15 +191,44 @@ final class SseSessionCoroutines
     }
 
     /**
+     * Let a cancellation keep unwinding. For a catch-all that logs failures:
+     * a cancel is thrown INTO a coroutine so it stops, and caught there it read
+     * as a failed slot on every restart while the coroutine carried on. The
+     * session and stream entry points end it quietly.
+     */
+    public static function rethrowIfCancellation(\Throwable $e): void
+    {
+        if (self::isCancellation($e)) {
+            throw $e;
+        }
+    }
+
+    /**
      * Whether a throwable is Swoole signalling a cancellation rather than a real
      * failure. Public because the deferred-block trigger runs its own catch and
      * needs the same distinction — one definition, not two drifting copies.
+     *
+     * By EXACT type, through the previous-chain so a wrapped cancellation
+     * still counts. Earlier versions matched "cancel" in the message, then in
+     * the class name — both caught ordinary failures ('Payment cancellation
+     * failed', PaymentCancellationFailedException), and now that cancellations
+     * are rethrown that would abort a render instead of taking the failure
+     * path. Swoole 6.2 throws Swoole\Coroutine\CanceledException, with an
+     * empty message.
      */
     public static function isCancellation(\Throwable $e): bool
     {
-        $class = strtolower($e::class);
-        $message = strtolower($e->getMessage());
+        for ($current = $e; $current !== null; $current = $current->getPrevious()) {
+            if (in_array($current::class, self::CANCELLATION_TYPES, true)) {
+                return true;
+            }
+        }
 
-        return str_contains($class, 'cancel') || str_contains($message, 'cancel');
+        return false;
     }
+
+    /** @var list<string> the coroutine cancellation exceptions Swoole throws */
+    private const CANCELLATION_TYPES = [
+        \Swoole\Coroutine\CanceledException::class,
+    ];
 }

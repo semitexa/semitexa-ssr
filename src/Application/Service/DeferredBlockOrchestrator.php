@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service;
 
 use Semitexa\Ssr\Application\Service\Async\SseServer;
+use Semitexa\Ssr\Application\Service\Async\SseSessionCoroutines;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Log\LoggerInterface;
@@ -158,6 +159,7 @@ final class DeferredBlockOrchestrator
                     $this->applyUiSseSessionFromContext($pageContext);
                     $data = $this->resolveSlotData($slot, $pageHandle, $pageContext, $requestSnapshot);
                 } catch (\Throwable $e) {
+                    SseSessionCoroutines::rethrowIfCancellation($e);
                     $this->logger->error('DataProvider failed for slot', [
                         'slot_id' => $slot->slotId,
                         'exception' => $e::class,
@@ -231,6 +233,7 @@ final class DeferredBlockOrchestrator
                     $this->applyUiSseSessionFromContext($pageContext);
                     $data = $this->resolveSlotData($slot, $pageHandle, $pageContext, $requestSnapshot);
                 } catch (\Throwable $e) {
+                    SseSessionCoroutines::rethrowIfCancellation($e);
                     $this->logger->error('DataProvider failed for slot', [
                         'slot_id' => $slot->slotId,
                         'exception' => $e::class,
@@ -355,6 +358,7 @@ final class DeferredBlockOrchestrator
                 $this->applyUiSseSession($uiSseSession);
                 $html = $this->componentRenderer->render($name, $props, [], forceImmediateRender: true);
             } catch (\Throwable $e) {
+                SseSessionCoroutines::rethrowIfCancellation($e);
                 $this->logger->error('Deferred component render failed', [
                     'component' => $name,
                     'instance_id' => $instanceId,
@@ -400,6 +404,7 @@ final class DeferredBlockOrchestrator
             $this->applyUiSseSessionFromContext($pageContext);
             return $this->resolveSlotData($slot, $pageHandle, $pageContext, $requestSnapshot);
         } catch (\Throwable $e) {
+            SseSessionCoroutines::rethrowIfCancellation($e);
             $this->logger->error('DataProvider failed for slot', [
                 'slot_id' => $slot->slotId,
                 'exception' => $e::class,
@@ -441,6 +446,7 @@ final class DeferredBlockOrchestrator
                 $twig = ModuleTemplateRegistry::getTwig();
                 $result[$slot->slotId] = $twig->render($slot->templateName, $data);
             } catch (\Throwable $e) {
+                SseSessionCoroutines::rethrowIfCancellation($e);
                 $this->logger->error('Deferred block sync render failed', [
                     'slot_id' => $slot->slotId,
                     'exception' => $e::class,
@@ -511,6 +517,7 @@ final class DeferredBlockOrchestrator
                     $this->applyUiSseSessionFromContext($pageContext);
                     $data = $this->resolveSlotData($slot, $pageHandle, $pageContext, $requestSnapshot);
                 } catch (\Throwable $e) {
+                    SseSessionCoroutines::rethrowIfCancellation($e);
                     $this->logger->error('Live slot refresh failed', [
                         'slot_id' => $slot->slotId,
                         'exception' => $e::class,
@@ -570,6 +577,7 @@ final class DeferredBlockOrchestrator
         try {
             return ModuleTemplateRegistry::getTwig()->render($slot->templateName, $data);
         } catch (\Throwable $e) {
+            SseSessionCoroutines::rethrowIfCancellation($e);
             $this->logger->error('Twig render failed for deferred slot', [
                 'slot_id' => $slot->slotId,
                 'exception' => $e::class,

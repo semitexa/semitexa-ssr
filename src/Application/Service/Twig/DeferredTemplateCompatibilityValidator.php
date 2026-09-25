@@ -58,6 +58,24 @@ final class DeferredTemplateCompatibilityValidator
     /** @var list<array{line_start:int,line_end:int,expression:string}> */
     private array $printExpressions = [];
 
+    /**
+     * Findings per Twig environment, then per template (name and path), with
+     * the hash of the source they were found in.
+     *
+     * Parsing through the worker's shared Environment is not free to repeat:
+     * Twig's escaper visitor keeps every node it has analysed, for the life
+     * of the Environment. MEASURED at ~9.8 KB retained per validateSource()
+     * of a small template — so a check that ran per request grew a dev worker
+     * from 53 MB to 111 MB over 7000 requests. Twig parses each template
+     * source once and so does this now: an unchanged source returns what was
+     * found, a changed one replaces its entry, and a discarded Environment
+     * takes its entries with it. The profile is not part of the key because
+     * it is final and has a single configuration.
+     *
+     * @var \WeakMap<Environment, array<string, array{hash: string, issues: list<FrontendTwigCompatibilityIssue>}>>|null
+     */
+    private static ?\WeakMap $found = null;
+
     public function __construct(?FrontendTwigCompatibilityProfile $profile = null)
     {
         $this->profile = $profile ?? FrontendTwigCompatibilityProfile::createDefault();
@@ -109,9 +127,32 @@ final class DeferredTemplateCompatibilityValidator
      */
     public function validateSource(Source $source): array
     {
+        $twig = ModuleTemplateRegistry::getTwig();
+        $key = $source->getName() . "\0" . $source->getPath();
+        $hash = hash('xxh128', $source->getCode());
+
+        self::$found ??= new \WeakMap();
+        $known = self::$found[$twig][$key] ?? null;
+        if ($known !== null && $known['hash'] === $hash) {
+            return $known['issues'];
+        }
+
+        $issues = $this->inspect($source, $twig);
+
+        $forTwig = self::$found[$twig] ?? [];
+        $forTwig[$key] = ['hash' => $hash, 'issues' => $issues];
+        self::$found[$twig] = $forTwig;
+
+        return $issues;
+    }
+
+    /**
+     * @return list<FrontendTwigCompatibilityIssue>
+     */
+    private function inspect(Source $source, Environment $twig): array
+    {
         $this->issues = [];
         $this->printExpressions = $this->extractPrintExpressions($source);
-        $twig = ModuleTemplateRegistry::getTwig();
 
         try {
             $module = $twig->parse($twig->tokenize($source));

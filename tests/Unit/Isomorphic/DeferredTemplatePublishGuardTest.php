@@ -9,6 +9,7 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Ssr\Application\Service\Isomorphic\DeferredTemplateRegistry;
 use Semitexa\Ssr\Application\Service\Twig\FrontendTwigCompatibilityIssue;
+use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Semitexa\Ssr\Domain\Exception\DeferredRenderingException;
 
 /**
@@ -46,6 +47,7 @@ final class DeferredTemplatePublishGuardTest extends TestCase
 
     protected function tearDown(): void
     {
+        DeferredTemplateRegistry::reset();
         if ($this->previousEnv === '') {
             putenv('APP_ENV');
         } else {
@@ -134,6 +136,84 @@ final class DeferredTemplatePublishGuardTest extends TestCase
         }
 
         $this->expectNotToPerformAssertions();
+    }
+
+    /**
+     * A refusal is remembered while the refused file is unchanged.
+     *
+     * initialize() throws before it marks itself initialized, so every HTML
+     * request reaching a deferred slot called it again: re-reading every
+     * deferred template and re-parsing the bad one, which Twig retains —
+     * MEASURED at ~10 KB of worker memory per request. The request must
+     * still fail with the same message, just without redoing the work.
+     */
+    #[Test]
+    public function a_refused_template_fails_again_without_being_rechecked(): void
+    {
+        $file = $this->refusedTemplateFile();
+
+        try {
+            DeferredTemplateRegistry::initialize(new IsomorphicConfig(enabled: true));
+            self::fail('an unchanged refused template must keep failing');
+        } catch (DeferredRenderingException $e) {
+            self::assertSame('Deferred template probe.html.twig uses 1 construct(s)', $e->getMessage());
+        } finally {
+            @unlink($file);
+        }
+
+        self::assertFalse(DeferredTemplateRegistry::isInitialized());
+    }
+
+    /** Fixing the template is enough: once the file changes it is checked again. */
+    #[Test]
+    public function an_edited_refused_template_is_checked_again(): void
+    {
+        $file = $this->refusedTemplateFile();
+        file_put_contents($file, '<div>{{ title }}</div>');
+        touch($file, 1_700_000_001);
+
+        $rethrow = new \ReflectionMethod(DeferredTemplateRegistry::class, 'rethrowIfStillRefused');
+        try {
+            $rethrow->invoke(null);
+        } finally {
+            @unlink($file);
+        }
+
+        self::assertNull((new \ReflectionProperty(DeferredTemplateRegistry::class, 'refused'))->getValue());
+    }
+
+    /** The boot sweep must be the one that records the refusal. */
+    #[Test]
+    public function the_boot_sweep_remembers_what_it_refused(): void
+    {
+        $reflected = new \ReflectionMethod(DeferredTemplateRegistry::class, 'initialize');
+        $file = (array) file((string) $reflected->getFileName());
+        $body = implode('', array_slice(
+            $file,
+            $reflected->getStartLine() - 1,
+            $reflected->getEndLine() - $reflected->getStartLine() + 1,
+        ));
+
+        self::assertStringContainsString('self::rethrowIfStillRefused()', $body);
+        self::assertStringContainsString('self::rememberRefusal(', $body);
+    }
+
+    /** Records a refusal of a real file, as initialize() would have. */
+    private function refusedTemplateFile(): string
+    {
+        $file = sys_get_temp_dir() . '/semitexa-refused-' . uniqid('', true) . '.twig';
+        file_put_contents($file, "{{ trans('x') }}");
+        touch($file, 1_700_000_000);
+        clearstatcache(true, $file);
+
+        (new \ReflectionMethod(DeferredTemplateRegistry::class, 'rememberRefusal'))->invoke(
+            null,
+            'probe.html.twig',
+            $file,
+            new DeferredRenderingException('Deferred template probe.html.twig uses 1 construct(s)'),
+        );
+
+        return $file;
     }
 
     /**

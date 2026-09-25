@@ -23,6 +23,24 @@ final class DeferredTemplateRegistry
 
     private static bool $initialized = false;
 
+    /**
+     * The template the last initialize() refused, and the file state it was
+     * refused in: {template, path, mtime, size, message}.
+     *
+     * A refusal throws before $initialized is set, and every HTML request
+     * that reaches a deferred slot calls initialize() again while it is
+     * unset. Without this each of those requests re-read every deferred
+     * template and re-parsed the bad one — MEASURED at ~10 KB of worker
+     * memory per request, retained by Twig's escaper for good. The request
+     * still fails, loudly, with the same message, until the file changes;
+     * then it is checked again, so fixing the template is enough in dev.
+     *
+     * Only strings and ints: nothing from the request that hit it.
+     *
+     * @var array{template: string, path: string, mtime: int, size: int, message: string}|null
+     */
+    private static ?array $refused = null;
+
     public static function initialize(?IsomorphicConfig $config = null, ?string $tenantId = null): void
     {
         $config ??= IsomorphicConfig::fromEnvironment();
@@ -34,6 +52,8 @@ final class DeferredTemplateRegistry
         if ($tenantId !== null && $tenantId !== '' && !preg_match('/\A[a-zA-Z0-9_-]+\z/', $tenantId)) {
             throw new \InvalidArgumentException('Invalid tenant ID.');
         }
+
+        self::rethrowIfStillRefused();
 
         self::$publishedPaths = [];
 
@@ -80,7 +100,12 @@ final class DeferredTemplateRegistry
 
             // PUBLISHING IS THE PROMISE, so it is where the promise is checked.
             // See assertClientCanRender() for why here and not the render path.
-            self::assertClientCanRender($slot->templateName, $templatePath, $content);
+            try {
+                self::assertClientCanRender($slot->templateName, $templatePath, $content);
+            } catch (DeferredRenderingException $e) {
+                self::rememberRefusal($slot->templateName, $templatePath, $e);
+                throw $e;
+            }
 
             $hash = substr(md5($content), 0, 8);
             $safeName = preg_replace('/[^a-zA-Z0-9_-]/', '_', $slot->slotId);
@@ -188,6 +213,44 @@ final class DeferredTemplateRegistry
     {
         self::$publishedPaths = [];
         self::$initialized = false;
+        self::$refused = null;
+    }
+
+    private static function rememberRefusal(string $templateName, string $templatePath, DeferredRenderingException $e): void
+    {
+        clearstatcache(true, $templatePath);
+        $stat = @stat($templatePath);
+
+        self::$refused = $stat === false ? null : [
+            'template' => $templateName,
+            'path' => $templatePath,
+            'mtime' => (int) $stat['mtime'],
+            'size' => (int) $stat['size'],
+            'message' => $e->getMessage(),
+        ];
+    }
+
+    /**
+     * Fail again, without redoing the work, while the refused template is
+     * untouched. A fresh exception each time: rethrowing the first one would
+     * keep its trace — and whatever that trace references — alive.
+     *
+     * @throws DeferredRenderingException
+     */
+    private static function rethrowIfStillRefused(): void
+    {
+        $refused = self::$refused;
+        if ($refused === null) {
+            return;
+        }
+
+        clearstatcache(true, $refused['path']);
+        $stat = @stat($refused['path']);
+        if ($stat !== false && (int) $stat['mtime'] === $refused['mtime'] && (int) $stat['size'] === $refused['size']) {
+            throw new DeferredRenderingException($refused['message']);
+        }
+
+        self::$refused = null;
     }
 
     private static function keyFor(string $slotId, string $pageHandle): string

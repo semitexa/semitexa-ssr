@@ -177,6 +177,46 @@ final class AssetBundlerTest extends TestCase
         self::assertSame($first, $second, 'a content hash that moves on its own defeats the cache');
     }
 
+    /**
+     * Unchanged inputs are not read, rewritten and minified again: the worker
+     * remembers the bundle by each input's mtime and size. Proven by changing
+     * a file behind that memo's back — same size, mtime restored — which a
+     * rebuild would have picked up.
+     */
+    public function testUnchangedInputsReuseTheBundleWithoutRebuilding(): void
+    {
+        $this->writeCss('a.css', '.a{color:red}');
+        $this->writeCss('b.css', '.b{color:blue}');
+        $this->touchCss('a.css', 1_700_000_000);
+        $entries = [$this->entry('a.css'), $this->entry('b.css')];
+
+        $first = AssetBundler::bundle($entries);
+
+        $this->writeCss('a.css', '.a{color:tan}');
+        $this->touchCss('a.css', 1_700_000_000);
+
+        self::assertSame($first, AssetBundler::bundle($entries));
+    }
+
+    /** An edited input must still produce a new bundle with the new rules. */
+    public function testAnEditedInputRebuildsTheBundle(): void
+    {
+        $this->writeCss('a.css', '.a{color:red}');
+        $this->writeCss('b.css', '.b{color:blue}');
+        $this->touchCss('a.css', 1_700_000_000);
+        $entries = [$this->entry('a.css'), $this->entry('b.css')];
+
+        $first = AssetBundler::bundle($entries);
+
+        $this->writeCss('a.css', '.a{color:tan}');
+        $this->touchCss('a.css', 1_700_000_001);
+
+        $second = AssetBundler::bundle($entries);
+        self::assertIsArray($second);
+        self::assertNotSame($first, $second);
+        self::assertStringContainsString('tan', $this->readBundle($second[0]));
+    }
+
     public function testTheHeadLinksBundlesWhereItWouldHaveLinkedTheFirstSheet(): void
     {
         $this->writeCss('a.css', '.a{color:red}');
@@ -225,6 +265,13 @@ final class AssetBundlerTest extends TestCase
     private function writeCss(string $file, string $contents): void
     {
         file_put_contents($this->projectRoot . '/src/modules/site/Application/Static/css/' . $file, $contents . "\n");
+    }
+
+    private function touchCss(string $file, int $mtime): void
+    {
+        $path = $this->projectRoot . '/src/modules/site/Application/Static/css/' . $file;
+        touch($path, $mtime);
+        clearstatcache(true, $path);
     }
 
     private function readBundle(string $url): string

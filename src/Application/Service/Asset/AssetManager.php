@@ -36,10 +36,30 @@ final class AssetManager
         return $url . '?v=' . rawurlencode($version);
     }
 
+    /**
+     * Forget everything, including the fingerprint cache. For tests that swap
+     * the project root; a worker never needs it.
+     */
     public static function reset(): void
     {
-        self::$moduleVersions = [];
+        self::resetRenderState();
         self::$fingerprintCache = [];
+    }
+
+    /**
+     * Forget what a single render may not carry over, and nothing else.
+     *
+     * The fingerprint cache is deliberately NOT part of it. Every entry is
+     * checked against the file's current mtime and size before it is used, so
+     * an edited asset still gets a new fingerprint on the next render — while
+     * an unchanged one is not re-hashed. Emptying it per render made every
+     * HTML response hash every asset it linked: MEASURED at over half of a dev
+     * `/` request. It holds one short string per asset file, keyed by path, so
+     * it is bounded by the asset tree, not by traffic.
+     */
+    public static function resetRenderState(): void
+    {
+        self::$moduleVersions = [];
     }
 
     private static function getVersion(string $module): string

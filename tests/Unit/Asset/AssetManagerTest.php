@@ -78,6 +78,87 @@ final class AssetManagerTest extends TestCase
         self::assertMatchesRegularExpression('/\\/assets\\/site\\/css\\/app\\.css\\?v=[a-f0-9]{12}/', $secondHtml);
     }
 
+    /**
+     * A new render must not re-hash an unchanged asset: the fingerprint cache
+     * is keyed by mtime and size and outlives resetRenderState(), which is what
+     * HtmlResponse calls at the top of every render.
+     *
+     * Proven by rewriting the file behind the cache's back — same size, mtime
+     * restored — so a re-hash would show up as a different URL.
+     */
+    public function testFingerprintIsNotRecomputedAcrossRendersForAnUnchangedFile(): void
+    {
+        $file = $this->projectRoot . '/src/modules/site/Application/Static/css/app.css';
+        touch($file, 1_700_000_000);
+        clearstatcache(true, $file);
+        $first = AssetManager::getUrl('css/app.css', 'site');
+
+        AssetManager::resetRenderState();
+        file_put_contents($file, "body{color:tan;}\n");
+        touch($file, 1_700_000_000);
+        clearstatcache(true, $file);
+
+        self::assertSame($first, AssetManager::getUrl('css/app.css', 'site'));
+    }
+
+    /** In dev an edited asset must still get a new fingerprint on the next render. */
+    public function testEditedAssetGetsANewFingerprintOnTheNextRender(): void
+    {
+        $file = $this->projectRoot . '/src/modules/site/Application/Static/css/app.css';
+        touch($file, 1_700_000_000);
+        clearstatcache(true, $file);
+        $first = AssetManager::getUrl('css/app.css', 'site');
+
+        AssetManager::resetRenderState();
+        file_put_contents($file, "body{color:tan;}\n");
+        touch($file, 1_700_000_001);
+        clearstatcache(true, $file);
+
+        $second = AssetManager::getUrl('css/app.css', 'site');
+        self::assertNotSame($first, $second);
+        self::assertStringEndsWith('?v=' . substr((string) hash_file('sha256', $file), 0, 12), $second);
+    }
+
+    /**
+     * A resolved file is remembered, a miss is not (a deferred template is
+     * published into place at runtime), and a remembered file that disappears
+     * is not handed out again.
+     */
+    public function testModuleAssetRegistryRemembersHitsOnly(): void
+    {
+        $late = $this->projectRoot . '/src/modules/site/Application/Static/css/late.css';
+
+        self::assertNull(ModuleAssetRegistry::resolve('site', 'css/late.css'));
+
+        file_put_contents($late, "a{}\n");
+        self::assertSame(realpath($late), ModuleAssetRegistry::resolve('site', 'css/late.css'));
+
+        unlink($late);
+        self::assertNull(ModuleAssetRegistry::resolve('site', 'css/late.css'));
+    }
+
+    /** The active chain is part of the answer, so it is part of the memo key. */
+    public function testModuleAssetRegistryMemoFollowsTheActiveChain(): void
+    {
+        mkdir($this->projectRoot . '/src/theme/child/site/Static/css', 0777, true);
+        file_put_contents($this->projectRoot . '/src/theme/child/site/Static/css/app.css', "body{color:purple;}\n");
+        $chain = [];
+        ModuleAssetRegistry::setChainResolver(static function () use (&$chain): array {
+            return $chain;
+        });
+
+        self::assertSame(
+            realpath($this->projectRoot . '/src/modules/site/Application/Static/css/app.css'),
+            ModuleAssetRegistry::resolve('site', 'css/app.css'),
+        );
+
+        $chain = ['child'];
+        self::assertSame(
+            realpath($this->projectRoot . '/src/theme/child/site/Static/css/app.css'),
+            ModuleAssetRegistry::resolve('site', 'css/app.css'),
+        );
+    }
+
     public function testModuleAssetRegistryResolvesFirstThemeInActiveChain(): void
     {
         mkdir($this->projectRoot . '/src/theme/base/site/Static/css', 0777, true);

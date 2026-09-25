@@ -59,6 +59,30 @@ final class PageBodyEndStoreTest extends TestCase
         self::assertStringContainsString("<i>ok</i></body>", PageBodyEndStore::inject(self::PAGE));
     }
 
+    #[Test]
+    public function a_cancelled_coroutine_unwinds_through_the_page_instead_of_being_logged(): void
+    {
+        foreach ([new \Swoole\Coroutine\CanceledException(), new \RuntimeException('wrapped', 0, new \Swoole\Coroutine\CanceledException())] as $thrown) {
+            PageBodyEndStore::bind([new class ($thrown) implements PageDocumentContributorInterface {
+                public function __construct(private readonly \Throwable $thrown)
+                {
+                }
+
+                public function bodyEnd(): string
+                {
+                    throw $this->thrown;
+                }
+            }]);
+
+            try {
+                PageBodyEndStore::inject(self::PAGE);
+                self::fail('a cancellation must propagate: ' . $thrown::class);
+            } catch (\Throwable $caught) {
+                self::assertSame($thrown, $caught);
+            }
+        }
+    }
+
     private static function contributor(string $html): PageDocumentContributorInterface
     {
         return new class ($html) implements PageDocumentContributorInterface {

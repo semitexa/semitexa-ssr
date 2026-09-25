@@ -69,8 +69,12 @@ final class SiteHeadCommand extends Command
             }
             $writes[$key] = SiteHead::normalize($key, $value);
         }
+        // A stored key outside KEYS (written directly, or dropped by a later
+        // release) is logged as malformed on page views; --unset must be able
+        // to remove it, or only a hand-edit of the database could.
+        $stored = $this->settings->getAll(SiteHead::SETTINGS_MODULE);
         foreach ($unsets as $key) {
-            if (!array_key_exists($key, SiteHead::KEYS)) {
+            if (!array_key_exists($key, SiteHead::KEYS) && !array_key_exists($key, $stored)) {
                 $errors[] = (string) SiteHead::whyRejected($key, null);
             }
         }
@@ -107,7 +111,7 @@ final class SiteHeadCommand extends Command
         }
 
         $rows = [];
-        foreach (array_keys(SiteHead::KEYS) as $key) {
+        foreach (array_keys(SiteHead::KEYS + $head->rejected) as $key) {
             $rows[] = [$key, $head->get($key) ?? (isset($head->rejected[$key]) ? '<error>malformed, not rendered</error>' : '—')];
         }
         $io->table(['key', 'value'], $rows);

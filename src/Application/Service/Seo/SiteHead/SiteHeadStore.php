@@ -6,6 +6,7 @@ namespace Semitexa\Ssr\Application\Service\Seo\SiteHead;
 
 use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Core\Support\CoroutineLocal;
+use Semitexa\Ssr\Application\Service\Async\SseSessionCoroutines;
 use Semitexa\Ssr\Domain\Model\SiteHead;
 
 /**
@@ -93,6 +94,8 @@ final class SiteHeadStore
         try {
             $head = $reader();
         } catch (\Throwable $e) {
+            // A cancelled coroutine is not a failed read: let it unwind.
+            SseSessionCoroutines::rethrowIfCancellation($e);
             // Loud on purpose: a head that silently loses its analytics id is
             // the incident this exists to prevent.
             StaticLoggerBridge::error('ssr', 'Site head settings could not be read; the page was served without them', [

@@ -99,10 +99,12 @@ final class SiteHeadTest extends TestCase
 
         $html = SiteHeadStore::inject(self::DOCUMENT);
 
-        $close = strpos($html, '</head>');
-        self::assertIsInt($close);
-        self::assertLessThan($close, strpos($html, 'google-site-verification'));
-        self::assertStringEndsWith("</head><body><p>b</p></body></html>", $html);
+        // Positive on both ends: an unchanged document must fail this.
+        $tag = strpos($html, 'google-site-verification');
+        self::assertIsInt($tag, 'the tags were injected');
+        self::assertLessThan((int) strpos($html, '</head>'), $tag);
+        self::assertStringContainsString(SiteHeadStore::MARKER, $html);
+        self::assertMatchesRegularExpression('#</script>\s*</head><body><p>b</p></body></html>$#', $html, 'the tags end right before </head>');
     }
 
     /** Nested renders finalize more than once; the tags must not repeat. */

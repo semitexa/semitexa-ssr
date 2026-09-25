@@ -202,6 +202,10 @@ final class SlotHandlerPipelineTest extends TestCase
             public function notice(string $message, array $context = []): void { $this->levels[] = 'notice'; }
             public function debug(string $message, array $context = []): void { $this->levels[] = 'debug'; }
         };
+        // Snapshot the process-wide logger and put it back after: reset() alone
+        // would drop a logger an earlier test (or the bootstrap) installed.
+        $bridgeLogger = new ReflectionProperty(StaticLoggerBridge::class, 'logger');
+        $previousLogger = $bridgeLogger->getValue();
         StaticLoggerBridge::set($logger);
 
         try {
@@ -217,7 +221,7 @@ final class SlotHandlerPipelineTest extends TestCase
             self::assertSame(['info'], $logger->levels, 'logged as info, never as an error');
             self::assertFalse(RecordingSlotHandlerFixture::$ran, 'nothing runs after a cancellation');
         } finally {
-            StaticLoggerBridge::reset();
+            $bridgeLogger->setValue(null, $previousLogger);
             self::restoreRegistry($snapshot);
             RecordingSlotHandlerFixture::$ran = false;
         }

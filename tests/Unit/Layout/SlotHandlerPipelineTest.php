@@ -189,6 +189,9 @@ final class SlotHandlerPipelineTest extends TestCase
     #[Test]
     public function a_cancelled_render_propagates_and_is_not_logged_as_a_failure(): void
     {
+        if (!class_exists(\Swoole\Coroutine\CanceledException::class)) {
+            self::markTestSkipped('Swoole is not loaded; there is no coroutine cancellation to propagate.');
+        }
         $snapshot = self::snapshotRegistry();
         SlotHandlerRegistry::reset();
         RecordingSlotHandlerFixture::$ran = false;

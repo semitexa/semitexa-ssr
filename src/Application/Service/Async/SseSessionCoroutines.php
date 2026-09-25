@@ -208,23 +208,27 @@ final class SseSessionCoroutines
      * failure. Public because the deferred-block trigger runs its own catch and
      * needs the same distinction — one definition, not two drifting copies.
      *
-     * By the exception's CLASS, through the previous-chain so a wrapped
-     * cancellation still counts — never by its message. The class check stays
-     * loose (any class named *cancel*) because Swoole has not always named it
-     * the same; the message check is gone because it matched arbitrary
-     * failures — RuntimeException('Payment cancellation failed') read as a
-     * cancellation, which, now that cancellations are rethrown, would abort a
-     * render instead of taking the failure path. And it never helped: Swoole
-     * 6.2 throws Swoole\Coroutine\CanceledException with an EMPTY message.
+     * By EXACT type, through the previous-chain so a wrapped cancellation
+     * still counts. Earlier versions matched "cancel" in the message, then in
+     * the class name — both caught ordinary failures ('Payment cancellation
+     * failed', PaymentCancellationFailedException), and now that cancellations
+     * are rethrown that would abort a render instead of taking the failure
+     * path. Swoole 6.2 throws Swoole\Coroutine\CanceledException, with an
+     * empty message.
      */
     public static function isCancellation(\Throwable $e): bool
     {
         for ($current = $e; $current !== null; $current = $current->getPrevious()) {
-            if (str_contains(strtolower($current::class), 'cancel')) {
+            if (in_array($current::class, self::CANCELLATION_TYPES, true)) {
                 return true;
             }
         }
 
         return false;
     }
+
+    /** @var list<string> the coroutine cancellation exceptions Swoole throws */
+    private const CANCELLATION_TYPES = [
+        \Swoole\Coroutine\CanceledException::class,
+    ];
 }

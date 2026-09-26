@@ -243,8 +243,18 @@ final class DeferredTemplateRegistry
             return;
         }
 
+        // Gone: nothing left to refuse. initialize() resolves the template
+        // afresh and checks whatever it now points at.
+        if (!is_file($refused['path'])) {
+            self::$refused = null;
+            return;
+        }
+
+        // Present but unreadable keeps the refusal: initialize() skips a file
+        // it cannot read, so clearing here would let it succeed without ever
+        // checking the template. Only readable, changed content is a fix.
         $content = @file_get_contents($refused['path']);
-        if ($content !== false && hash('sha256', $content) === $refused['hash']) {
+        if ($content === false || hash('sha256', $content) === $refused['hash']) {
             throw new DeferredRenderingException($refused['message']);
         }
 

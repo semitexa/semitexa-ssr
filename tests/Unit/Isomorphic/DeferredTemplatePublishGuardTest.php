@@ -219,6 +219,65 @@ final class DeferredTemplatePublishGuardTest extends TestCase
         self::assertNull((new \ReflectionProperty(DeferredTemplateRegistry::class, 'refused'))->getValue());
     }
 
+    /**
+     * A refused template that still exists but cannot be read stays refused:
+     * initialize() skips an unreadable file, so clearing the refusal would let
+     * it succeed without the template ever being checked. The test runs as
+     * root, where chmod does not stop a read, so a stream wrapper stands in
+     * for a file that stats as regular yet refuses to open.
+     */
+    #[Test]
+    public function an_unreadable_refused_template_stays_refused(): void
+    {
+        $unreadable = new class {
+            /** @var resource|null set by PHP for every stream wrapper instance */
+            public $context;
+
+            public function stream_open(string $path, string $mode, int $options, ?string &$openedPath): bool
+            {
+                return false;
+            }
+
+            /** @return array<string, int> */
+            public function url_stat(string $path, int $flags): array
+            {
+                return ['mode' => 0100000, 'size' => 16];
+            }
+        };
+        stream_wrapper_register('semitexaunreadable', $unreadable::class);
+        (new \ReflectionMethod(DeferredTemplateRegistry::class, 'rememberRefusal'))->invoke(
+            null,
+            'probe.html.twig',
+            'semitexaunreadable://probe.html.twig',
+            "{{ trans('x') }}",
+            new DeferredRenderingException('Deferred template probe.html.twig uses 1 construct(s)'),
+        );
+
+        $rethrow = new \ReflectionMethod(DeferredTemplateRegistry::class, 'rethrowIfStillRefused');
+        try {
+            $rethrow->invoke(null);
+            self::fail('an unreadable refused template must keep failing');
+        } catch (DeferredRenderingException $e) {
+            self::assertSame('Deferred template probe.html.twig uses 1 construct(s)', $e->getMessage());
+        } finally {
+            stream_wrapper_unregister('semitexaunreadable');
+        }
+
+        self::assertNotNull((new \ReflectionProperty(DeferredTemplateRegistry::class, 'refused'))->getValue());
+    }
+
+    /** A deleted refused template clears the refusal: initialize() resolves it afresh. */
+    #[Test]
+    public function a_deleted_refused_template_is_forgotten(): void
+    {
+        $file = $this->refusedTemplateFile();
+        unlink($file);
+
+        (new \ReflectionMethod(DeferredTemplateRegistry::class, 'rethrowIfStillRefused'))->invoke(null);
+
+        self::assertNull((new \ReflectionProperty(DeferredTemplateRegistry::class, 'refused'))->getValue());
+    }
+
     /** The boot sweep must be the one that records the refusal. */
     #[Test]
     public function the_boot_sweep_remembers_what_it_refused(): void
@@ -300,3 +359,4 @@ final class DeferredTemplatePublishGuardTest extends TestCase
         ];
     }
 }
+

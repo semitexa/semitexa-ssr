@@ -9,6 +9,7 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Ssr\Application\Service\Isomorphic\DeferredTemplateRegistry;
 use Semitexa\Ssr\Application\Service\Twig\FrontendTwigCompatibilityIssue;
+use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Semitexa\Ssr\Domain\Exception\DeferredRenderingException;
 
 /**
@@ -37,15 +38,28 @@ use Semitexa\Ssr\Domain\Exception\DeferredRenderingException;
  */
 final class DeferredTemplatePublishGuardTest extends TestCase
 {
+    private const REGISTRY_STATE = ['publishedPaths', 'initialized', 'refused'];
+
     private string $previousEnv = '';
+
+    /** @var array<string, mixed> the registry as the previous test left it */
+    private array $registrySnapshot = [];
 
     protected function setUp(): void
     {
         $this->previousEnv = (string) getenv('APP_ENV');
+        foreach (self::REGISTRY_STATE as $property) {
+            $this->registrySnapshot[$property] = (new \ReflectionProperty(DeferredTemplateRegistry::class, $property))->getValue();
+        }
     }
 
     protected function tearDown(): void
     {
+        // Restore, not reset(): a registry some earlier test initialised must
+        // look the same to later tests whether or not this one ran.
+        foreach ($this->registrySnapshot as $property => $value) {
+            (new \ReflectionProperty(DeferredTemplateRegistry::class, $property))->setValue(null, $value);
+        }
         if ($this->previousEnv === '') {
             putenv('APP_ENV');
         } else {
@@ -137,6 +151,215 @@ final class DeferredTemplatePublishGuardTest extends TestCase
     }
 
     /**
+     * A refusal is remembered while the refused file is unchanged.
+     *
+     * initialize() throws before it marks itself initialized, so every HTML
+     * request reaching a deferred slot called it again: re-reading every
+     * deferred template and re-parsing the bad one, which Twig retains —
+     * MEASURED at ~10 KB of worker memory per request. The request must
+     * still fail with the same message, just without redoing the work.
+     */
+    #[Test]
+    public function a_refused_template_fails_again_without_being_rechecked(): void
+    {
+        $file = $this->refusedTemplateFile();
+
+        try {
+            DeferredTemplateRegistry::initialize(new IsomorphicConfig(enabled: true));
+            self::fail('an unchanged refused template must keep failing');
+        } catch (DeferredRenderingException $e) {
+            self::assertSame('Deferred template probe.html.twig uses 1 construct(s)', $e->getMessage());
+        } finally {
+            @unlink($file);
+        }
+
+        self::assertFalse(DeferredTemplateRegistry::isInitialized());
+    }
+
+    /** Fixing the template is enough: once the file changes it is checked again. */
+    #[Test]
+    public function an_edited_refused_template_is_checked_again(): void
+    {
+        $file = $this->refusedTemplateFile();
+        file_put_contents($file, '<div>{{ title }}</div>');
+        touch($file, 1_700_000_001);
+
+        $rethrow = new \ReflectionMethod(DeferredTemplateRegistry::class, 'rethrowIfStillRefused');
+        try {
+            $rethrow->invoke(null);
+        } finally {
+            @unlink($file);
+        }
+
+        self::assertNull((new \ReflectionProperty(DeferredTemplateRegistry::class, 'refused'))->getValue());
+    }
+
+    /**
+     * A same-size fix inside one mtime tick is still a fix: the refusal is
+     * keyed by content, so stat() metadata alone cannot keep it failing.
+     */
+    #[Test]
+    public function a_same_size_same_mtime_fix_is_checked_again(): void
+    {
+        $file = $this->refusedTemplateFile();
+        $fixed = str_pad('{{ title }}', (int) filesize($file), ' ');
+        file_put_contents($file, $fixed);
+        touch($file, 1_700_000_000);
+        clearstatcache(true, $file);
+        self::assertSame(1_700_000_000, filemtime($file));
+        self::assertSame(strlen("{{ trans('x') }}"), filesize($file));
+
+        $rethrow = new \ReflectionMethod(DeferredTemplateRegistry::class, 'rethrowIfStillRefused');
+        try {
+            $rethrow->invoke(null);
+        } finally {
+            @unlink($file);
+        }
+
+        self::assertNull((new \ReflectionProperty(DeferredTemplateRegistry::class, 'refused'))->getValue());
+    }
+
+    /**
+     * A refused template that still exists but cannot be read stays refused:
+     * initialize() skips an unreadable file, so clearing the refusal would let
+     * it succeed without the template ever being checked. The test runs as
+     * root, where chmod does not stop a read, so a stream wrapper stands in
+     * for a file that stats as regular yet refuses to open.
+     */
+    #[Test]
+    public function an_unreadable_refused_template_stays_refused(): void
+    {
+        $unreadable = new class {
+            /** @var resource|null set by PHP for every stream wrapper instance */
+            public $context;
+
+            public function stream_open(string $path, string $mode, int $options, ?string &$openedPath): bool
+            {
+                return false;
+            }
+
+            /** @return array<string, int> */
+            public function url_stat(string $path, int $flags): array
+            {
+                return ['mode' => 0100000, 'size' => 16];
+            }
+        };
+        stream_wrapper_register('semitexaunreadable', $unreadable::class);
+        (new \ReflectionMethod(DeferredTemplateRegistry::class, 'rememberRefusal'))->invoke(
+            null,
+            'probe.html.twig',
+            'semitexaunreadable://probe.html.twig',
+            "{{ trans('x') }}",
+            new DeferredRenderingException('Deferred template probe.html.twig uses 1 construct(s)'),
+        );
+
+        $rethrow = new \ReflectionMethod(DeferredTemplateRegistry::class, 'rethrowIfStillRefused');
+        try {
+            $rethrow->invoke(null);
+            self::fail('an unreadable refused template must keep failing');
+        } catch (DeferredRenderingException $e) {
+            self::assertSame('Deferred template probe.html.twig uses 1 construct(s)', $e->getMessage());
+        } finally {
+            stream_wrapper_unregister('semitexaunreadable');
+        }
+
+        self::assertNotNull((new \ReflectionProperty(DeferredTemplateRegistry::class, 'refused'))->getValue());
+    }
+
+    /**
+     * A refused template whose status cannot be read at all (url_stat fails,
+     * as when a parent directory loses search permission) is not a deleted
+     * one: is_file() is false either way, so only a directory listing that
+     * lacks the file may clear the refusal.
+     */
+    #[Test]
+    public function a_refused_template_whose_status_cannot_be_read_stays_refused(): void
+    {
+        $unstatable = new class {
+            /** @var resource|null set by PHP for every stream wrapper instance */
+            public $context;
+
+            public function stream_open(string $path, string $mode, int $options, ?string &$openedPath): bool
+            {
+                return false;
+            }
+
+            public function url_stat(string $path, int $flags): false
+            {
+                return false;
+            }
+        };
+        stream_wrapper_register('semitexaunstatable', $unstatable::class);
+        (new \ReflectionMethod(DeferredTemplateRegistry::class, 'rememberRefusal'))->invoke(
+            null,
+            'probe.html.twig',
+            'semitexaunstatable://dir/probe.html.twig',
+            "{{ trans('x') }}",
+            new DeferredRenderingException('Deferred template probe.html.twig uses 1 construct(s)'),
+        );
+
+        $rethrow = new \ReflectionMethod(DeferredTemplateRegistry::class, 'rethrowIfStillRefused');
+        try {
+            $rethrow->invoke(null);
+            self::fail('a refused template of unknown status must keep failing');
+        } catch (DeferredRenderingException $e) {
+            self::assertSame('Deferred template probe.html.twig uses 1 construct(s)', $e->getMessage());
+        } finally {
+            stream_wrapper_unregister('semitexaunstatable');
+        }
+
+        self::assertNotNull((new \ReflectionProperty(DeferredTemplateRegistry::class, 'refused'))->getValue());
+    }
+
+    /** A deleted refused template clears the refusal: initialize() resolves it afresh. */
+    #[Test]
+    public function a_deleted_refused_template_is_forgotten(): void
+    {
+        $file = $this->refusedTemplateFile();
+        unlink($file);
+
+        (new \ReflectionMethod(DeferredTemplateRegistry::class, 'rethrowIfStillRefused'))->invoke(null);
+
+        self::assertNull((new \ReflectionProperty(DeferredTemplateRegistry::class, 'refused'))->getValue());
+    }
+
+    /** The boot sweep must be the one that records the refusal. */
+    #[Test]
+    public function the_boot_sweep_remembers_what_it_refused(): void
+    {
+        $reflected = new \ReflectionMethod(DeferredTemplateRegistry::class, 'initialize');
+        $file = (array) file((string) $reflected->getFileName());
+        $body = implode('', array_slice(
+            $file,
+            $reflected->getStartLine() - 1,
+            $reflected->getEndLine() - $reflected->getStartLine() + 1,
+        ));
+
+        self::assertStringContainsString('self::rethrowIfStillRefused()', $body);
+        self::assertStringContainsString('self::rememberRefusal(', $body);
+    }
+
+    /** Records a refusal of a real file, as initialize() would have. */
+    private function refusedTemplateFile(): string
+    {
+        $file = sys_get_temp_dir() . '/semitexa-refused-' . uniqid('', true) . '.twig';
+        $content = "{{ trans('x') }}";
+        file_put_contents($file, $content);
+        touch($file, 1_700_000_000);
+        clearstatcache(true, $file);
+
+        (new \ReflectionMethod(DeferredTemplateRegistry::class, 'rememberRefusal'))->invoke(
+            null,
+            'probe.html.twig',
+            $file,
+            $content,
+            new DeferredRenderingException('Deferred template probe.html.twig uses 1 construct(s)'),
+        );
+
+        return $file;
+    }
+
+    /**
      * BOTH publish paths must call the guard, and this is checked structurally.
      *
      * That is not the first choice, and the reason is measured rather than
@@ -181,3 +404,4 @@ final class DeferredTemplatePublishGuardTest extends TestCase
         ];
     }
 }
+

@@ -46,6 +46,20 @@ final class AssetBundler
     private static array $published = [];
 
     /**
+     * Bundle URL by the group's inputs, per worker, so an unchanged page does
+     * not read, rewrite and minify its stylesheets again. MEASURED: minifying
+     * was about half of a production `/` request.
+     *
+     * Keyed by the group and the asset identities in it; the stamp is each
+     * resolved file with its mtime and size, so an edited or re-resolved
+     * input (another theme in the chain, say) rebuilds the bundle. One entry
+     * per distinct group, replaced rather than added to on change.
+     *
+     * @var array<string, array{stamp: string, url: string}>
+     */
+    private static array $byInputs = [];
+
+    /**
      * @param  list<AssetEntry> $entries CSS entries in cascade order
      * @return list<string>|null Bundle URLs to link in order, or null to fall
      *                           back to linking every entry individually.
@@ -60,6 +74,18 @@ final class AssetBundler
         $urls = [];
 
         foreach ($groups as $name => $group) {
+            $identity = $name;
+            foreach ($group as $entry) {
+                $identity .= "\0" . $entry->module . "\0" . $entry->path;
+            }
+            $stamp = self::stamp($group);
+
+            $known = self::$byInputs[$identity] ?? null;
+            if ($stamp !== null && $known !== null && $known['stamp'] === $stamp) {
+                $urls[] = $known['url'];
+                continue;
+            }
+
             $css = self::concatenate($group);
             if ($css === null) {
                 return null;
@@ -70,6 +96,9 @@ final class AssetBundler
                 return null;
             }
 
+            if ($stamp !== null) {
+                self::$byInputs[$identity] = ['stamp' => $stamp, 'url' => $url];
+            }
             $urls[] = $url;
         }
 
@@ -80,6 +109,39 @@ final class AssetBundler
     public static function reset(): void
     {
         self::$published = [];
+        self::$byInputs = [];
+    }
+
+    /**
+     * What the group's bundle is built from, without reading it: each input's
+     * resolved file, mtime and size. Null when an input does not resolve —
+     * the full path then runs and reports it.
+     *
+     * @param list<AssetEntry> $entries
+     */
+    private static function stamp(array $entries): ?string
+    {
+        $stamp = '';
+        foreach ($entries as $entry) {
+            try {
+                $path = ModuleAssetRegistry::resolve($entry->module, $entry->path);
+            } catch (\Throwable) {
+                return null;
+            }
+            if ($path === null) {
+                return null;
+            }
+
+            clearstatcache(true, $path);
+            $stat = @stat($path);
+            if ($stat === false) {
+                return null;
+            }
+
+            $stamp .= $path . "\0" . $stat['mtime'] . "\0" . $stat['size'] . "\0";
+        }
+
+        return $stamp;
     }
 
     /**

@@ -23,6 +23,27 @@ final class DeferredTemplateRegistry
 
     private static bool $initialized = false;
 
+    /**
+     * The template the last initialize() refused, and the content it was
+     * refused for: {template, path, hash, message}.
+     *
+     * A refusal throws before $initialized is set, and every HTML request
+     * that reaches a deferred slot calls initialize() again while it is
+     * unset. Without this each of those requests re-read every deferred
+     * template and re-parsed the bad one — MEASURED at ~10 KB of worker
+     * memory per request, retained by Twig's escaper for good. The request
+     * still fails, loudly, with the same message, until the file's CONTENT
+     * changes; then it is checked again, so fixing the template is enough in
+     * dev. Content, not mtime/size: a same-size fix within one mtime tick
+     * must not keep failing, and re-reading one file on a request that is
+     * failing anyway is cheap next to re-parsing it.
+     *
+     * Only strings and ints: nothing from the request that hit it.
+     *
+     * @var array{template: string, path: string, hash: string, message: string}|null
+     */
+    private static ?array $refused = null;
+
     public static function initialize(?IsomorphicConfig $config = null, ?string $tenantId = null): void
     {
         $config ??= IsomorphicConfig::fromEnvironment();
@@ -34,6 +55,8 @@ final class DeferredTemplateRegistry
         if ($tenantId !== null && $tenantId !== '' && !preg_match('/\A[a-zA-Z0-9_-]+\z/', $tenantId)) {
             throw new \InvalidArgumentException('Invalid tenant ID.');
         }
+
+        self::rethrowIfStillRefused();
 
         self::$publishedPaths = [];
 
@@ -80,7 +103,12 @@ final class DeferredTemplateRegistry
 
             // PUBLISHING IS THE PROMISE, so it is where the promise is checked.
             // See assertClientCanRender() for why here and not the render path.
-            self::assertClientCanRender($slot->templateName, $templatePath, $content);
+            try {
+                self::assertClientCanRender($slot->templateName, $templatePath, $content);
+            } catch (DeferredRenderingException $e) {
+                self::rememberRefusal($slot->templateName, $templatePath, $content, $e);
+                throw $e;
+            }
 
             $hash = substr(md5($content), 0, 8);
             $safeName = preg_replace('/[^a-zA-Z0-9_-]/', '_', $slot->slotId);
@@ -188,6 +216,81 @@ final class DeferredTemplateRegistry
     {
         self::$publishedPaths = [];
         self::$initialized = false;
+        self::$refused = null;
+    }
+
+    private static function rememberRefusal(string $templateName, string $templatePath, string $content, DeferredRenderingException $e): void
+    {
+        self::$refused = [
+            'template' => $templateName,
+            'path' => $templatePath,
+            'hash' => hash('sha256', $content),
+            'message' => $e->getMessage(),
+        ];
+    }
+
+    /**
+     * Fail again, without redoing the work, while the refused template's
+     * content is untouched. A fresh exception each time: rethrowing the first
+     * one would keep its trace — and whatever that trace references — alive.
+     *
+     * @throws DeferredRenderingException
+     */
+    private static function rethrowIfStillRefused(): void
+    {
+        $refused = self::$refused;
+        if ($refused === null) {
+            return;
+        }
+
+        // Gone: nothing left to refuse. initialize() resolves the template
+        // afresh and checks whatever it now points at. is_file() alone cannot
+        // say "gone": it is also false when the status cannot be read (a
+        // parent directory that lost search permission), and clearing then
+        // would let initialize() skip a template it never checked.
+        if (!is_file($refused['path'])) {
+            if (self::isConfirmedGone($refused['path'])) {
+                self::$refused = null;
+                return;
+            }
+            throw new DeferredRenderingException($refused['message']);
+        }
+
+        // Present but unreadable keeps the refusal: initialize() skips a file
+        // it cannot read, so clearing here would let it succeed without ever
+        // checking the template. Only readable, changed content is a fix.
+        $content = @file_get_contents($refused['path']);
+        if ($content === false || hash('sha256', $content) === $refused['hash']) {
+            throw new DeferredRenderingException($refused['message']);
+        }
+
+        self::$refused = null;
+    }
+
+    /**
+     * True only when the nearest listable ancestor directory shows the path
+     * is absent. A listing that fails, or one that still names the file (it
+     * is there but cannot be stat'ed), is not proof of deletion.
+     */
+    private static function isConfirmedGone(string $path): bool
+    {
+        $child = $path;
+        $dir = dirname($path);
+        while (true) {
+            $entries = @scandir($dir);
+            if ($entries !== false) {
+                return !in_array(basename($child), $entries, true);
+            }
+            $parent = dirname($dir);
+            // Stop at the root, and never climb out of the path's own tree:
+            // a relative path ends at '.', and a stream URL's dirname drops
+            // its scheme — listing either would say nothing about this file.
+            if ($parent === $dir || $parent === '.' || (str_contains($path, '://') && !str_contains($parent, '://'))) {
+                return false;
+            }
+            $child = $dir;
+            $dir = $parent;
+        }
     }
 
     private static function keyFor(string $slotId, string $pageHandle): string

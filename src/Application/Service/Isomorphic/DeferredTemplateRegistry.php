@@ -244,10 +244,16 @@ final class DeferredTemplateRegistry
         }
 
         // Gone: nothing left to refuse. initialize() resolves the template
-        // afresh and checks whatever it now points at.
+        // afresh and checks whatever it now points at. is_file() alone cannot
+        // say "gone": it is also false when the status cannot be read (a
+        // parent directory that lost search permission), and clearing then
+        // would let initialize() skip a template it never checked.
         if (!is_file($refused['path'])) {
-            self::$refused = null;
-            return;
+            if (self::isConfirmedGone($refused['path'])) {
+                self::$refused = null;
+                return;
+            }
+            throw new DeferredRenderingException($refused['message']);
         }
 
         // Present but unreadable keeps the refusal: initialize() skips a file
@@ -259,6 +265,32 @@ final class DeferredTemplateRegistry
         }
 
         self::$refused = null;
+    }
+
+    /**
+     * True only when the nearest listable ancestor directory shows the path
+     * is absent. A listing that fails, or one that still names the file (it
+     * is there but cannot be stat'ed), is not proof of deletion.
+     */
+    private static function isConfirmedGone(string $path): bool
+    {
+        $child = $path;
+        $dir = dirname($path);
+        while (true) {
+            $entries = @scandir($dir);
+            if ($entries !== false) {
+                return !in_array(basename($child), $entries, true);
+            }
+            $parent = dirname($dir);
+            // Stop at the root, and never climb out of the path's own tree:
+            // a relative path ends at '.', and a stream URL's dirname drops
+            // its scheme — listing either would say nothing about this file.
+            if ($parent === $dir || $parent === '.' || (str_contains($path, '://') && !str_contains($parent, '://'))) {
+                return false;
+            }
+            $child = $dir;
+            $dir = $parent;
+        }
     }
 
     private static function keyFor(string $slotId, string $pageHandle): string

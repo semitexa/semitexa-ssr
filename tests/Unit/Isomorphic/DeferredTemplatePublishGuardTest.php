@@ -266,6 +266,51 @@ final class DeferredTemplatePublishGuardTest extends TestCase
         self::assertNotNull((new \ReflectionProperty(DeferredTemplateRegistry::class, 'refused'))->getValue());
     }
 
+    /**
+     * A refused template whose status cannot be read at all (url_stat fails,
+     * as when a parent directory loses search permission) is not a deleted
+     * one: is_file() is false either way, so only a directory listing that
+     * lacks the file may clear the refusal.
+     */
+    #[Test]
+    public function a_refused_template_whose_status_cannot_be_read_stays_refused(): void
+    {
+        $unstatable = new class {
+            /** @var resource|null set by PHP for every stream wrapper instance */
+            public $context;
+
+            public function stream_open(string $path, string $mode, int $options, ?string &$openedPath): bool
+            {
+                return false;
+            }
+
+            public function url_stat(string $path, int $flags): false
+            {
+                return false;
+            }
+        };
+        stream_wrapper_register('semitexaunstatable', $unstatable::class);
+        (new \ReflectionMethod(DeferredTemplateRegistry::class, 'rememberRefusal'))->invoke(
+            null,
+            'probe.html.twig',
+            'semitexaunstatable://dir/probe.html.twig',
+            "{{ trans('x') }}",
+            new DeferredRenderingException('Deferred template probe.html.twig uses 1 construct(s)'),
+        );
+
+        $rethrow = new \ReflectionMethod(DeferredTemplateRegistry::class, 'rethrowIfStillRefused');
+        try {
+            $rethrow->invoke(null);
+            self::fail('a refused template of unknown status must keep failing');
+        } catch (DeferredRenderingException $e) {
+            self::assertSame('Deferred template probe.html.twig uses 1 construct(s)', $e->getMessage());
+        } finally {
+            stream_wrapper_unregister('semitexaunstatable');
+        }
+
+        self::assertNotNull((new \ReflectionProperty(DeferredTemplateRegistry::class, 'refused'))->getValue());
+    }
+
     /** A deleted refused template clears the refusal: initialize() resolves it afresh. */
     #[Test]
     public function a_deleted_refused_template_is_forgotten(): void

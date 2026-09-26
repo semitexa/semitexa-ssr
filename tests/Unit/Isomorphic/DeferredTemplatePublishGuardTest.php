@@ -38,16 +38,28 @@ use Semitexa\Ssr\Domain\Exception\DeferredRenderingException;
  */
 final class DeferredTemplatePublishGuardTest extends TestCase
 {
+    private const REGISTRY_STATE = ['publishedPaths', 'initialized', 'refused'];
+
     private string $previousEnv = '';
+
+    /** @var array<string, mixed> the registry as the previous test left it */
+    private array $registrySnapshot = [];
 
     protected function setUp(): void
     {
         $this->previousEnv = (string) getenv('APP_ENV');
+        foreach (self::REGISTRY_STATE as $property) {
+            $this->registrySnapshot[$property] = (new \ReflectionProperty(DeferredTemplateRegistry::class, $property))->getValue();
+        }
     }
 
     protected function tearDown(): void
     {
-        DeferredTemplateRegistry::reset();
+        // Restore, not reset(): a registry some earlier test initialised must
+        // look the same to later tests whether or not this one ran.
+        foreach ($this->registrySnapshot as $property => $value) {
+            (new \ReflectionProperty(DeferredTemplateRegistry::class, $property))->setValue(null, $value);
+        }
         if ($this->previousEnv === '') {
             putenv('APP_ENV');
         } else {
@@ -182,6 +194,31 @@ final class DeferredTemplatePublishGuardTest extends TestCase
         self::assertNull((new \ReflectionProperty(DeferredTemplateRegistry::class, 'refused'))->getValue());
     }
 
+    /**
+     * A same-size fix inside one mtime tick is still a fix: the refusal is
+     * keyed by content, so stat() metadata alone cannot keep it failing.
+     */
+    #[Test]
+    public function a_same_size_same_mtime_fix_is_checked_again(): void
+    {
+        $file = $this->refusedTemplateFile();
+        $fixed = str_pad('{{ title }}', (int) filesize($file), ' ');
+        file_put_contents($file, $fixed);
+        touch($file, 1_700_000_000);
+        clearstatcache(true, $file);
+        self::assertSame(1_700_000_000, filemtime($file));
+        self::assertSame(strlen("{{ trans('x') }}"), filesize($file));
+
+        $rethrow = new \ReflectionMethod(DeferredTemplateRegistry::class, 'rethrowIfStillRefused');
+        try {
+            $rethrow->invoke(null);
+        } finally {
+            @unlink($file);
+        }
+
+        self::assertNull((new \ReflectionProperty(DeferredTemplateRegistry::class, 'refused'))->getValue());
+    }
+
     /** The boot sweep must be the one that records the refusal. */
     #[Test]
     public function the_boot_sweep_remembers_what_it_refused(): void
@@ -202,7 +239,8 @@ final class DeferredTemplatePublishGuardTest extends TestCase
     private function refusedTemplateFile(): string
     {
         $file = sys_get_temp_dir() . '/semitexa-refused-' . uniqid('', true) . '.twig';
-        file_put_contents($file, "{{ trans('x') }}");
+        $content = "{{ trans('x') }}";
+        file_put_contents($file, $content);
         touch($file, 1_700_000_000);
         clearstatcache(true, $file);
 
@@ -210,6 +248,7 @@ final class DeferredTemplatePublishGuardTest extends TestCase
             null,
             'probe.html.twig',
             $file,
+            $content,
             new DeferredRenderingException('Deferred template probe.html.twig uses 1 construct(s)'),
         );
 

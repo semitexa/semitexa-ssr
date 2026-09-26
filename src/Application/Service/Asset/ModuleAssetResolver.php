@@ -69,8 +69,9 @@ final class ModuleAssetResolver
      * module Static/ dir, and the worker already treats its template tree the
      * same way (Twig's loader keeps what it found for the worker's lifetime).
      *
-     * A hit is re-checked with is_file() before it is trusted, so a deleted
-     * file is not served from memory. Misses are never kept: a deferred
+     * A hit is re-checked with realpath() and is_file() before it is trusted,
+     * so a deleted file is not served from memory and a file replaced by a
+     * symlink goes back through the containment check. Misses are never kept: a deferred
      * template is published into the `ssr` alias at runtime, and a 404 probe
      * must not be able to grow this. For the same reason the memo is capped —
      * StaticAssetHandler resolves request paths, and `a/./b.css` spellings of
@@ -212,7 +213,10 @@ final class ModuleAssetResolver
         $memoKey = $module . "\0" . implode("\0", $chain) . "\0\0" . $path;
         $memo = $this->resolved[$memoKey] ?? null;
         if ($memo !== null) {
-            if (is_file($memo)) {
+            // The memo holds a canonical path that already passed locate()'s
+            // containment check; if it no longer canonicalises to itself (the
+            // file was swapped for a symlink, say), check it all again.
+            if (realpath($memo) === $memo && is_file($memo)) {
                 return $memo;
             }
             unset($this->resolved[$memoKey]);

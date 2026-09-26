@@ -24,20 +24,23 @@ final class DeferredTemplateRegistry
     private static bool $initialized = false;
 
     /**
-     * The template the last initialize() refused, and the file state it was
-     * refused in: {template, path, mtime, size, message}.
+     * The template the last initialize() refused, and the content it was
+     * refused for: {template, path, hash, message}.
      *
      * A refusal throws before $initialized is set, and every HTML request
      * that reaches a deferred slot calls initialize() again while it is
      * unset. Without this each of those requests re-read every deferred
      * template and re-parsed the bad one — MEASURED at ~10 KB of worker
      * memory per request, retained by Twig's escaper for good. The request
-     * still fails, loudly, with the same message, until the file changes;
-     * then it is checked again, so fixing the template is enough in dev.
+     * still fails, loudly, with the same message, until the file's CONTENT
+     * changes; then it is checked again, so fixing the template is enough in
+     * dev. Content, not mtime/size: a same-size fix within one mtime tick
+     * must not keep failing, and re-reading one file on a request that is
+     * failing anyway is cheap next to re-parsing it.
      *
      * Only strings and ints: nothing from the request that hit it.
      *
-     * @var array{template: string, path: string, mtime: int, size: int, message: string}|null
+     * @var array{template: string, path: string, hash: string, message: string}|null
      */
     private static ?array $refused = null;
 
@@ -103,7 +106,7 @@ final class DeferredTemplateRegistry
             try {
                 self::assertClientCanRender($slot->templateName, $templatePath, $content);
             } catch (DeferredRenderingException $e) {
-                self::rememberRefusal($slot->templateName, $templatePath, $e);
+                self::rememberRefusal($slot->templateName, $templatePath, $content, $e);
                 throw $e;
             }
 
@@ -216,24 +219,20 @@ final class DeferredTemplateRegistry
         self::$refused = null;
     }
 
-    private static function rememberRefusal(string $templateName, string $templatePath, DeferredRenderingException $e): void
+    private static function rememberRefusal(string $templateName, string $templatePath, string $content, DeferredRenderingException $e): void
     {
-        clearstatcache(true, $templatePath);
-        $stat = @stat($templatePath);
-
-        self::$refused = $stat === false ? null : [
+        self::$refused = [
             'template' => $templateName,
             'path' => $templatePath,
-            'mtime' => (int) $stat['mtime'],
-            'size' => (int) $stat['size'],
+            'hash' => hash('sha256', $content),
             'message' => $e->getMessage(),
         ];
     }
 
     /**
-     * Fail again, without redoing the work, while the refused template is
-     * untouched. A fresh exception each time: rethrowing the first one would
-     * keep its trace — and whatever that trace references — alive.
+     * Fail again, without redoing the work, while the refused template's
+     * content is untouched. A fresh exception each time: rethrowing the first
+     * one would keep its trace — and whatever that trace references — alive.
      *
      * @throws DeferredRenderingException
      */
@@ -244,9 +243,8 @@ final class DeferredTemplateRegistry
             return;
         }
 
-        clearstatcache(true, $refused['path']);
-        $stat = @stat($refused['path']);
-        if ($stat !== false && (int) $stat['mtime'] === $refused['mtime'] && (int) $stat['size'] === $refused['size']) {
+        $content = @file_get_contents($refused['path']);
+        if ($content !== false && hash('sha256', $content) === $refused['hash']) {
             throw new DeferredRenderingException($refused['message']);
         }
 

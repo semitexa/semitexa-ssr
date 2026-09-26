@@ -191,6 +191,9 @@ final class AssetBundlerTest extends TestCase
         $entries = [$this->entry('a.css'), $this->entry('b.css')];
 
         $first = AssetBundler::bundle($entries);
+        self::assertIsArray($first);
+        self::assertNotEmpty($first);
+        self::assertStringContainsString('/assets/ssr/bundle/', $first[0]);
 
         $this->writeCss('a.css', '.a{color:tan}');
         $this->touchCss('a.css', 1_700_000_000);

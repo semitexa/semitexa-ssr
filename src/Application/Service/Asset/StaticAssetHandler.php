@@ -78,7 +78,7 @@ readonly class StaticAssetHandler
         $slashPos = strpos($rest, '/');
         if ($slashPos === false || $slashPos === 0) {
             $response->status(404);
-            $response->end('Not Found');
+            self::end($request, $response, 'Not Found');
             return true;
         }
 
@@ -87,14 +87,14 @@ readonly class StaticAssetHandler
 
         if ($path === '') {
             $response->status(404);
-            $response->end('Not Found');
+            self::end($request, $response, 'Not Found');
             return true;
         }
 
         // Check for path traversal in the raw URI
         if (str_contains($path, '..') || str_contains($module, '..')) {
             $response->status(403);
-            $response->end('Forbidden');
+            self::end($request, $response, 'Forbidden');
             return true;
         }
 
@@ -102,7 +102,7 @@ readonly class StaticAssetHandler
 
         if ($filePath === null) {
             $response->status(404);
-            $response->end('Not Found');
+            self::end($request, $response, 'Not Found');
             return true;
         }
 
@@ -163,14 +163,33 @@ readonly class StaticAssetHandler
 
         if ($gzipped !== null) {
             $response->header('Content-Encoding', 'gzip');
-            $response->sendfile($gzipped);
+        }
+
+        // Swoole does not strip a HEAD body: sendfile() would stream the whole
+        // file, and a keep-alive client reads those bytes as the next response.
+        if (self::isHead($request)) {
+            $response->end();
 
             return true;
         }
 
-        $response->sendfile($filePath);
+        $response->sendfile($gzipped ?? $filePath);
 
         return true;
+    }
+
+    private static function isHead(SwooleRequest $request): bool
+    {
+        /** @var array<string, mixed> $serverVars */
+        $serverVars = $request->server ?? [];
+        $method = $serverVars['request_method'] ?? '';
+
+        return is_string($method) && strtoupper($method) === 'HEAD';
+    }
+
+    private static function end(SwooleRequest $request, SwooleResponse $response, string $body): void
+    {
+        $response->end(self::isHead($request) ? '' : $body);
     }
 
     /**

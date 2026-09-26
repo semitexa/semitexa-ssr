@@ -57,6 +57,32 @@ final class ModuleAssetResolver
      */
     private ?\Closure $chainResolver = null;
 
+    /**
+     * Resolved files, keyed by module, active chain and requested path.
+     *
+     * Only hits are kept. Resolution walks up to three candidate locations with
+     * realpath() each, and a realpath() that fails — a theme with no override
+     * for this module, which is the usual case — is not in PHP's realpath
+     * cache, so every asset URL on every page paid those syscalls again:
+     * MEASURED at ~15% of a dev `/` request. Which file a (module, chain, path)
+     * lands on only changes when files are added or removed under a theme or
+     * module Static/ dir, and the worker already treats its template tree the
+     * same way (Twig's loader keeps what it found for the worker's lifetime).
+     *
+     * A hit is re-checked with realpath() and is_file() before it is trusted,
+     * so a deleted file is not served from memory and a file replaced by a
+     * symlink goes back through the containment check. Misses are never kept: a deferred
+     * template is published into the `ssr` alias at runtime, and a 404 probe
+     * must not be able to grow this. For the same reason the memo is capped —
+     * StaticAssetHandler resolves request paths, and `a/./b.css` spellings of
+     * one real file are unbounded.
+     *
+     * @var array<string, string>
+     */
+    private array $resolved = [];
+
+    private const RESOLVED_MEMO_LIMIT = 4096;
+
     private bool $initialized = false;
     #[InjectAsReadonly]
     protected ModuleRegistry $moduleRegistry;
@@ -64,6 +90,7 @@ final class ModuleAssetResolver
     public function setChainResolver(?\Closure $resolver): void
     {
         $this->chainResolver = $resolver;
+        $this->resolved = [];
     }
 
     public function setModuleRegistry(ModuleRegistry $moduleRegistry): void
@@ -133,6 +160,7 @@ final class ModuleAssetResolver
         $this->initialized = false;
         unset($this->moduleRegistry);
         $this->chainResolver = null;
+        $this->resolved = [];
     }
 
     /**
@@ -153,6 +181,7 @@ final class ModuleAssetResolver
             }
             $this->map[$alias] = $existing;
             $this->initialized = true;
+            $this->resolved = [];
         }
     }
 
@@ -180,21 +209,45 @@ final class ModuleAssetResolver
             return null;
         }
 
+        $chain = $this->chainResolver !== null ? $this->normalizeChain(($this->chainResolver)()) : [];
+        $memoKey = $module . "\0" . implode("\0", $chain) . "\0\0" . $path;
+        $memo = $this->resolved[$memoKey] ?? null;
+        if ($memo !== null) {
+            // The memo holds a canonical path that already passed locate()'s
+            // containment check; if it no longer canonicalises to itself (the
+            // file was swapped for a symlink, say), check it all again.
+            if (realpath($memo) === $memo && is_file($memo)) {
+                return $memo;
+            }
+            unset($this->resolved[$memoKey]);
+        }
+
+        $found = $this->locate($module, $path, $baseDirs, $chain);
+        if ($found !== null && count($this->resolved) < self::RESOLVED_MEMO_LIMIT) {
+            $this->resolved[$memoKey] = $found;
+        }
+
+        return $found;
+    }
+
+    /**
+     * @param string[] $baseDirs
+     * @param list<string> $chain
+     */
+    private function locate(string $module, string $path, array $baseDirs, array $chain): ?string
+    {
         // Per-request theme chain takes priority over boot-time env THEME.
         // Walks leaf → root; first existing file wins. Falls through to
         // legacy $themeMap + base dirs when no chain override matches.
-        if ($this->chainResolver !== null) {
-            $chain = $this->normalizeChain(($this->chainResolver)());
-            if ($chain !== []) {
-                $projectRoot = ProjectRoot::get();
-                foreach ($chain as $themeId) {
-                    $base = $projectRoot . '/src/theme/' . $themeId . '/' . $module . '/Static';
-                    $realBase = realpath($base);
-                    $themeFile = $base . '/' . $path;
-                    $realTheme = realpath($themeFile);
-                    if ($realBase !== false && $realTheme !== false && str_starts_with($realTheme, $realBase . '/') && is_file($realTheme)) {
-                        return $realTheme;
-                    }
+        if ($chain !== []) {
+            $projectRoot = ProjectRoot::get();
+            foreach ($chain as $themeId) {
+                $base = $projectRoot . '/src/theme/' . $themeId . '/' . $module . '/Static';
+                $realBase = realpath($base);
+                $themeFile = $base . '/' . $path;
+                $realTheme = realpath($themeFile);
+                if ($realBase !== false && $realTheme !== false && str_starts_with($realTheme, $realBase . '/') && is_file($realTheme)) {
+                    return $realTheme;
                 }
             }
         }

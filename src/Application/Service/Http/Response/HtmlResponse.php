@@ -242,7 +242,7 @@ class HtmlResponse extends ResourceResponse
 
         \Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore::reset();
 
-        \Semitexa\Ssr\Application\Service\Asset\AssetManager::reset();
+        \Semitexa\Ssr\Application\Service\Asset\AssetManager::resetRenderState();
     }
 
     /**

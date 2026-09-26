@@ -41,6 +41,34 @@ TWIG,
         self::assertSame([], $issues);
     }
 
+    /**
+     * Twig's escaper visitor keeps every node it analyses for the life of the
+     * Environment, so re-parsing an unchanged source on every request grew a
+     * dev worker by ~10 KB per call. An unchanged source is answered from
+     * what was already found; a changed one is inspected again.
+     */
+    public function testValidateSourceDoesNotReparseAnUnchangedSource(): void
+    {
+        $source = new Source("<p>{{ trans('x') }}</p>", 'inline-memo', '/tmp/inline-memo.twig');
+        $first = (new DeferredTemplateCompatibilityValidator())->validateSource($source);
+
+        gc_collect_cycles();
+        $before = memory_get_usage();
+        for ($i = 0; $i < 300; $i++) {
+            $again = (new DeferredTemplateCompatibilityValidator())->validateSource($source);
+        }
+        gc_collect_cycles();
+
+        self::assertLessThan(64 * 1024, memory_get_usage() - $before, 'each re-parse is retained by Twig');
+        self::assertEquals($first, $again);
+
+        $fixed = (new DeferredTemplateCompatibilityValidator())->validateSource(
+            new Source('<p>{{ title }}</p>', 'inline-memo', '/tmp/inline-memo.twig'),
+        );
+        self::assertNotSame([], $first);
+        self::assertSame([], $fixed);
+    }
+
     public function testValidateSourceFlagsUnsupportedFunctionsAndFilters(): void
     {
         $validator = new DeferredTemplateCompatibilityValidator();

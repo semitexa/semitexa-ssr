@@ -14,6 +14,7 @@ use Semitexa\Core\Support\ProjectRoot;
 use Semitexa\Core\Tenant\TenantContextInterface;
 use Semitexa\Ssr\Application\Payload\Request\SitemapXmlPayload;
 use Semitexa\Ssr\Application\Service\Seo\AiSitemapLocator;
+use Semitexa\Ssr\Application\Service\Seo\Sitemap\GeneratedSitemapCache;
 use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapGenerationContext;
 use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapGenerator;
 use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapStoragePath;
@@ -40,11 +41,16 @@ final class SitemapXmlHandler implements TypedHandlerInterface
     private function resolveContent(): string
     {
         $projectRoot = ProjectRoot::get();
-        $generatedDir = $this->resolveGeneratedSitemapDirectory();
 
-        // Check for pre-generated or manual override files
+        // A generated file is a cache with a maximum age (GeneratedSitemapCache);
+        // a stale one is regenerated rather than served for ever.
+        $generated = GeneratedSitemapCache::readFresh($this->resolveGeneratedSitemapDirectory() . '/sitemap.xml');
+        if ($generated !== null) {
+            return $generated;
+        }
+
+        // Manual overrides are the project's own files and never age.
         foreach ([
-            $generatedDir . '/sitemap.xml',
             $projectRoot . '/sitemap.xml',
             $projectRoot . '/public/sitemap.xml',
         ] as $candidate) {
@@ -58,7 +64,7 @@ final class SitemapXmlHandler implements TypedHandlerInterface
             }
         }
 
-        // Fall back to dynamic generation
+        // Missing or stale: generate now (and persist for the next request).
         return $this->generateDynamic();
     }
 

@@ -6,18 +6,30 @@ namespace Semitexa\Ssr\Application\Handler\PayloadHandler;
 
 use Semitexa\Core\Attribute\AsPayloadHandler;
 use Semitexa\Core\Attribute\InjectAsMutable;
+use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Contract\TypedHandlerInterface;
 use Semitexa\Core\Http\Response\ResourceResponse;
+use Semitexa\Core\Request;
 use Semitexa\Core\Support\ProjectRoot;
 use Semitexa\Core\Tenant\TenantContextInterface;
 use Semitexa\Ssr\Application\Payload\Request\SitemapPartPayload;
+use Semitexa\Ssr\Application\Service\Seo\AiSitemapLocator;
+use Semitexa\Ssr\Application\Service\Seo\Sitemap\GeneratedSitemapCache;
+use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapGenerationContext;
+use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapGenerator;
 use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapStoragePath;
 
 #[AsPayloadHandler(payload: SitemapPartPayload::class, resource: ResourceResponse::class)]
 final class SitemapPartHandler implements TypedHandlerInterface
 {
     #[InjectAsMutable]
+    protected Request $request;
+
+    #[InjectAsMutable]
     protected TenantContextInterface $tenantContext;
+
+    #[InjectAsReadonly]
+    protected SitemapGenerator $generator;
 
     public function handle(SitemapPartPayload $payload, ResourceResponse $resource): ResourceResponse
     {
@@ -29,27 +41,61 @@ final class SitemapPartHandler implements TypedHandlerInterface
         }
 
         $filename = sprintf('sitemap-%s.xml', $part);
-        $projectRoot = ProjectRoot::get();
+        $content = $this->resolvePart($filename);
 
-        foreach ([
-            SitemapStoragePath::generatedDirectory($this->tenantContext) . '/' . $filename,
-            $projectRoot . '/' . $filename,
-            $projectRoot . '/public/' . $filename,
-        ] as $candidate) {
-            if (!is_file($candidate)) {
-                continue;
-            }
-
-            $content = file_get_contents($candidate);
-            if ($content !== false) {
-                return $resource
-                    ->setContent($content)
-                    ->setHeader('Content-Type', 'application/xml; charset=utf-8');
-            }
+        if ($content !== null) {
+            return $resource
+                ->setContent($content)
+                ->setHeader('Content-Type', 'application/xml; charset=utf-8');
         }
 
         return $resource
             ->setContent('')
             ->setStatusCode(404);
+    }
+
+    /**
+     * Same order as sitemap.xml: a fresh generated part, then the project's
+     * manual files, then — when the generated set is stale or missing — a
+     * regeneration of the whole set, so a part never outlives its index.
+     */
+    private function resolvePart(string $filename): ?string
+    {
+        $generatedDir = SitemapStoragePath::generatedDirectory($this->tenantContext);
+
+        $content = GeneratedSitemapCache::readFresh($generatedDir . '/' . $filename);
+        if ($content !== null) {
+            return $content;
+        }
+
+        $projectRoot = ProjectRoot::get();
+        foreach ([$projectRoot . '/' . $filename, $projectRoot . '/public/' . $filename] as $candidate) {
+            if (!is_file($candidate)) {
+                continue;
+            }
+
+            $manual = file_get_contents($candidate);
+            if ($manual !== false) {
+                return $manual;
+            }
+        }
+
+        // A fresh index means the set is current and this part simply does not
+        // exist; regenerating on every unknown part name would hand anyone a
+        // way to run the generator at will.
+        if (!isset($this->generator) || GeneratedSitemapCache::readFresh($generatedDir . '/sitemap.xml') !== null) {
+            return null;
+        }
+
+        $result = $this->generator->generateAndWrite(new SitemapGenerationContext(
+            baseUrl: AiSitemapLocator::originUrl($this->request, $this->tenantContext),
+            tenantContext: $this->tenantContext,
+        ), $generatedDir);
+
+        if (!$result->success) {
+            return null;
+        }
+
+        return GeneratedSitemapCache::readFresh($generatedDir . '/' . $filename);
     }
 }

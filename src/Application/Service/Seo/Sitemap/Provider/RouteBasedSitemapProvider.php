@@ -4,20 +4,16 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Seo\Sitemap\Provider;
 
-use Semitexa\Ssr\Application\Service\Seo\Sitemap\NotInSitemap;
-
-use Semitexa\Core\Auth\PayloadAccessType;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Attribute\TransportType;
 use Semitexa\Core\Discovery\AttributeDiscovery;
-use Semitexa\Core\Support\TenantModuleScopeResolver;
 use Semitexa\Locale\Configuration\LocaleConfig;
 use Semitexa\Locale\Domain\Contract\LocalePackProviderInterface;
-use Semitexa\Ssr\Application\Service\Seo\AiSitemapLocator;
 use Semitexa\Ssr\Application\Service\Seo\Sitemap\AsSitemapProvider;
 use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapAlternate;
 use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapGenerationContext;
+use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapRouteEligibility;
 use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapUrl;
 use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapUrlProviderInterface;
 
@@ -42,14 +38,6 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
     #[InjectAsReadonly]
     protected LocalePackProviderInterface $localePacks;
 
-    /** @var list<string> */
-    private const array EXCLUDED_PATHS = [
-        '/robots.txt',
-        '/llms.txt',
-        '/sitemap.xml',
-        AiSitemapLocator::PATH,
-    ];
-
     public function provideUrls(SitemapGenerationContext $context): iterable
     {
         if (!isset($this->attributeDiscovery)) {
@@ -65,7 +53,7 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
         // declares it. A route with no tenant scope belongs to all of them.
         $routes = array_values(array_filter(
             $routes,
-            static fn (array $route): bool => TenantModuleScopeResolver::isRouteAllowedForTenant($route, $context->tenantContext),
+            static fn (array $route): bool => SitemapRouteEligibility::isInTenantScope($route, $context->tenantContext),
         ));
 
         usort($routes, fn (array $a, array $b): int => $this->stringValue($a['path'] ?? '') <=> $this->stringValue($b['path'] ?? ''));
@@ -168,6 +156,9 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
     }
 
     /**
+     * The shared rules ({@see SitemapRouteEligibility}) plus what only a sitemap
+     * needs: plain HTTP, a concrete path, and an HTML response.
+     *
      * @param array<string, mixed> $route
      */
     private function isEligible(array $route): bool
@@ -176,57 +167,16 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
             return false;
         }
 
-        if (self::accessTypeOf($route) !== 'public') {
+        if (!SitemapRouteEligibility::isListable($route)) {
             return false;
         }
 
         $path = $this->stringValue($route['path'] ?? '');
-        // Any '/__' path is framework-internal by convention, not just '/__semitexa'.
-        // The narrower guard let semitexa/dev's debug surfaces — /__observatory, /__trace
-        // and their sub-paths — into the public sitemap of every project with the dev
-        // module installed. Those routes are dev-only, so production answered 404 and the
-        // sitemap was actively advertising broken URLs to search engines.
-        if ($path === '' || str_starts_with($path, '/__')) {
-            return false;
-        }
-
-        if (in_array($path, self::EXCLUDED_PATHS, true)) {
-            return false;
-        }
-
-        if ($this->isOptedOut($route)) {
-            return false;
-        }
-
         if (str_contains($path, '{') && str_contains($path, '}')) {
             return false;
         }
 
-        if (!in_array('GET', $this->normalizeMethods($route), true)) {
-            return false;
-        }
-
         return $this->isHtmlLikeRoute($route);
-    }
-
-    /**
-     * Whether the payload behind this route asked to stay out — see {@see NotInSitemap}.
-     *
-     * Read by reflection off the route's own class rather than threaded through route
-     * discovery: sitemap membership is an SSR concern, and core has no reason to learn
-     * about it. Generation happens on a schedule or on demand, never per request, so the
-     * reflection cost is paid once per sitemap rather than once per visitor.
-     *
-     * @param array<string, mixed> $route
-     */
-    private function isOptedOut(array $route): bool
-    {
-        $class = $this->stringValue($route['class'] ?? '');
-        if ($class === '' || !class_exists($class)) {
-            return false;
-        }
-
-        return (new \ReflectionClass($class))->getAttributes(NotInSitemap::class) !== [];
     }
 
     private function normalizeTransport(mixed $transport): string
@@ -259,23 +209,6 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
         return false;
     }
 
-    /**
-     * @param array<string, mixed> $route
-     * @return list<string>
-     */
-    private function normalizeMethods(array $route): array
-    {
-        $methods = $route['methods'] ?? [$route['method'] ?? 'GET'];
-        if (!is_array($methods)) {
-            $methods = [$methods];
-        }
-
-        return array_values(array_unique(array_map(
-            fn (mixed $v): string => strtoupper(trim($this->stringValue($v))),
-            $methods,
-        )));
-    }
-
     private function stringValue(mixed $value): string
     {
         if (is_scalar($value) || $value instanceof \Stringable) {
@@ -283,23 +216,5 @@ final class RouteBasedSitemapProvider implements SitemapUrlProviderInterface
         }
 
         return '';
-    }
-
-    /**
-     * Routes carry accessType, a PayloadAccessType enum (or its string value in
-     * hand-built arrays). A raw route has no 'access' and no 'public' key; both
-     * were assumed at different times and each silently rejected every route.
-     *
-     * @param array<string, mixed> $route
-     */
-    private static function accessTypeOf(array $route): ?string
-    {
-        $value = $route['accessType'] ?? null;
-
-        if ($value instanceof PayloadAccessType) {
-            return $value->value;
-        }
-
-        return is_string($value) && $value !== '' ? $value : null;
     }
 }

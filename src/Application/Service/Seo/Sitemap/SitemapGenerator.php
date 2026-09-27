@@ -42,7 +42,7 @@ final class SitemapGenerator
      */
     public function generate(SitemapGenerationContext $context): array
     {
-        $urls = $this->collectUrls($context);
+        $urls = $this->urls($context);
         $totalUrls = count($urls);
 
         if ($totalUrls <= self::MAX_URLS_PER_SITEMAP) {
@@ -131,6 +131,25 @@ final class SitemapGenerator
     }
 
     /**
+     * Every URL the tenant's providers vouch for, one entry per `loc`.
+     *
+     * Providers run in priority order — custom module providers before the
+     * route-based default (priority 1000) — and the FIRST provider to name a
+     * `loc` wins. Without this, two modules that both declare `/` put the home
+     * page into sitemap.xml twice, and a custom provider that knows an
+     * article's title and lastmod was shadowed by the default's bare copy.
+     *
+     * Public so the machine-readable summaries (/sitemap.json, llms.txt) can
+     * list the same pages the sitemap does, with titles when providers give them.
+     *
+     * @return list<SitemapUrl>
+     */
+    public function urls(SitemapGenerationContext $context): array
+    {
+        return $this->collectUrls($context);
+    }
+
+    /**
      * @return list<SitemapUrl>
      */
     private function collectUrls(SitemapGenerationContext $context): array
@@ -139,6 +158,7 @@ final class SitemapGenerator
             return [];
         }
 
+        /** @var array<string, SitemapUrl> $urls */
         $urls = [];
 
         foreach ($this->registry->getProvidersForTenant($context->tenantContext) as $providerMeta) {
@@ -151,8 +171,8 @@ final class SitemapGenerator
                 $providerUrls = $provider->provideUrls($context);
                 /** @var iterable<mixed> $providerUrls */
                 foreach ($providerUrls as $url) {
-                    if ($url instanceof SitemapUrl) {
-                        $urls[] = $url;
+                    if ($url instanceof SitemapUrl && !isset($urls[$url->loc])) {
+                        $urls[$url->loc] = $url;
                     }
                 }
             } catch (\Throwable $e) {
@@ -164,7 +184,7 @@ final class SitemapGenerator
             }
         }
 
-        return $urls;
+        return array_values($urls);
     }
 
     private function resolveProvider(string $className): ?SitemapUrlProviderInterface

@@ -75,7 +75,7 @@ class LayoutSlotRegistry
         if (!isset(self::$slots[$handleKey][$slotKey])) {
             self::$slots[$handleKey][$slotKey] = [];
         }
-        self::$slots[$handleKey][$slotKey][] = [
+        $entry = [
             'template' => $template,
             'context' => $context,
             'priority' => $priority,
@@ -88,6 +88,16 @@ class LayoutSlotRegistry
             'resourceClass' => $resourceClass,
             'clientModules' => $clientModules,
         ];
+        // Idempotent for an identical declaration. Discovery contributors
+        // write here from AttributeDiscovery::initialize(), whose guard is
+        // per instance: a second container in the same process (tests that
+        // rebuild it, e.g. core's FixtureModules) re-runs every contributor
+        // and used to append the same slot again — a page then rendered each
+        // deferred block N times. Distinct declarations still stack.
+        if (in_array($entry, self::$slots[$handleKey][$slotKey], true)) {
+            return;
+        }
+        self::$slots[$handleKey][$slotKey][] = $entry;
         usort(self::$slots[$handleKey][$slotKey], static fn ($a, $b) => $a['priority'] <=> $b['priority']);
     }
 

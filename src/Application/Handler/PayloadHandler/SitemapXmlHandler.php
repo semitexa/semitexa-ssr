@@ -80,31 +80,13 @@ final class SitemapXmlHandler implements TypedHandlerInterface
             tenantContext: $this->tenantContext,
         );
 
-        $outputDir = $this->resolveGeneratedSitemapDirectory();
         $result = $this->generator->generate($context);
-        $this->persistGeneratedSitemaps($outputDir, $result);
+        // Persisting is best effort: an unwritable directory (files owned by
+        // the scheduler's user, say) is logged by write() and must not turn a
+        // sitemap this request already generated into an error.
+        $this->generator->write($result, $this->resolveGeneratedSitemapDirectory());
 
         return $result['xml'];
-    }
-
-    /**
-     * @param array{xml: string, parts: array<string, string>, totalUrls: int} $result
-     */
-    private function persistGeneratedSitemaps(string $outputDir, array $result): void
-    {
-        if (!is_dir($outputDir) && !mkdir($outputDir, 0755, true) && !is_dir($outputDir)) {
-            throw new \RuntimeException("Unable to create sitemap directory: {$outputDir}");
-        }
-
-        foreach ($result['parts'] as $filename => $xml) {
-            if (file_put_contents($outputDir . '/' . $filename, $xml) === false) {
-                throw new \RuntimeException("Unable to write sitemap part: {$filename}");
-            }
-        }
-
-        if (file_put_contents($outputDir . '/sitemap.xml', $result['xml']) === false) {
-            throw new \RuntimeException('Unable to write sitemap.xml');
-        }
     }
 
     private function resolveGeneratedSitemapDirectory(): string

@@ -55,17 +55,25 @@ final class SitemapPartHandler implements TypedHandlerInterface
     }
 
     /**
-     * Same order as sitemap.xml: a fresh generated part, then the project's
-     * manual files, then — when the generated set is stale or missing — a
-     * regeneration of the whole set, so a part never outlives its index.
+     * Same order as sitemap.xml: a generated part, then the project's manual
+     * files, then — when the generated set is stale or missing — a regeneration
+     * of the whole set, so a part never outlives its index.
+     *
+     * A part's freshness is its index's: parts are written just before the
+     * index, so near the TTL boundary a part can be a moment older than the
+     * index that links to it, and judging it by its own age would 404 a part
+     * the live index advertises.
      */
     private function resolvePart(string $filename): ?string
     {
         $generatedDir = SitemapStoragePath::generatedDirectory($this->tenantContext);
+        $indexIsFresh = GeneratedSitemapCache::readFresh($generatedDir . '/sitemap.xml') !== null;
 
-        $content = GeneratedSitemapCache::readFresh($generatedDir . '/' . $filename);
-        if ($content !== null) {
-            return $content;
+        if ($indexIsFresh) {
+            $content = GeneratedSitemapCache::readFresh($generatedDir . '/' . $filename, PHP_INT_MAX);
+            if ($content !== null) {
+                return $content;
+            }
         }
 
         $projectRoot = ProjectRoot::get();
@@ -83,7 +91,7 @@ final class SitemapPartHandler implements TypedHandlerInterface
         // A fresh index means the set is current and this part simply does not
         // exist; regenerating on every unknown part name would hand anyone a
         // way to run the generator at will.
-        if (!isset($this->generator) || GeneratedSitemapCache::readFresh($generatedDir . '/sitemap.xml') !== null) {
+        if (!isset($this->generator) || $indexIsFresh) {
             return null;
         }
 
@@ -96,6 +104,6 @@ final class SitemapPartHandler implements TypedHandlerInterface
             return null;
         }
 
-        return GeneratedSitemapCache::readFresh($generatedDir . '/' . $filename);
+        return GeneratedSitemapCache::readFresh($generatedDir . '/' . $filename, PHP_INT_MAX);
     }
 }

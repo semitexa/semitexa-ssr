@@ -85,7 +85,9 @@ final class AiSitemapJsonRenderer
             $endpoints[] = $entry;
         }
 
-        $pages = [...$pages, ...$this->providerPages($pages, $endpoints, $request, $tenantContext)];
+        $providerUrls = $this->providerUrls($request, $tenantContext);
+        $pages = $this->withProviderMetadata($pages, $providerUrls);
+        $pages = [...$pages, ...$this->providerPages($pages, $endpoints, $providerUrls)];
 
         return [
             'version' => '1.0',
@@ -134,20 +136,16 @@ final class AiSitemapJsonRenderer
     }
 
     /**
-     * Pages a sitemap provider vouches for that no listed route already covers.
-     *
-     * @param list<array<string, mixed>> $pages
-     * @param list<array<string, mixed>> $endpoints
-     * @return list<array<string, mixed>>
+     * @return list<SitemapUrl>
      */
-    private function providerPages(array $pages, array $endpoints, ?Request $request, ?TenantContextInterface $tenantContext): array
+    private function providerUrls(?Request $request, ?TenantContextInterface $tenantContext): array
     {
         if (!isset($this->sitemapGenerator)) {
             return [];
         }
 
         try {
-            $urls = $this->sitemapGenerator->urls(new SitemapGenerationContext(
+            return $this->sitemapGenerator->urls(new SitemapGenerationContext(
                 baseUrl: AiSitemapLocator::originUrl($request, $tenantContext),
                 tenantContext: $tenantContext,
             ));
@@ -159,14 +157,55 @@ final class AiSitemapJsonRenderer
 
             return [];
         }
+    }
 
+    /**
+     * A listed route page takes the title, description and lastmod a provider
+     * gives its URL — the route itself carries none of them.
+     *
+     * @param list<array<string, mixed>> $pages
+     * @param list<SitemapUrl> $providerUrls
+     * @return list<array<string, mixed>>
+     */
+    private function withProviderMetadata(array $pages, array $providerUrls): array
+    {
+        $byLoc = [];
+        foreach ($providerUrls as $url) {
+            $byLoc[$url->loc] ??= $url;
+        }
+
+        foreach ($pages as $i => $page) {
+            $url = $byLoc[(string) $page['url']] ?? null;
+            if ($url === null) {
+                continue;
+            }
+            $pages[$i] += array_filter([
+                'title' => $url->title,
+                'description' => $url->description,
+                'lastmod' => $url->lastmod?->format(DATE_ATOM),
+            ], static fn (mixed $value): bool => $value !== null);
+        }
+
+        return $pages;
+    }
+
+    /**
+     * Pages a sitemap provider vouches for that no listed route already covers.
+     *
+     * @param list<array<string, mixed>> $pages
+     * @param list<array<string, mixed>> $endpoints
+     * @param list<SitemapUrl> $providerUrls
+     * @return list<array<string, mixed>>
+     */
+    private function providerPages(array $pages, array $endpoints, array $providerUrls): array
+    {
         $listed = [];
         foreach ([...$pages, ...$endpoints] as $entry) {
             $listed[(string) $entry['url']] = true;
         }
 
         $extra = [];
-        foreach ($urls as $url) {
+        foreach ($providerUrls as $url) {
             if (isset($listed[$url->loc])) {
                 continue;
             }

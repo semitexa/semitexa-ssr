@@ -79,7 +79,21 @@ final class SitemapGenerator
             );
         }
 
-        if (!is_dir($outputDir) && !mkdir($outputDir, 0755, true) && !is_dir($outputDir)) {
+        return $this->write($result, $outputDir);
+    }
+
+    /**
+     * Persist an already generated result: parts first, the index last, each
+     * through a temporary file and a rename, so a concurrent reader sees either
+     * the old file or the new one — never a partial one. Never throws: a
+     * failure is logged and reported in the result, so a request that
+     * regenerated the sitemap can still serve what it generated.
+     *
+     * @param array{xml: string, parts: array<string, string>, totalUrls: int} $result
+     */
+    public function write(array $result, string $outputDir): SitemapWriteResult
+    {
+        if (!is_dir($outputDir) && !@mkdir($outputDir, 0755, true) && !is_dir($outputDir)) {
             StaticLoggerBridge::error('ssr', 'Sitemap output directory could not be created', [
                 'path' => $outputDir,
             ]);
@@ -312,13 +326,14 @@ final class SitemapGenerator
 
     private function atomicWrite(string $path, string $content): void
     {
-        $tmpPath = $path . '.tmp.' . getmypid();
+        // Unique per write: getmypid() alone is shared by every coroutine of a worker.
+        $tmpPath = $path . '.tmp.' . getmypid() . '.' . bin2hex(random_bytes(6));
 
-        if (file_put_contents($tmpPath, $content) === false) {
+        if (@file_put_contents($tmpPath, $content) === false) {
             throw new \RuntimeException(sprintf('Failed to write temporary sitemap file: %s', $tmpPath));
         }
 
-        if (!rename($tmpPath, $path)) {
+        if (!@rename($tmpPath, $path)) {
             @unlink($tmpPath);
             throw new \RuntimeException(sprintf('Failed to rename temporary sitemap file: %s → %s', $tmpPath, $path));
         }

@@ -70,7 +70,10 @@ final class LlmsTxtPagesTest extends TestCase
     #[Test]
     public function no_pages_means_no_empty_section(): void
     {
-        self::assertStringNotContainsString('## Pages', LlmsTxtRenderer::render());
+        $out = LlmsTxtRenderer::render();
+
+        self::assertStringStartsWith('# ', $out);
+        self::assertStringNotContainsString('## Pages', $out);
     }
 
     #[Test]

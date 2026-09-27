@@ -33,13 +33,10 @@ final class AiSitemapEligibilityTest extends TestCase
     {
         $paths = array_column($this->document()['pages'], 'path');
 
-        self::assertSame(1, count(array_keys($paths, '/', true)), 'five modules declaring / must yield one page');
-        self::assertContains('/about', $paths);
-        self::assertContains('/museum-only', $paths, 'a route scoped to the tenant being served stays');
-
-        foreach (['/__observatory', '/__trace/node', '/__semitexa/error/404', '/demo/school', '/sitemap.xml', '/llms.txt', '/opted-out', '/account'] as $excluded) {
-            self::assertNotContains($excluded, $paths, $excluded . ' must not be offered to machines');
-        }
+        // Five modules declaring / yield one page; /museum-only is scoped to the tenant
+        // being served; internal, machine, opted-out, protected and other-tenant routes
+        // are absent; the provider-only article is appended last.
+        self::assertSame(['/', '/about', '/museum-only', '/blog/first-light'], $paths);
     }
 
     #[Test]
@@ -49,11 +46,18 @@ final class AiSitemapEligibilityTest extends TestCase
         $endpointPaths = array_column($document['endpoints'], 'path');
         $templatePaths = array_column($document['templates'], 'path');
 
-        self::assertContains('/api/things', $endpointPaths);
-        self::assertNotContains('/__observatory/feed', $endpointPaths);
-        self::assertNotContains('/api/school-things', $endpointPaths);
-        self::assertContains('/articles/{slug}', $templatePaths);
-        self::assertNotContains('/demo/{id}', $templatePaths);
+        self::assertSame(['/api/things'], $endpointPaths);
+        self::assertSame(['/articles/{slug}'], $templatePaths);
+    }
+
+    #[Test]
+    public function a_listed_page_takes_the_title_its_provider_gives(): void
+    {
+        $home = $this->document()['pages'][0];
+
+        self::assertSame('/', $home['path']);
+        self::assertSame('Home of the museum', $home['title']);
+        self::assertArrayNotHasKey('source', $home, 'a listed route is not re-labelled as provider-only');
     }
 
     #[Test]

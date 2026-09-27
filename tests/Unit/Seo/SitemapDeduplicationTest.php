@@ -94,8 +94,8 @@ final class SitemapDeduplicationTest extends TestCase
         $xml = SitemapTestKit::generator([ArticleSitemapProvider::class])
             ->generate(new SitemapGenerationContext(self::BASE))['xml'];
 
+        self::assertStringContainsString('<lastmod>2026-09-01</lastmod>', $xml);
         self::assertStringNotContainsString('First light', $xml);
         self::assertStringNotContainsString('dawn', $xml);
-        self::assertStringContainsString('<lastmod>2026-09-01</lastmod>', $xml);
     }
 }

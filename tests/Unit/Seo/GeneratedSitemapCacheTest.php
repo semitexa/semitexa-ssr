@@ -206,11 +206,17 @@ final class GeneratedSitemapCacheTest extends TestCase
         $payload = new SitemapPartPayload();
         $payload->part = 'news';
 
+        $before = CountingSitemapProvider::$calls;
         CountingSitemapProvider::$calls = 0;
-        $response = $handler->handle($payload, new ResourceResponse());
+        try {
+            $response = $handler->handle($payload, new ResourceResponse());
+            $calls = CountingSitemapProvider::$calls;
+        } finally {
+            CountingSitemapProvider::$calls = $before;
+        }
 
         self::assertSame(404, $response->getStatusCode());
-        self::assertSame(0, CountingSitemapProvider::$calls, 'an unknown part name ran the generator');
+        self::assertSame(0, $calls, 'an unknown part name ran the generator');
     }
 
     private function writeGenerated(int $age): string

@@ -42,7 +42,7 @@ final class SitemapGenerator
      */
     public function generate(SitemapGenerationContext $context): array
     {
-        $urls = $this->collectUrls($context);
+        $urls = $this->urls($context);
         $totalUrls = count($urls);
 
         if ($totalUrls <= self::MAX_URLS_PER_SITEMAP) {
@@ -79,7 +79,21 @@ final class SitemapGenerator
             );
         }
 
-        if (!is_dir($outputDir) && !mkdir($outputDir, 0755, true) && !is_dir($outputDir)) {
+        return $this->write($result, $outputDir);
+    }
+
+    /**
+     * Persist an already generated result: parts first, the index last, each
+     * through a temporary file and a rename, so a concurrent reader sees either
+     * the old file or the new one — never a partial one. Never throws: a
+     * failure is logged and reported in the result, so a request that
+     * regenerated the sitemap can still serve what it generated.
+     *
+     * @param array{xml: string, parts: array<string, string>, totalUrls: int} $result
+     */
+    public function write(array $result, string $outputDir): SitemapWriteResult
+    {
+        if (!is_dir($outputDir) && !@mkdir($outputDir, 0755, true) && !is_dir($outputDir)) {
             StaticLoggerBridge::error('ssr', 'Sitemap output directory could not be created', [
                 'path' => $outputDir,
             ]);
@@ -131,6 +145,25 @@ final class SitemapGenerator
     }
 
     /**
+     * Every URL the tenant's providers vouch for, one entry per `loc`.
+     *
+     * Providers run in priority order — custom module providers before the
+     * route-based default (priority 1000) — and the FIRST provider to name a
+     * `loc` wins. Without this, two modules that both declare `/` put the home
+     * page into sitemap.xml twice, and a custom provider that knows an
+     * article's title and lastmod was shadowed by the default's bare copy.
+     *
+     * Public so the machine-readable summaries (/sitemap.json, llms.txt) can
+     * list the same pages the sitemap does, with titles when providers give them.
+     *
+     * @return list<SitemapUrl>
+     */
+    public function urls(SitemapGenerationContext $context): array
+    {
+        return $this->collectUrls($context);
+    }
+
+    /**
      * @return list<SitemapUrl>
      */
     private function collectUrls(SitemapGenerationContext $context): array
@@ -139,6 +172,7 @@ final class SitemapGenerator
             return [];
         }
 
+        /** @var array<string, SitemapUrl> $urls */
         $urls = [];
 
         foreach ($this->registry->getProvidersForTenant($context->tenantContext) as $providerMeta) {
@@ -151,8 +185,8 @@ final class SitemapGenerator
                 $providerUrls = $provider->provideUrls($context);
                 /** @var iterable<mixed> $providerUrls */
                 foreach ($providerUrls as $url) {
-                    if ($url instanceof SitemapUrl) {
-                        $urls[] = $url;
+                    if ($url instanceof SitemapUrl && !isset($urls[$url->loc])) {
+                        $urls[$url->loc] = $url;
                     }
                 }
             } catch (\Throwable $e) {
@@ -164,7 +198,7 @@ final class SitemapGenerator
             }
         }
 
-        return $urls;
+        return array_values($urls);
     }
 
     private function resolveProvider(string $className): ?SitemapUrlProviderInterface
@@ -292,13 +326,14 @@ final class SitemapGenerator
 
     private function atomicWrite(string $path, string $content): void
     {
-        $tmpPath = $path . '.tmp.' . getmypid();
+        // Unique per write: getmypid() alone is shared by every coroutine of a worker.
+        $tmpPath = $path . '.tmp.' . getmypid() . '.' . bin2hex(random_bytes(6));
 
-        if (file_put_contents($tmpPath, $content) === false) {
+        if (@file_put_contents($tmpPath, $content) === false) {
             throw new \RuntimeException(sprintf('Failed to write temporary sitemap file: %s', $tmpPath));
         }
 
-        if (!rename($tmpPath, $path)) {
+        if (!@rename($tmpPath, $path)) {
             @unlink($tmpPath);
             throw new \RuntimeException(sprintf('Failed to rename temporary sitemap file: %s → %s', $tmpPath, $path));
         }

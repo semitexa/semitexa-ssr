@@ -4,18 +4,34 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Seo;
 
-use Semitexa\Core\Auth\PayloadAccessType;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Discovery\AttributeDiscovery;
 use Semitexa\Core\Request;
+use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Core\Tenant\TenantContextInterface;
+use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapGenerationContext;
+use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapGenerator;
+use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapRouteEligibility;
+use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapUrl;
 
+/**
+ * /sitemap.json — the route inventory offered to machine agents.
+ *
+ * Eligibility is the sitemap's own ({@see SitemapRouteEligibility}): the tenant
+ * being served, public GET routes, nothing under '/__', no machine files, no
+ * #[NotInSitemap] payloads — and each path once. Pages that only a sitemap
+ * provider knows about (a blog article, say) are appended with the title and
+ * description the provider gave them.
+ */
 #[AsService]
 final class AiSitemapJsonRenderer
 {
     #[InjectAsReadonly]
     protected AttributeDiscovery $attributeDiscovery;
+
+    #[InjectAsReadonly]
+    protected SitemapGenerator $sitemapGenerator;
 
     public function render(?Request $request = null, ?TenantContextInterface $tenantContext = null): string
     {
@@ -37,12 +53,20 @@ final class AiSitemapJsonRenderer
         $routes = $this->attributeDiscovery->getRoutes();
         usort($routes, static fn (array $a, array $b): int => ($a['path'] ?? '') <=> ($b['path'] ?? ''));
 
+        /** @var array<string, true> $seenPaths */
+        $seenPaths = [];
+
         foreach ($routes as $route) {
-            if (!$this->isEligibleRoute($route)) {
+            if (!SitemapRouteEligibility::isInTenantScope($route, $tenantContext) || !$this->isEligibleRoute($route)) {
                 continue;
             }
 
             $path = (string) $route['path'];
+            // Several modules may declare the same path; the document lists it once.
+            if (isset($seenPaths[$path])) {
+                continue;
+            }
+            $seenPaths[$path] = true;
             $entry = $this->buildRouteEntry($route, $path, $request, $tenantContext);
 
             if ($this->isTemplatedPath($path)) {
@@ -60,6 +84,10 @@ final class AiSitemapJsonRenderer
 
             $endpoints[] = $entry;
         }
+
+        $providerUrls = $this->providerUrls($request, $tenantContext);
+        $pages = $this->withProviderMetadata($pages, $providerUrls);
+        $pages = [...$pages, ...$this->providerPages($pages, $endpoints, $providerUrls)];
 
         return [
             'version' => '1.0',
@@ -108,24 +136,111 @@ final class AiSitemapJsonRenderer
     }
 
     /**
+     * @return list<SitemapUrl>
+     */
+    private function providerUrls(?Request $request, ?TenantContextInterface $tenantContext): array
+    {
+        if (!isset($this->sitemapGenerator)) {
+            return [];
+        }
+
+        try {
+            return $this->sitemapGenerator->urls(new SitemapGenerationContext(
+                baseUrl: AiSitemapLocator::originUrl($request, $tenantContext),
+                tenantContext: $tenantContext,
+            ));
+        } catch (\Throwable $e) {
+            StaticLoggerBridge::warning('ssr', 'AI sitemap could not collect provider pages', [
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+            ]);
+
+            return [];
+        }
+    }
+
+    /**
+     * A listed route page takes the title, description and lastmod a provider
+     * gives its URL — the route itself carries none of them.
+     *
+     * @param list<array<string, mixed>> $pages
+     * @param list<SitemapUrl> $providerUrls
+     * @return list<array<string, mixed>>
+     */
+    private function withProviderMetadata(array $pages, array $providerUrls): array
+    {
+        $byLoc = [];
+        foreach ($providerUrls as $url) {
+            $byLoc[$url->loc] ??= $url;
+        }
+
+        foreach ($pages as $i => $page) {
+            $url = $byLoc[(string) $page['url']] ?? null;
+            if ($url === null) {
+                continue;
+            }
+            $pages[$i] += array_filter([
+                'title' => $url->title,
+                'description' => $url->description,
+                'lastmod' => $url->lastmod?->format(DATE_ATOM),
+            ], static fn (mixed $value): bool => $value !== null);
+        }
+
+        return $pages;
+    }
+
+    /**
+     * Pages a sitemap provider vouches for that no listed route already covers.
+     *
+     * @param list<array<string, mixed>> $pages
+     * @param list<array<string, mixed>> $endpoints
+     * @param list<SitemapUrl> $providerUrls
+     * @return list<array<string, mixed>>
+     */
+    private function providerPages(array $pages, array $endpoints, array $providerUrls): array
+    {
+        $listed = [];
+        foreach ([...$pages, ...$endpoints] as $entry) {
+            $listed[(string) $entry['url']] = true;
+        }
+
+        $extra = [];
+        foreach ($providerUrls as $url) {
+            if (isset($listed[$url->loc])) {
+                continue;
+            }
+            $listed[$url->loc] = true;
+            $extra[] = $this->buildProviderEntry($url);
+        }
+
+        return $extra;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function buildProviderEntry(SitemapUrl $url): array
+    {
+        $path = parse_url($url->loc, PHP_URL_PATH);
+
+        return array_filter([
+            'path' => is_string($path) && $path !== '' ? $path : '/',
+            'url' => $url->loc,
+            'title' => $url->title,
+            'description' => $url->description,
+            'lastmod' => $url->lastmod?->format(DATE_ATOM),
+            'source' => 'sitemap_provider',
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * Tenant-independent eligibility — the same rules sitemap.xml applies.
+     *
      * @param array<string, mixed> $route
      */
     private function isEligibleRoute(array $route): bool
     {
-        if (self::accessTypeOf($route) !== 'public') {
-            return false;
-        }
-
-        $path = (string) ($route['path'] ?? '');
-        if ($path === '' || str_starts_with($path, '/__semitexa_')) {
-            return false;
-        }
-
-        if (in_array($path, ['/robots.txt', '/llms.txt', AiSitemapLocator::PATH], true)) {
-            return false;
-        }
-
-        return in_array('GET', $this->normalizeMethods($route), true);
+        return SitemapRouteEligibility::isListable($route);
     }
 
     /**
@@ -153,14 +268,7 @@ final class AiSitemapJsonRenderer
      */
     private function normalizeMethods(array $route): array
     {
-        $methods = $route['methods'] ?? [$route['method'] ?? 'GET'];
-        $normalized = array_values(array_unique(array_map(
-            static fn (mixed $value): string => strtoupper(trim((string) $value)),
-            is_array($methods) ? $methods : [$methods]
-        )));
-        sort($normalized);
-
-        return array_values(array_filter($normalized, static fn (string $value): bool => $value !== ''));
+        return SitemapRouteEligibility::methodsOf($route);
     }
 
     /**
@@ -207,23 +315,5 @@ final class AiSitemapJsonRenderer
     ): string
     {
         return AiSitemapLocator::originUrl($request, $tenantContext) . '/' . ltrim($path, '/');
-    }
-
-    /**
-     * Routes carry accessType, a PayloadAccessType enum (or its string value in
-     * hand-built arrays). A raw route has no 'access' and no 'public' key; both
-     * were assumed at different times and each silently rejected every route.
-     *
-     * @param array<string, mixed> $route
-     */
-    private static function accessTypeOf(array $route): ?string
-    {
-        $value = $route['accessType'] ?? null;
-
-        if ($value instanceof PayloadAccessType) {
-            return $value->value;
-        }
-
-        return is_string($value) && $value !== '' ? $value : null;
     }
 }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Tests\Unit\Seo;
 
 require_once __DIR__ . '/Fixture/SitemapTestKit.php';
+require_once __DIR__ . '/Fixture/OversizedSitemapProvider.php';
 
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
@@ -17,6 +18,7 @@ use Semitexa\Ssr\Application\Payload\Request\SitemapPartPayload;
 use Semitexa\Ssr\Application\Payload\Request\SitemapXmlPayload;
 use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapGenerator;
 use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapStoragePath;
+use Semitexa\Ssr\Tests\Unit\Seo\Fixture\OversizedSitemapProvider;
 use Semitexa\Ssr\Tests\Unit\Seo\Fixture\SitemapTestKit;
 use Semitexa\Tenancy\Context\TenantContext;
 
@@ -161,6 +163,30 @@ final class GeneratedSitemapCacheTest extends TestCase
 
         self::assertSame(200, $response->getStatusCode());
         self::assertSame('<urlset><!-- part one --></urlset>', $response->getContent());
+    }
+
+    /**
+     * An unwritable sitemap directory still serves an index generated in
+     * memory; its parts must be served the same way instead of 404ing.
+     */
+    #[Test]
+    public function a_part_is_served_from_memory_when_the_directory_cannot_be_written(): void
+    {
+        $dir = SitemapStoragePath::generatedDirectory($this->tenant());
+        mkdir(dirname($dir), 0777, true);
+        file_put_contents($dir, 'not a directory'); // mkdir and every write under it fail, even as root
+
+        $handler = new SitemapPartHandler();
+        SitemapTestKit::set($handler, 'request', new Request('GET', '/sitemap-2.xml', ['Host' => 'museum.test'], [], [], ['HTTP_HOST' => 'museum.test'], []));
+        SitemapTestKit::set($handler, 'tenantContext', $this->tenant());
+        SitemapTestKit::set($handler, 'generator', SitemapTestKit::generator([OversizedSitemapProvider::class]));
+        $payload = new SitemapPartPayload();
+        $payload->part = '2';
+
+        $response = $handler->handle($payload, new ResourceResponse());
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertStringContainsString('/item/' . OversizedSitemapProvider::COUNT . '</loc>', (string) $response->getContent());
     }
 
     private function writeGenerated(int $age): string

@@ -95,15 +95,15 @@ final class SitemapPartHandler implements TypedHandlerInterface
             return null;
         }
 
-        $result = $this->generator->generateAndWrite(new SitemapGenerationContext(
+        $generated = $this->generator->generate(new SitemapGenerationContext(
             baseUrl: AiSitemapLocator::originUrl($this->request, $this->tenantContext),
             tenantContext: $this->tenantContext,
-        ), $generatedDir);
+        ));
+        // Served from what was just generated, not re-read from disk: when the
+        // directory cannot be written, sitemap.xml still serves an index built
+        // in memory, and its parts must answer the same way rather than 404.
+        $this->generator->write($generated, $generatedDir);
 
-        if (!$result->success) {
-            return null;
-        }
-
-        return GeneratedSitemapCache::readFresh($generatedDir . '/' . $filename, PHP_INT_MAX);
+        return $generated['parts'][$filename] ?? null;
     }
 }

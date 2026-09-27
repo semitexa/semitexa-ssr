@@ -91,7 +91,10 @@ final class SitemapPartHandler implements TypedHandlerInterface
         // A fresh index means the set is current and this part simply does not
         // exist; regenerating on every unknown part name would hand anyone a
         // way to run the generator at will.
-        if (!isset($this->generator) || $indexIsFresh) {
+        // Only a name the generator can produce may start a regeneration:
+        // with an unwritable directory the index never turns fresh, and any
+        // other name would run the generator on every request.
+        if (!isset($this->generator) || $indexIsFresh || preg_match('/^sitemap-\d+\.xml$/', $filename) !== 1) {
             return null;
         }
 

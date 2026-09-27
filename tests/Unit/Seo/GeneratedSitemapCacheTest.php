@@ -6,6 +6,7 @@ namespace Semitexa\Ssr\Tests\Unit\Seo;
 
 require_once __DIR__ . '/Fixture/SitemapTestKit.php';
 require_once __DIR__ . '/Fixture/OversizedSitemapProvider.php';
+require_once __DIR__ . '/Fixture/CountingSitemapProvider.php';
 
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
@@ -18,6 +19,7 @@ use Semitexa\Ssr\Application\Payload\Request\SitemapPartPayload;
 use Semitexa\Ssr\Application\Payload\Request\SitemapXmlPayload;
 use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapGenerator;
 use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapStoragePath;
+use Semitexa\Ssr\Tests\Unit\Seo\Fixture\CountingSitemapProvider;
 use Semitexa\Ssr\Tests\Unit\Seo\Fixture\OversizedSitemapProvider;
 use Semitexa\Ssr\Tests\Unit\Seo\Fixture\SitemapTestKit;
 use Semitexa\Tenancy\Context\TenantContext;
@@ -187,6 +189,28 @@ final class GeneratedSitemapCacheTest extends TestCase
 
         self::assertSame(200, $response->getStatusCode());
         self::assertStringContainsString('/item/' . OversizedSitemapProvider::COUNT . '</loc>', (string) $response->getContent());
+    }
+
+    /** A part name the generator never produces must not trigger a regeneration. */
+    #[Test]
+    public function an_unknown_part_name_does_not_regenerate(): void
+    {
+        $dir = SitemapStoragePath::generatedDirectory($this->tenant());
+        mkdir(dirname($dir), 0777, true);
+        file_put_contents($dir, 'not a directory');
+
+        $handler = new SitemapPartHandler();
+        SitemapTestKit::set($handler, 'request', new Request('GET', '/sitemap-news.xml', ['Host' => 'museum.test'], [], [], ['HTTP_HOST' => 'museum.test'], []));
+        SitemapTestKit::set($handler, 'tenantContext', $this->tenant());
+        SitemapTestKit::set($handler, 'generator', SitemapTestKit::generator([CountingSitemapProvider::class]));
+        $payload = new SitemapPartPayload();
+        $payload->part = 'news';
+
+        CountingSitemapProvider::$calls = 0;
+        $response = $handler->handle($payload, new ResourceResponse());
+
+        self::assertSame(404, $response->getStatusCode());
+        self::assertSame(0, CountingSitemapProvider::$calls, 'an unknown part name ran the generator');
     }
 
     private function writeGenerated(int $age): string

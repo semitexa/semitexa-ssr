@@ -101,7 +101,7 @@ final class GeneratedSitemapCacheTest extends TestCase
         self::assertStringStartsWith('<?xml', (string) $response->getContent());
         self::assertStringNotContainsString(self::STALE_MARKER, (string) $response->getContent());
         self::assertStringStartsWith('<?xml', (string) file_get_contents($path), 'the regenerated index must replace the old file');
-        self::assertSame(GeneratedSitemapCache::codeIdentity(), file_get_contents(dirname($path) . '/sitemap.code'));
+        self::assertStringContainsString('<!-- semitexa-code: ' . GeneratedSitemapCache::codeIdentity() . ' -->', (string) file_get_contents($path));
     }
 
     /** An index from before stamps existed is the first deploy after this change: regenerate once. */
@@ -112,8 +112,7 @@ final class GeneratedSitemapCacheTest extends TestCase
 
         $this->serve();
 
-        self::assertStringStartsWith('<?xml', (string) file_get_contents($path));
-        self::assertFileExists(dirname($path) . '/sitemap.code');
+        self::assertStringContainsString('<!-- semitexa-code: ' . GeneratedSitemapCache::codeIdentity() . ' -->', (string) file_get_contents($path));
     }
 
     /**
@@ -149,6 +148,38 @@ final class GeneratedSitemapCacheTest extends TestCase
 
         self::assertSame(200, $response->getStatusCode());
         self::assertSame('<urlset><!-- part one --></urlset>', $response->getContent());
+    }
+
+    /**
+     * Reviewed on ssr#135: with the identity in a second file, an old-release
+     * worker's index could land between a new worker's index and its stamp and
+     * be vouched for. The identity now travels inside the index, one rename.
+     */
+    #[Test]
+    public function the_written_index_carries_its_own_identity_and_nothing_else_does(): void
+    {
+        $dir = SitemapStoragePath::generatedDirectory($this->tenant());
+        $written = SitemapTestKit::generator([OversizedSitemapProvider::class]);
+        $written->write($written->generate(new \Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapGenerationContext(
+            baseUrl: 'https://museum.test',
+            tenantContext: $this->tenant(),
+        )), $dir);
+
+        self::assertNotNull(GeneratedSitemapCache::readFreshIndex($dir));
+        self::assertNull(GeneratedSitemapCache::readFreshIndex($dir, codeIdentity: str_repeat('0', 64)));
+        self::assertSame(['sitemap-1.xml', 'sitemap-2.xml', 'sitemap.xml'], array_values(array_filter(
+            scandir($dir) ?: [],
+            static fn (string $f): bool => $f[0] !== '.',
+        )));
+    }
+
+    #[Test]
+    public function a_stamp_follows_the_xml_declaration(): void
+    {
+        self::assertSame(
+            '<?xml version="1.0"?>' . "\n" . '<!-- semitexa-code: abc -->' . "\n" . '<urlset/>',
+            GeneratedSitemapCache::stamp('<?xml version="1.0"?>' . "\n" . '<urlset/>', 'abc'),
+        );
     }
 
     #[Test]
@@ -299,7 +330,9 @@ final class GeneratedSitemapCacheTest extends TestCase
         file_put_contents($path, '<urlset><url><loc>' . self::STALE_MARKER . '</loc></url></urlset>');
         touch($path, time() - $age);
         if ($codeStamp !== null) {
-            file_put_contents($dir . '/sitemap.code', $codeStamp === false ? (string) GeneratedSitemapCache::codeIdentity() : $codeStamp);
+            $xml = (string) file_get_contents($path);
+            file_put_contents($path, GeneratedSitemapCache::stamp($xml, $codeStamp === false ? (string) GeneratedSitemapCache::codeIdentity() : $codeStamp));
+            touch($path, time() - $age);
         }
 
         return $path;

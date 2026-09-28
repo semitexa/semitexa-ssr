@@ -21,14 +21,20 @@ use Semitexa\Core\Environment;
  * Age alone does not cover a deploy: a release that adds routes or articles
  * kept serving the previous code's sitemap until the TTL ran out — MEASURED on
  * production twice, and cleared by hand both times. So the index also records
- * which code wrote it ({@see self::CODE_STAMP}, written last by
- * SitemapGenerator::write()), and an index written by other code is stale.
+ * which code wrote it — inside the file, as a leading XML comment
+ * ({@see self::stamp()}), published by the same atomic rename as the index. A
+ * separate stamp file could be interleaved with a concurrent write from the
+ * previous release's worker and vouch for its index; one file cannot.
  *
  * The code is identified by the package set this process loaded
- * (Composer\InstalledVersions), not by file times: mtimes tie within a second,
- * and a worker still running the old code after `composer install` must not
- * stamp its old sitemap with the new release. Parts carry no stamp of their
- * own — their index decides for them (SitemapPartHandler).
+ * (Composer\InstalledVersions: every package's version and commit reference),
+ * not by file times: mtimes tie within a second, and a worker still running
+ * the old code after `composer install` must not pass its sitemap off as the
+ * new release's. That covers how Semitexa ships code — packages, including the
+ * site's own content packages. Root-project code edited in place without a
+ * composer run changes nothing Composer records; the TTL bounds it, and
+ * `bin/semitexa sitemap:generate` refreshes at once. Parts carry no stamp —
+ * their index decides for them (SitemapPartHandler).
  *
  * Manual overrides (sitemap.xml at the project root or in public/) are not
  * caches and are never aged.
@@ -36,7 +42,7 @@ use Semitexa\Core\Environment;
 final class GeneratedSitemapCache
 {
     public const int DEFAULT_TTL_SECONDS = 86_400;
-    public const string CODE_STAMP = 'sitemap.code';
+    private const string STAMP_PREFIX = '<!-- semitexa-code: ';
     public const string TTL_ENV = 'SITEMAP_CACHE_TTL';
 
     /** Maximum age of a generated file, from SITEMAP_CACHE_TTL (seconds). */
@@ -53,8 +59,8 @@ final class GeneratedSitemapCache
     /**
      * The index in $dir when it is younger than the TTL and was written by the
      * code serving this request; null otherwise. Without Composer metadata to
-     * identify the code, age alone decides. A missing or unreadable stamp —
-     * an index from before stamps existed, say — is stale.
+     * identify the code, age alone decides. An index without a stamp — one
+     * from before stamps existed, say — is stale.
      */
     public static function readFreshIndex(
         string $dir,
@@ -72,11 +78,38 @@ final class GeneratedSitemapCache
             return $content;
         }
 
-        $stampPath = $dir . '/' . self::CODE_STAMP;
-        clearstatcache(true, $stampPath);
-        $stamp = is_file($stampPath) ? @file_get_contents($stampPath) : false;
+        return hash_equals($current, (string) self::stampOf($content)) ? $content : null;
+    }
 
-        return is_string($stamp) && hash_equals($current, trim($stamp)) ? $content : null;
+    /**
+     * $xml with the identity of the code that generated it, as a comment right
+     * after the XML declaration — so the index and its identity are one file.
+     */
+    public static function stamp(string $xml, string $codeIdentity): string
+    {
+        $comment = self::STAMP_PREFIX . $codeIdentity . ' -->';
+        if (str_starts_with($xml, '<?xml')) {
+            $end = strpos($xml, '?>');
+            if ($end !== false) {
+                return substr($xml, 0, $end + 2) . "\n" . $comment . substr($xml, $end + 2);
+            }
+        }
+
+        return $comment . "\n" . $xml;
+    }
+
+    /** The identity stamped into an index; null when it carries none. */
+    private static function stampOf(string $xml): ?string
+    {
+        $head = substr($xml, 0, 256);
+        $at = strpos($head, self::STAMP_PREFIX);
+        if ($at === false) {
+            return null;
+        }
+        $rest = substr($head, $at + strlen(self::STAMP_PREFIX));
+        $end = strpos($rest, ' -->');
+
+        return $end === false ? null : substr($rest, 0, $end);
     }
 
     /**

@@ -115,17 +115,15 @@ final class SitemapGenerator
                 $filesWritten++;
             }
 
-            // Write primary sitemap.xml last
-            $this->atomicWrite($outputDir . '/sitemap.xml', $result['xml']);
-            $filesWritten++;
-
-            // Then the stamp of the code that wrote it. Last on purpose: a
-            // crash before it leaves a new index with an old stamp, which reads
-            // as stale and regenerates — never an old index passed as current.
+            // Write primary sitemap.xml last, stamped with the code that wrote
+            // it: one file, one rename, so the index and its identity can never
+            // come from two different writers.
             $identity = GeneratedSitemapCache::codeIdentity();
-            if ($identity !== null) {
-                $this->atomicWrite($outputDir . '/' . GeneratedSitemapCache::CODE_STAMP, $identity);
-            }
+            $this->atomicWrite(
+                $outputDir . '/sitemap.xml',
+                $identity === null ? $result['xml'] : GeneratedSitemapCache::stamp($result['xml'], $identity),
+            );
+            $filesWritten++;
         } catch (\Throwable $e) {
             StaticLoggerBridge::error('ssr', 'Sitemap write failed', [
                 'exception' => $e::class,

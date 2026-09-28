@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service\Seo\Sitemap;
 
 use Semitexa\Core\Environment;
+use Semitexa\Core\Support\ProjectRoot;
 
 /**
  * A generated sitemap file is a cache, and a cache has a maximum age.
@@ -16,6 +17,13 @@ use Semitexa\Core\Environment;
  * ~95 URLs of another tenant that 404 on the domain serving it. A persisted
  * sitemap must not depend on a scheduler to ever change: past its age it is
  * ignored and regenerated on the next request.
+ *
+ * Age alone does not cover a deploy: a release that adds routes or articles
+ * kept serving the previous code's sitemap until the TTL ran out — MEASURED on
+ * production twice, and cleared by hand both times. A file written before the
+ * installed code is stale too. The code's age is the mtime of
+ * vendor/composer/installed.php, which composer rewrites on every install and
+ * update, so auto-deploy, a manual deploy and local work are covered alike.
  *
  * Manual overrides (sitemap.xml at the project root or in public/) are not
  * caches and are never aged.
@@ -37,8 +45,9 @@ final class GeneratedSitemapCache
     }
 
     /**
-     * The file's content when it exists and is younger than $ttlSeconds; null
-     * when it is missing, unreadable, or stale.
+     * The file's content when it exists, is younger than $ttlSeconds and was
+     * written after the installed code; null when it is missing, unreadable,
+     * or stale.
      */
     public static function readFresh(string $path, ?int $ttlSeconds = null, ?int $now = null): ?string
     {
@@ -57,8 +66,23 @@ final class GeneratedSitemapCache
             return null;
         }
 
+        $codeInstalledAt = self::codeInstalledAt();
+        if ($codeInstalledAt !== null && $mtime < $codeInstalledAt) {
+            return null;
+        }
+
         $content = file_get_contents($path);
 
         return $content === false ? null : $content;
+    }
+
+    /** When composer last wrote vendor/; null when there is no composer-managed vendor to ask. */
+    private static function codeInstalledAt(): ?int
+    {
+        $marker = ProjectRoot::get() . '/vendor/composer/installed.php';
+        clearstatcache(true, $marker);
+        $mtime = @filemtime($marker);
+
+        return $mtime === false ? null : $mtime;
     }
 }

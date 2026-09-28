@@ -82,6 +82,56 @@ final class GeneratedSitemapCacheTest extends TestCase
         self::assertStringContainsString(self::STALE_MARKER, $this->serve());
     }
 
+    /**
+     * MEASURED on semitexa.com, 2026-09-27 and again 2026-09-28: auto-deploy
+     * installed a site release whose sitemap lists every article, and
+     * /sitemap.xml kept serving the 4 URLs the previous code had written the day
+     * before — inside the TTL, and on disk, so no restart helped. Twice the
+     * cache was moved aside by hand. Code newer than the file makes it stale.
+     */
+    #[Test]
+    public function a_file_written_before_the_installed_code_is_regenerated(): void
+    {
+        $path = $this->writeGenerated(age: 3_600);
+        $this->installCode(age: 60);
+
+        $served = $this->serve();
+
+        self::assertStringNotContainsString(self::STALE_MARKER, $served, 'a sitemap from the previous code was served after a deploy');
+        self::assertStringNotContainsString(self::STALE_MARKER, (string) file_get_contents($path));
+    }
+
+    /** The regenerated file is newer than the code, so it is served from then on. */
+    #[Test]
+    public function a_file_written_after_the_installed_code_is_served(): void
+    {
+        $this->installCode(age: 3_600);
+        $this->writeGenerated(age: 60);
+
+        self::assertStringContainsString(self::STALE_MARKER, $this->serve());
+    }
+
+    /** The index decides for its parts: a deploy must not leave the old parts behind a new index. */
+    #[Test]
+    public function a_part_from_before_the_installed_code_is_not_served(): void
+    {
+        $dir = dirname($this->writeGenerated(age: 3_600));
+        file_put_contents($dir . '/sitemap-1.xml', '<urlset><!-- old part --></urlset>');
+        touch($dir . '/sitemap-1.xml', time() - 3_600);
+        $this->installCode(age: 60);
+
+        $handler = new SitemapPartHandler();
+        SitemapTestKit::set($handler, 'request', new Request('GET', '/sitemap-1.xml', ['Host' => 'museum.test'], [], [], ['HTTP_HOST' => 'museum.test'], []));
+        SitemapTestKit::set($handler, 'tenantContext', $this->tenant());
+        SitemapTestKit::set($handler, 'generator', new SitemapGenerator());
+        $payload = new SitemapPartPayload();
+        $payload->part = '1';
+
+        $response = $handler->handle($payload, new ResourceResponse());
+
+        self::assertStringNotContainsString('old part', (string) $response->getContent());
+    }
+
     #[Test]
     public function the_max_age_comes_from_sitemap_cache_ttl(): void
     {
@@ -228,6 +278,15 @@ final class GeneratedSitemapCacheTest extends TestCase
         touch($path, time() - $age);
 
         return $path;
+    }
+
+    /** What composer does on every install and update: rewrite vendor/composer/installed.php. */
+    private function installCode(int $age): void
+    {
+        @mkdir($this->root . '/vendor/composer', 0777, true);
+        $marker = $this->root . '/vendor/composer/installed.php';
+        file_put_contents($marker, '<?php return [];');
+        touch($marker, time() - $age);
     }
 
     private function serve(): string

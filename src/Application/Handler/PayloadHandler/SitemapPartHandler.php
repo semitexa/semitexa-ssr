@@ -67,7 +67,7 @@ final class SitemapPartHandler implements TypedHandlerInterface
     private function resolvePart(string $filename): ?string
     {
         $generatedDir = SitemapStoragePath::generatedDirectory($this->tenantContext);
-        $indexIsFresh = GeneratedSitemapCache::readFresh($generatedDir . '/sitemap.xml') !== null;
+        $indexIsFresh = GeneratedSitemapCache::readFreshIndex($generatedDir) !== null;
 
         if ($indexIsFresh) {
             $content = GeneratedSitemapCache::readFresh($generatedDir . '/' . $filename, PHP_INT_MAX);

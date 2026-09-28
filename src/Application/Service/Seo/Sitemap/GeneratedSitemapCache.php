@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Seo\Sitemap;
 
+use Composer\InstalledVersions;
 use Semitexa\Core\Environment;
-use Semitexa\Core\Support\ProjectRoot;
 
 /**
  * A generated sitemap file is a cache, and a cache has a maximum age.
@@ -20,10 +20,15 @@ use Semitexa\Core\Support\ProjectRoot;
  *
  * Age alone does not cover a deploy: a release that adds routes or articles
  * kept serving the previous code's sitemap until the TTL ran out — MEASURED on
- * production twice, and cleared by hand both times. A file written before the
- * installed code is stale too. The code's age is the mtime of
- * vendor/composer/installed.php, which composer rewrites on every install and
- * update, so auto-deploy, a manual deploy and local work are covered alike.
+ * production twice, and cleared by hand both times. So the index also records
+ * which code wrote it ({@see self::CODE_STAMP}, written last by
+ * SitemapGenerator::write()), and an index written by other code is stale.
+ *
+ * The code is identified by the package set this process loaded
+ * (Composer\InstalledVersions), not by file times: mtimes tie within a second,
+ * and a worker still running the old code after `composer install` must not
+ * stamp its old sitemap with the new release. Parts carry no stamp of their
+ * own — their index decides for them (SitemapPartHandler).
  *
  * Manual overrides (sitemap.xml at the project root or in public/) are not
  * caches and are never aged.
@@ -31,6 +36,7 @@ use Semitexa\Core\Support\ProjectRoot;
 final class GeneratedSitemapCache
 {
     public const int DEFAULT_TTL_SECONDS = 86_400;
+    public const string CODE_STAMP = 'sitemap.code';
     public const string TTL_ENV = 'SITEMAP_CACHE_TTL';
 
     /** Maximum age of a generated file, from SITEMAP_CACHE_TTL (seconds). */
@@ -45,9 +51,50 @@ final class GeneratedSitemapCache
     }
 
     /**
-     * The file's content when it exists, is younger than $ttlSeconds and was
-     * written after the installed code; null when it is missing, unreadable,
-     * or stale.
+     * The index in $dir when it is younger than the TTL and was written by the
+     * code serving this request; null otherwise. Without Composer metadata to
+     * identify the code, age alone decides. A missing or unreadable stamp —
+     * an index from before stamps existed, say — is stale.
+     */
+    public static function readFreshIndex(
+        string $dir,
+        ?int $ttlSeconds = null,
+        ?int $now = null,
+        ?string $codeIdentity = null,
+    ): ?string {
+        $content = self::readFresh($dir . '/sitemap.xml', $ttlSeconds, $now);
+        if ($content === null) {
+            return null;
+        }
+
+        $current = $codeIdentity ?? self::codeIdentity();
+        if ($current === null) {
+            return $content;
+        }
+
+        $stampPath = $dir . '/' . self::CODE_STAMP;
+        clearstatcache(true, $stampPath);
+        $stamp = is_file($stampPath) ? @file_get_contents($stampPath) : false;
+
+        return is_string($stamp) && hash_equals($current, trim($stamp)) ? $content : null;
+    }
+
+    /**
+     * Identity of the code this process runs: a hash of the package set it
+     * loaded. Null when Composer's runtime API is unavailable.
+     */
+    public static function codeIdentity(): ?string
+    {
+        if (!class_exists(InstalledVersions::class)) {
+            return null;
+        }
+
+        return hash('sha256', serialize(InstalledVersions::getAllRawData()));
+    }
+
+    /**
+     * The file's content when it exists and is younger than $ttlSeconds; null
+     * when it is missing, unreadable, or stale.
      */
     public static function readFresh(string $path, ?int $ttlSeconds = null, ?int $now = null): ?string
     {
@@ -66,23 +113,8 @@ final class GeneratedSitemapCache
             return null;
         }
 
-        $codeInstalledAt = self::codeInstalledAt();
-        if ($codeInstalledAt !== null && $mtime < $codeInstalledAt) {
-            return null;
-        }
-
         $content = file_get_contents($path);
 
         return $content === false ? null : $content;
-    }
-
-    /** When composer last wrote vendor/; null when there is no composer-managed vendor to ask. */
-    private static function codeInstalledAt(): ?int
-    {
-        $marker = ProjectRoot::get() . '/vendor/composer/installed.php';
-        clearstatcache(true, $marker);
-        $mtime = @filemtime($marker);
-
-        return $mtime === false ? null : $mtime;
     }
 }

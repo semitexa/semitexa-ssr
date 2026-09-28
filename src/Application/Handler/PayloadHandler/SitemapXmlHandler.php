@@ -42,9 +42,10 @@ final class SitemapXmlHandler implements TypedHandlerInterface
     {
         $projectRoot = ProjectRoot::get();
 
-        // A generated file is a cache with a maximum age (GeneratedSitemapCache);
-        // a stale one is regenerated rather than served for ever.
-        $generated = GeneratedSitemapCache::readFresh($this->resolveGeneratedSitemapDirectory() . '/sitemap.xml');
+        // A generated file is a cache with a maximum age, written by a given
+        // release (GeneratedSitemapCache); a stale one is regenerated rather
+        // than served for ever or across a deploy.
+        $generated = GeneratedSitemapCache::readFreshIndex($this->resolveGeneratedSitemapDirectory());
         if ($generated !== null) {
             return $generated;
         }

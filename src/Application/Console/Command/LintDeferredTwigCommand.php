@@ -25,7 +25,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 final class LintDeferredTwigCommand extends Command
 {
     /** Why this check exists, and what taught us; ai:verify prints it when the lint fails. */
-    public const RATIONALE = 'Why: a deferred template in template mode is rendered on the client by a subset of Twig, and anything outside that subset is refused when the worker boots. Learned 2026-09-26: a fresh semitexa-ultimate install did not boot because its Hello deferred slot called trans() (ultimate#103).';
+    public const RATIONALE = 'Why: a deferred slot is rendered twice, by Twig on the server and by semitexa-twig.js on the client, and the client subset (no functions, no filters beyond |raw, no ternary) renders anything outside it as an empty string with no error, so text goes missing unseen. In development the slot is refused when it is published, at worker boot; in production it is only logged. Learned 2026-09-26: a fresh semitexa-ultimate install did not boot because its Hello deferred slot called trans() (ultimate#103).';
 
     #[InjectAsReadonly]
     protected ModuleRegistry $moduleRegistry;

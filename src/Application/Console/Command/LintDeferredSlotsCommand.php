@@ -43,6 +43,9 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 )]
 final class LintDeferredSlotsCommand extends Command
 {
+    /** Why this check exists, and what taught us; ai:verify prints it when the lint fails. */
+    public const RATIONALE = 'Why: a slot is deferred only when the resource declares it AND the template defers it; either half alone renders inline, silently, and the declaration reads to everyone afterwards as a decision that was taken. Learned 2026-09-16: a consumer project found its deferred slots rendering inline, and the workspace layouts named slots no resource declared.';
+
     #[InjectAsReadonly]
     protected ModuleRegistry $moduleRegistry;
 

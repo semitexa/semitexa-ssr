@@ -24,6 +24,9 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 )]
 final class LintDeferredTwigCommand extends Command
 {
+    /** Why this check exists, and what taught us; ai:verify prints it when the lint fails. */
+    public const RATIONALE = 'Why: a deferred template in template mode is rendered on the client by a subset of Twig, and anything outside that subset is refused when the worker boots. Learned 2026-09-26: a fresh semitexa-ultimate install did not boot because its Hello deferred slot called trans() (ultimate#103).';
+
     #[InjectAsReadonly]
     protected ModuleRegistry $moduleRegistry;
 

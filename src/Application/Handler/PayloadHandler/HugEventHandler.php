@@ -14,6 +14,7 @@ use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Core\Request;
 use Semitexa\Ssr\Application\Payload\Request\HugEventPayload;
 use Semitexa\Ssr\Application\Service\Component\ComponentEventReceiver;
+use Semitexa\Ssr\Application\Service\Stream\FeedStreamControl;
 use Semitexa\Ssr\Application\Service\UiEvent\InvalidUiEventEnvelopeException;
 use Semitexa\Ssr\Application\Service\UiEvent\NotConfiguredUiResponseDispatcher;
 use Semitexa\Ssr\Application\Service\UiEvent\SignedContext;
@@ -49,6 +50,10 @@ use Throwable;
  *   manifest id, component instance id, or future server-side metadata
  *   record. The backend resolves the actual handler from server-side
  *   metadata. The frontend must never provide handler identity.
+ *
+ * Two other bodies share the door: `{"componentEvent": {…}}` goes to
+ * {@see ComponentEventReceiver}, and `{"stream": {…}}` — attach, re-view or
+ * detach a feed on the page's KISS stream — goes to {@see FeedStreamControl}.
  *
  * The endpoint is intentionally single, unified, and source-kind-agnostic:
  * primitive / part / component / composite events all POST here, and the
@@ -97,6 +102,9 @@ final class HugEventHandler implements TypedHandlerInterface
     #[InjectAsReadonly]
     protected ComponentEventReceiver $componentEvents;
 
+    #[InjectAsReadonly]
+    protected FeedStreamControl $feedStreams;
+
     public function handle(HugEventPayload $payload, ResourceResponse $resource): ResourceResponse
     {
         $raw = $this->request->getJsonBody();
@@ -115,6 +123,12 @@ final class HugEventHandler implements TypedHandlerInterface
         // manifest; everything else is the canonical UI event envelope.
         if (array_key_exists('componentEvent', $raw)) {
             return $this->receiveComponentEvent($raw, $resource);
+        }
+        // Feed control — `{"stream": {op, feed, params, session,
+        // subscriptionId}}` attaches, re-views or detaches a feed on the page's
+        // KISS stream; the frames themselves only ever travel on KISS.
+        if (array_key_exists('stream', $raw)) {
+            return $this->controlStream($raw, $resource);
         }
 
         try {
@@ -209,6 +223,24 @@ final class HugEventHandler implements TypedHandlerInterface
             ->setContent(json_encode($accepted, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
     }
 
+    /**
+     * @param array<string, mixed> $raw
+     */
+    private function controlStream(array $raw, ResourceResponse $resource): ResourceResponse
+    {
+        if (count($raw) !== 1 || !is_array($raw['stream']) || array_is_list($raw['stream'])) {
+            throw new ValidationException([
+                'stream' => ['A feed control body is exactly {"stream": {…}}.'],
+            ]);
+        }
+        [$status, $body] = $this->feedStreams->control($raw['stream'], $this->request);
+
+        return $resource
+            ->setStatusCode($status)
+            ->setHeader('Content-Type', 'application/json; charset=utf-8')
+            ->setContent(json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+    }
+
     private function dispatcherFailureResult(): UiResponseDispatchResult
     {
         return new UiResponseDispatchResult(
@@ -282,6 +314,14 @@ final class HugEventHandler implements TypedHandlerInterface
     public function withDispatcher(UiResponseDispatcherInterface $dispatcher): self
     {
         $this->dispatcher = $dispatcher;
+
+        return $this;
+    }
+
+    /** Test seam for feed control; production injects it. */
+    public function withFeedStreams(FeedStreamControl $feedStreams): self
+    {
+        $this->feedStreams = $feedStreams;
 
         return $this;
     }

@@ -20,6 +20,7 @@ use Semitexa\Ssr\Domain\Contract\SubscriptionFactoryInterface;
 use Semitexa\Ssr\Domain\Model\SubscriptionRecord;
 use Predis\Client;
 use Swoole\Http\Request;
+use Semitexa\Ssr\Domain\Contract\FeedStreamSinkInterface;
 use Swoole\Http\Response;
 
 /**
@@ -37,7 +38,7 @@ use Swoole\Http\Response;
  * {@see SseRuntime} documents why null-until-wired is deliberate.
  */
 #[AsService]
-final class SseServer
+final class SseServer implements FeedStreamSinkInterface
 {
     /**
      * Strict shape for an anonymous bearer-channel subscriber id.
@@ -1621,6 +1622,8 @@ final class SseServer
             return false;
         }
 
+        // A HUG subscribe stamps its request's tenant; the owning worker refuses a mismatch.
+        $requesterTenantId ??= $routeName !== '' ? $this->currentTenantId() : null;
         $this->deliver($sessionId, SseControlFrame::subscribe($streamingId, $routePath, $routeMethod, $requestSnapshot, $routeName, $requesterTenantId));
 
         return true;

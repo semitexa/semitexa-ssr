@@ -551,4 +551,40 @@ final class HugEventHandlerTest extends TestCase
             }
         }
     }
+
+    #[Test]
+    public function a_feed_control_must_be_the_only_key(): void
+    {
+        try {
+            $this->handlerFor($this->postRequest(['stream' => ['op' => 'subscribe'], 'eventId' => 'e1']))
+                ->handle(new HugEventPayload(), new ResourceResponse());
+            self::fail('A mixed body must be refused.');
+        } catch (ValidationException $e) {
+            self::assertArrayHasKey('stream', $e->getErrorContext()['errors']);
+        }
+    }
+
+    #[Test]
+    public function a_feed_control_answers_with_the_controls_status_and_body(): void
+    {
+        $routes = new \Semitexa\Core\Discovery\RouteRegistry();
+        $control = (new \Semitexa\Ssr\Application\Service\Stream\FeedStreamControl())->withCollaborators(
+            $routes,
+            new \Semitexa\Core\Discovery\AttributeDiscovery(new \Semitexa\Core\Discovery\ClassDiscovery(), new \Semitexa\Core\ModuleRegistry(), new \Semitexa\Core\Discovery\RouteRegistry()),
+            static fn (): object => new \stdClass(),
+            new class implements \Semitexa\Ssr\Domain\Contract\FeedStreamSinkInterface {
+                public function submitSubscribe(string $sessionId, string $streamingId, string $routePath, string $routeMethod, array $requestSnapshot, string $routeName = '', ?string $requesterTenantId = null): bool { return true; }
+                public function submitViewChange(string $sessionId, array $params, ?string $streamingId = null): bool { return true; }
+                public function submitUnsubscribe(string $sessionId, string $streamingId): bool { return true; }
+            },
+        );
+
+        $response = $this->handlerFor($this->postRequest(['stream' => [
+            'op' => 'subscribe', 'feed' => 'no.such.feed', 'params' => [],
+            'session' => 'sse_' . str_repeat('a', 32), 'subscriptionId' => 'sse_' . str_repeat('b', 32),
+        ]]))->withFeedStreams($control)->handle(new HugEventPayload(), new ResourceResponse());
+
+        self::assertSame(404, $response->getStatusCode());
+        self::assertSame('unknown_feed', json_decode($response->getContent(), true)['reason']);
+    }
 }

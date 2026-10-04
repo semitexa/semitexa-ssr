@@ -420,7 +420,7 @@ final class ControlFrameReRunTest extends TestCase
 
             public function __construct(private readonly SubscriptionRecord $record, private readonly ReRunContext $context) {}
 
-            public function build(string $sessionId, string $streamingId, string $routePath, string $routeMethod, array $requestSnapshot, ?string $tenantId = null, ?string $tenantBlob = null): ?SubscriptionAttachment
+            public function build(string $sessionId, string $streamingId, string $routePath, string $routeMethod, array $requestSnapshot, ?string $tenantId = null, ?string $tenantBlob = null, string $routeName = ''): ?SubscriptionAttachment
             {
                 $this->seenTenantId = $tenantId;
                 $this->seenTenantBlob = $tenantBlob;
@@ -444,6 +444,67 @@ final class ControlFrameReRunTest extends TestCase
 
         self::assertSame('acme', $factory->seenTenantId, 'the connection-captured tenant id must be threaded into build()');
         self::assertSame('{"org":"acme"}', $factory->seenTenantBlob, 'the captured tenant blob must be threaded into build()');
+    }
+
+    #[Test]
+    public function a_named_subscribe_threads_the_route_name_into_the_factory(): void
+    {
+        $this->staticCoordinator();
+        $factory = $this->namedRecordingFactory();
+        AsyncResourceSseServer::setSubscriptionFactory($factory);
+        AsyncResourceSseServer::setReRunner($this->freshFrameReRunner());
+        $this->setTransport($this->captureTransport());
+        $this->seedSessionTenant('sess_a', 'acme', '{"org":"acme"}');
+
+        // A HUG-admitted feed is named and may have no path at all.
+        $this->drain('sess_a', [
+            '__ctrl' => 'subscribe', 'streaming_id' => 'str_b',
+            'route_path' => '', 'route_method' => 'GET', 'request_snapshot' => [],
+            'route_name' => 'platform-ui.form-doc', 'requester_tenant_id' => 'acme',
+        ]);
+
+        self::assertSame('platform-ui.form-doc', $factory->seenRouteName);
+    }
+
+    #[Test]
+    public function a_subscribe_from_another_tenant_is_denied_before_the_factory_runs(): void
+    {
+        $subs = $this->staticCoordinator();
+        $factory = $this->namedRecordingFactory();
+        AsyncResourceSseServer::setSubscriptionFactory($factory);
+        AsyncResourceSseServer::setReRunner($this->freshFrameReRunner());
+        $transport = $this->captureTransport();
+        $this->setTransport($transport);
+        // The KISS connection belongs to acme; the HUG request resolved globex.
+        $this->seedSessionTenant('sess_a', 'acme', '{"org":"acme"}');
+
+        $this->drain('sess_a', [
+            '__ctrl' => 'subscribe', 'streaming_id' => 'str_b',
+            'route_path' => '', 'route_method' => 'GET', 'request_snapshot' => [],
+            'route_name' => 'orders.feed', 'requester_tenant_id' => 'globex',
+        ]);
+
+        self::assertNull($factory->seenRouteName, 'a cross-tenant subscribe never reaches the factory');
+        self::assertFalse($subs->has('str_b'));
+        self::assertStringContainsString('subscribe_tenant_mismatch', $transport->frames[0]->toWire());
+    }
+
+    private function namedRecordingFactory(): SubscriptionFactoryInterface
+    {
+        return new class(
+            new SubscriptionRecord('str_b', 'sess_a', 'acme', ['orders'], '{"org":"acme"}'),
+            $this->reRunContext('sess_a'),
+        ) implements SubscriptionFactoryInterface {
+            public ?string $seenRouteName = null;
+
+            public function __construct(private readonly SubscriptionRecord $record, private readonly ReRunContext $context) {}
+
+            public function build(string $sessionId, string $streamingId, string $routePath, string $routeMethod, array $requestSnapshot, ?string $tenantId = null, ?string $tenantBlob = null, string $routeName = ''): ?SubscriptionAttachment
+            {
+                $this->seenRouteName = $routeName;
+                return new SubscriptionAttachment($this->record, $this->context);
+            }
+        };
     }
 
     #[Test]
@@ -478,7 +539,7 @@ final class ControlFrameReRunTest extends TestCase
         $subs = $this->staticCoordinator();
         // Factory returns null (route not found).
         AsyncResourceSseServer::setSubscriptionFactory(new class implements SubscriptionFactoryInterface {
-            public function build(string $sessionId, string $streamingId, string $routePath, string $routeMethod, array $requestSnapshot, ?string $tenantId = null, ?string $tenantBlob = null): ?SubscriptionAttachment
+            public function build(string $sessionId, string $streamingId, string $routePath, string $routeMethod, array $requestSnapshot, ?string $tenantId = null, ?string $tenantBlob = null, string $routeName = ''): ?SubscriptionAttachment
             {
                 return null;
             }
@@ -511,7 +572,7 @@ final class ControlFrameReRunTest extends TestCase
         AsyncResourceSseServer::setSubscriptionFactory(new class($attachment) implements SubscriptionFactoryInterface {
             public function __construct(private readonly SubscriptionAttachment $attachment) {}
 
-            public function build(string $sessionId, string $streamingId, string $routePath, string $routeMethod, array $requestSnapshot, ?string $tenantId = null, ?string $tenantBlob = null): ?SubscriptionAttachment
+            public function build(string $sessionId, string $streamingId, string $routePath, string $routeMethod, array $requestSnapshot, ?string $tenantId = null, ?string $tenantBlob = null, string $routeName = ''): ?SubscriptionAttachment
             {
                 return $this->attachment;
             }
@@ -590,7 +651,7 @@ final class ControlFrameReRunTest extends TestCase
         return new class($record, $context) implements SubscriptionFactoryInterface {
             public function __construct(private readonly SubscriptionRecord $record, private readonly ReRunContext $context) {}
 
-            public function build(string $sessionId, string $streamingId, string $routePath, string $routeMethod, array $requestSnapshot, ?string $tenantId = null, ?string $tenantBlob = null): ?SubscriptionAttachment
+            public function build(string $sessionId, string $streamingId, string $routePath, string $routeMethod, array $requestSnapshot, ?string $tenantId = null, ?string $tenantBlob = null, string $routeName = ''): ?SubscriptionAttachment
             {
                 return new SubscriptionAttachment($this->record, $this->context);
             }

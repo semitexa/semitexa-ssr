@@ -1608,18 +1608,20 @@ final class SseServer
         string $routePath,
         string $routeMethod,
         array $requestSnapshot,
+        string $routeName = '',
+        ?string $requesterTenantId = null,
     ): bool {
         $sessionId = trim($sessionId);
         $streamingId = trim($streamingId);
         if (
             $sessionId === '' || preg_match(self::SAFE_BEARER_SESSION_ID_PATTERN, $sessionId) !== 1
             || $streamingId === '' || preg_match(self::SAFE_BEARER_SESSION_ID_PATTERN, $streamingId) !== 1
-            || $routePath === ''
+            || ($routePath === '' && $routeName === '')
         ) {
             return false;
         }
 
-        $this->deliver($sessionId, SseControlFrame::subscribe($streamingId, $routePath, $routeMethod, $requestSnapshot));
+        $this->deliver($sessionId, SseControlFrame::subscribe($streamingId, $routePath, $routeMethod, $requestSnapshot, $routeName, $requesterTenantId));
 
         return true;
     }

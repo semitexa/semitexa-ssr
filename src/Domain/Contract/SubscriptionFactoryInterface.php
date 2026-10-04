@@ -44,6 +44,8 @@ interface SubscriptionFactoryInterface
      *        the tenant from the current coroutine (the standalone path / tests).
      * @param ?string $tenantBlob the matching opaque serialized tenant context; null
      *        falls back to the current coroutine's tenant, paired with $tenantId.
+     * @param string $routeName the feed's route name when it was subscribed through
+     *        HUG; a Hug-exposed feed has no path, so a name wins over $routePath.
      */
     public function build(
         string $sessionId,
@@ -53,5 +55,6 @@ interface SubscriptionFactoryInterface
         array $requestSnapshot,
         ?string $tenantId = null,
         ?string $tenantBlob = null,
+        string $routeName = '',
     ): ?SubscriptionAttachment;
 }

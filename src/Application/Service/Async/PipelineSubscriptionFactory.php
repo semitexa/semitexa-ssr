@@ -116,12 +116,16 @@ final class PipelineSubscriptionFactory implements SubscriptionFactoryInterface
         array $requestSnapshot,
         ?string $tenantId = null,
         ?string $tenantBlob = null,
+        string $routeName = '',
     ): ?SubscriptionAttachment {
-        $route = $this->routeRegistry->findRouteTyped(
-            $routePath,
-            $routeMethod !== '' ? $routeMethod : 'GET',
-            $this->attributeDiscovery->getHandlerRegistry(),
-        );
+        // Named when admitted through HUG (a Hug-exposed feed has no path).
+        $route = $routeName !== ''
+            ? $this->routeRegistry->findByNameTyped($routeName, $this->attributeDiscovery->getHandlerRegistry())
+            : $this->routeRegistry->findRouteTyped(
+                $routePath,
+                $routeMethod !== '' ? $routeMethod : 'GET',
+                $this->attributeDiscovery->getHandlerRegistry(),
+            );
         if ($route === null) {
             return null;
         }

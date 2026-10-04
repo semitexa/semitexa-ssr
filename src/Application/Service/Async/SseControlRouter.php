@@ -204,6 +204,14 @@ final class SseControlRouter
             return SseControlFrame::HANDLED_CONTINUE;
         }
 
+        // A subscription admitted on HUG carries the tenant its request resolved;
+        // it must be the tenant this KISS connection captured, or one tenant's
+        // page could attach another tenant's feed.
+        $requesterTenant = $data['requester_tenant_id'] ?? null;
+        if (is_string($requesterTenant) && $requesterTenant !== ($this->sessions->capturedTenantId($sessionId) ?? '')) {
+            return $this->deny($response, $streamingId, 'subscribe_tenant_mismatch', UiSseEventType::UiError->value);
+        }
+
         $inlineSnapshot = $data['request_snapshot'] ?? null;
         $snapshot = is_array($inlineSnapshot) ? Row::keyedByName($inlineSnapshot) : [];
         $attachment = $this->runtime->subscriptionFactory->build(
@@ -216,6 +224,7 @@ final class SseControlRouter
             // time, not the draining coroutine's ambient one.
             $this->sessions->capturedTenantId($sessionId),
             $this->sessions->capturedTenantBlob($sessionId),
+            $frame->string('route_name'),
         );
 
         if ($attachment === null) {

@@ -118,14 +118,11 @@ final class PipelineSubscriptionFactory implements SubscriptionFactoryInterface
         ?string $tenantBlob = null,
         string $routeName = '',
     ): ?SubscriptionAttachment {
-        // Named when admitted through HUG (a Hug-exposed feed has no path).
+        // A feed is subscribed through HUG by name (a Hug-exposed feed has no
+        // path); an unnamed subscribe has no route to resolve.
         $route = $routeName !== ''
             ? $this->routeRegistry->findByNameTyped($routeName, $this->attributeDiscovery->getHandlerRegistry())
-            : $this->routeRegistry->findRouteTyped(
-                $routePath,
-                $routeMethod !== '' ? $routeMethod : 'GET',
-                $this->attributeDiscovery->getHandlerRegistry(),
-            );
+            : null;
         if ($route === null) {
             return null;
         }

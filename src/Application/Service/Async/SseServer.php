@@ -1617,7 +1617,7 @@ final class SseServer implements FeedStreamSinkInterface
         if (
             $sessionId === '' || preg_match(self::SAFE_BEARER_SESSION_ID_PATTERN, $sessionId) !== 1
             || $streamingId === '' || preg_match(self::SAFE_BEARER_SESSION_ID_PATTERN, $streamingId) !== 1
-            || ($routePath === '' && $routeName === '')
+            || $routeName === ''
         ) {
             return false;
         }

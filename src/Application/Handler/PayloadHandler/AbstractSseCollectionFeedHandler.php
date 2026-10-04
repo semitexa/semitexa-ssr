@@ -14,12 +14,9 @@ use Semitexa\Ssr\Domain\Contract\SseFeedPayloadInterface;
  * `{data, meta}` envelope (list cardinality).
  *
  * The re-homed, canonical-vocabulary successor of platform-ui's
- * `AbstractGridStreamFeedHandler`. The entire held-open serving choreography
- * (server-minted stream id + `ui.stream.id` first frame, the
- * `AsyncResourceSseServer::serveResourceStream()` hand-off, the
- * `X-Semitexa-Stream-Rehydrate` re-hydrate intake, SSE-vs-JSON negotiation,
- * the JSON degrade, the `#[WatchScopes]` subscription) now lives ONCE in the
- * generic {@see AbstractSseFeedHandler}; this class only PINS the collection
+ * `AbstractGridStreamFeedHandler`. The serving choreography (plain pull, the
+ * framed re-run on the KISS-owning worker, the `#[WatchScopes]` declaration)
+ * lives ONCE in the generic {@see AbstractSseFeedHandler}; this class only PINS the collection
  * vocabulary: the `buildCollectionResponse()` seam and the `ui.collection.*`
  * frame types. Its object-valued sibling is
  * {@see AbstractSseDocumentFeedHandler}.

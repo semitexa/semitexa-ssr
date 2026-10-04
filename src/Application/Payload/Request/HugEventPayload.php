@@ -8,7 +8,12 @@ use Semitexa\Core\Attribute\AsPublicPayload;
 use Semitexa\Core\Http\Response\ResourceResponse;
 
 /**
- * Inbound route marker for the unified HTTP UI event endpoint.
+ * HUG, the inbound door: `POST /__semitexa_hug` carries every UI event and
+ * action from the browser to the server. Its sibling `GET /__semitexa_hug`
+ * ({@see SsrFallbackPayload}) is the pull fallback for deferred slots; KISS
+ * (`/__semitexa_kiss`) is the one stream back. Those two doors are the whole
+ * browser<->server transport by design — a feature that needs another verb
+ * extends HUG instead of adding a route.
  *
  * The envelope body is canonical JSON and is validated by
  * UiEventEnvelope::fromArray() inside the handler against the raw request
@@ -25,12 +30,13 @@ use Semitexa\Core\Http\Response\ResourceResponse;
  *   metadata. The frontend must never provide handler identity.
  */
 #[AsPublicPayload(
-    path: '/__ui/event',
+    path: '/__semitexa_hug',
     methods: ['POST'],
+    name: 'ssr.hug.event',
     responseWith: ResourceResponse::class,
     consumes: ['application/json'],
     produces: ['application/json'],
 )]
-final class UiEventEnvelopePayload
+final class HugEventPayload
 {
 }

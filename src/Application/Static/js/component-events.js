@@ -142,7 +142,9 @@
             event.preventDefault();
         }
 
-        fetch(componentRoot.getAttribute('data-semitexa-component-event-endpoint') || '/__semitexa_component_event', {
+        // HUG is the one inbound door; a component event is told apart from a
+        // UI event envelope by its wrapper key.
+        fetch(componentRoot.getAttribute('data-semitexa-component-event-endpoint') || '/__semitexa_hug', {
             method: 'POST',
             credentials: 'same-origin',
             headers: {
@@ -150,7 +152,7 @@
                 'Content-Type': 'application/json',
                 'X-Requested-With': 'XMLHttpRequest'
             },
-            body: JSON.stringify(payload)
+            body: JSON.stringify({ componentEvent: payload })
         })
         .then(function (response) {
             return response.json().catch(function () {

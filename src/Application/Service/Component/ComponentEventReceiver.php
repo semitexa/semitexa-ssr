@@ -2,24 +2,20 @@
 
 declare(strict_types=1);
 
-namespace Semitexa\Ssr\Application\Handler\PayloadHandler;
+namespace Semitexa\Ssr\Application\Service\Component;
 
-use Semitexa\Core\Attribute\AsPayloadHandler;
+use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
-use Semitexa\Core\Contract\TypedHandlerInterface;
 use Semitexa\Core\Environment;
 use Semitexa\Core\Event\EventDispatcherInterface;
 use Semitexa\Core\Exception\AccessDeniedException;
 use Semitexa\Core\Exception\NotFoundException;
 use Semitexa\Core\Exception\ValidationException;
-use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Server\SwooleBootstrap;
-use Semitexa\Ssr\Application\Payload\Request\ComponentEventDispatchPayload;
-use Semitexa\Ssr\Application\Service\Component\ComponentEventBridge;
-use Semitexa\Ssr\Application\Service\Component\ComponentCatalog;
+use Semitexa\Ssr\Domain\Model\ComponentEventMessage;
 
-#[AsPayloadHandler(payload: ComponentEventDispatchPayload::class, resource: ResourceResponse::class)]
-final class ComponentEventDispatchHandler implements TypedHandlerInterface
+#[AsService]
+final class ComponentEventReceiver
 {
     #[InjectAsReadonly]
     protected EventDispatcherInterface $eventDispatcher;
@@ -27,7 +23,12 @@ final class ComponentEventDispatchHandler implements TypedHandlerInterface
     #[InjectAsReadonly]
     protected ComponentCatalog $componentCatalog;
 
-    public function handle(ComponentEventDispatchPayload $payload, ResourceResponse $resource): ResourceResponse
+    /**
+     * Verify and dispatch one component event received on HUG.
+     *
+     * @return array<string, mixed> the acceptance body
+     */
+    public function receive(ComponentEventMessage $payload): array
     {
         if (!$this->isSameOriginRequest()) {
             throw new AccessDeniedException('Cross-origin component event dispatch is not allowed.');
@@ -88,7 +89,7 @@ final class ComponentEventDispatchHandler implements TypedHandlerInterface
         $event = $this->eventDispatcher->create($payload->getEventClass(), $eventPayload);
         $this->eventDispatcher->dispatch($event);
 
-        $body = json_encode([
+        return [
             'status' => 'accepted',
             'component_id' => $payload->getComponentId(),
             'component_name' => $payload->getComponentName(),
@@ -96,11 +97,7 @@ final class ComponentEventDispatchHandler implements TypedHandlerInterface
             'event_class' => $payload->getEventClass(),
             'page_path' => $payload->getPagePath(),
             'accepted_at' => gmdate(DATE_ATOM),
-        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
-
-        return $resource
-            ->setHeader('Content-Type', 'application/json; charset=utf-8')
-            ->setContent($body);
+        ];
     }
 
     private function isSameOriginRequest(): bool

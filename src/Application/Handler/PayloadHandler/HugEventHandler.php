@@ -12,17 +12,19 @@ use Semitexa\Core\Exception\ValidationException;
 use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Core\Request;
-use Semitexa\Ssr\Application\Payload\Request\UiEventEnvelopePayload;
+use Semitexa\Ssr\Application\Payload\Request\HugEventPayload;
+use Semitexa\Ssr\Application\Service\Component\ComponentEventReceiver;
 use Semitexa\Ssr\Application\Service\UiEvent\InvalidUiEventEnvelopeException;
 use Semitexa\Ssr\Application\Service\UiEvent\NotConfiguredUiResponseDispatcher;
 use Semitexa\Ssr\Application\Service\UiEvent\SignedContext;
 use Semitexa\Ssr\Application\Service\UiEvent\UiEventEnvelope;
 use Semitexa\Ssr\Application\Service\UiEvent\UiResponseDispatcherInterface;
 use Semitexa\Ssr\Application\Service\UiEvent\UiResponseDispatchResult;
+use Semitexa\Ssr\Domain\Model\ComponentEventMessage;
 use Throwable;
 
 /**
- * Canonical handler for `POST /__ui/event` — the framework's single unified
+ * Canonical handler for `POST /__semitexa_hug` — the framework's single unified
  * inbound UI event endpoint.
  *
  * Pipeline (each step fails closed before the next):
@@ -69,8 +71,8 @@ use Throwable;
  *     // + any non-colliding keys the dispatcher chose to surface.
  *   }
  */
-#[AsPayloadHandler(payload: UiEventEnvelopePayload::class, resource: ResourceResponse::class)]
-final class UiEventEndpointHandler implements TypedHandlerInterface
+#[AsPayloadHandler(payload: HugEventPayload::class, resource: ResourceResponse::class)]
+final class HugEventHandler implements TypedHandlerInterface
 {
     /**
      * Canonical envelope keys the endpoint always emits. A dispatcher's
@@ -92,7 +94,10 @@ final class UiEventEndpointHandler implements TypedHandlerInterface
     #[InjectAsReadonly]
     protected UiResponseDispatcherInterface $dispatcher;
 
-    public function handle(UiEventEnvelopePayload $payload, ResourceResponse $resource): ResourceResponse
+    #[InjectAsReadonly]
+    protected ComponentEventReceiver $componentEvents;
+
+    public function handle(HugEventPayload $payload, ResourceResponse $resource): ResourceResponse
     {
         $raw = $this->request->getJsonBody();
         // The body must be a JSON object, not a JSON array. `is_array($raw)`
@@ -103,6 +108,13 @@ final class UiEventEndpointHandler implements TypedHandlerInterface
             throw new ValidationException([
                 'body' => ['Request body must be a JSON object.'],
             ]);
+        }
+
+        // An #[AsComponent(event:)] event (component-events.js) travels as
+        // `{"componentEvent": {…}}` and is verified by its own signed
+        // manifest; everything else is the canonical UI event envelope.
+        if (array_key_exists('componentEvent', $raw)) {
+            return $this->receiveComponentEvent($raw, $resource);
         }
 
         try {
@@ -174,6 +186,27 @@ final class UiEventEndpointHandler implements TypedHandlerInterface
             ->setStatusCode($result->statusCode)
             ->setHeader('Content-Type', 'application/json; charset=utf-8')
             ->setContent($content);
+    }
+
+    /**
+     * @param array<string, mixed> $raw
+     */
+    private function receiveComponentEvent(array $raw, ResourceResponse $resource): ResourceResponse
+    {
+        if (count($raw) !== 1 || !is_array($raw['componentEvent']) || array_is_list($raw['componentEvent'])) {
+            throw new ValidationException([
+                'componentEvent' => ['A component event body is exactly {"componentEvent": {…}}.'],
+            ]);
+        }
+        /** @var array<string, mixed> $fields */
+        $fields = $raw['componentEvent'];
+        // Shape first: a malformed message is refused before the receiver runs.
+        $message = ComponentEventMessage::fromArray($fields);
+        $accepted = $this->componentEvents->receive($message);
+
+        return $resource
+            ->setHeader('Content-Type', 'application/json; charset=utf-8')
+            ->setContent(json_encode($accepted, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
     }
 
     private function dispatcherFailureResult(): UiResponseDispatchResult
@@ -249,6 +282,14 @@ final class UiEventEndpointHandler implements TypedHandlerInterface
     public function withDispatcher(UiResponseDispatcherInterface $dispatcher): self
     {
         $this->dispatcher = $dispatcher;
+
+        return $this;
+    }
+
+    /** Test seam for the component-event receiver; production injects it. */
+    public function withComponentEvents(ComponentEventReceiver $componentEvents): self
+    {
+        $this->componentEvents = $componentEvents;
 
         return $this;
     }

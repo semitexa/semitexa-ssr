@@ -2,24 +2,34 @@
 
 declare(strict_types=1);
 
-namespace Semitexa\Ssr\Application\Payload\Request;
+namespace Semitexa\Ssr\Domain\Model;
 
-use Semitexa\Core\Attribute\AsPublicPayload;
-use Semitexa\Core\Contract\ValidatablePayloadInterface;
 use Semitexa\Core\Exception\ValidationException;
-use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Validation\Trait\NotBlankValidationTrait;
 
-#[AsPublicPayload(
-    path: '/__semitexa_component_event',
-    methods: ['POST'],
-    responseWith: ResourceResponse::class,
-    consumes: ['application/json'],
-    produces: ['application/json'],
-)]
-final class ComponentEventDispatchPayload implements ValidatablePayloadInterface
+/**
+ * One `#[AsComponent(event:, triggers:)]` event as `component-events.js`
+ * sends it: `POST /__semitexa_hug` with `{"componentEvent": {…}}`. It used to
+ * have its own route (`/__semitexa_component_event`); KISS and HUG are the
+ * whole transport, so it rides HUG like every other UI event.
+ */
+final class ComponentEventMessage
 {
     use NotBlankValidationTrait;
+
+    /** Wire keys (snake_case, as the runtime sends them) to setters. */
+    private const FIELDS = [
+        'component_id' => 'setComponentId',
+        'component_name' => 'setComponentName',
+        'event_class' => 'setEventClass',
+        'frontend_event' => 'setFrontendEvent',
+        'signature' => 'setSignature',
+        'page_path' => 'setPagePath',
+        'session_binding' => 'setSessionBinding',
+        'issued_at' => 'setIssuedAt',
+        'declared_payload' => 'setDeclaredPayload',
+        'interaction' => 'setInteraction',
+    ];
 
     private string $componentId = '';
     private string $componentName = '';
@@ -36,6 +46,40 @@ final class ComponentEventDispatchPayload implements ValidatablePayloadInterface
     /** @var array<string, mixed> */
     private array $interaction = [];
 
+    /**
+     * @param array<string, mixed> $data
+     * @throws ValidationException on a wrong type, an unknown key or a missing required field
+     */
+    public static function fromArray(array $data): self
+    {
+        $message = new self();
+        $errors = [];
+        foreach ($data as $key => $value) {
+            $setter = self::FIELDS[$key] ?? null;
+            if ($setter === null) {
+                $errors[(string) $key] = ['Unknown field.'];
+                continue;
+            }
+            $expectsArray = $key === 'declared_payload' || $key === 'interaction';
+            $ok = match (true) {
+                $expectsArray => is_array($value),
+                $key === 'issued_at' => is_int($value),
+                default => is_string($value),
+            };
+            if (!$ok) {
+                $errors[(string) $key] = ['Wrong type.'];
+                continue;
+            }
+            $message->{$setter}($value);
+        }
+        $errors += $message->validate();
+        if ($errors !== []) {
+            throw new ValidationException($errors);
+        }
+        return $message;
+    }
+
+    /** @return array<string, list<string>> */
     public function validate(): array
     {
         $errors = [];

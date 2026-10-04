@@ -7,7 +7,7 @@ namespace Semitexa\Ssr\Application\Service\UiEvent;
 /**
  * Canonical result returned by {@see UiResponseDispatcherInterface::dispatch()}.
  *
- * The endpoint handler ({@see \Semitexa\Ssr\Application\Handler\PayloadHandler\UiEventEndpointHandler})
+ * The endpoint handler ({@see \Semitexa\Ssr\Application\Handler\PayloadHandler\HugEventHandler})
  * is the only consumer: it serialises this DTO into the HTTP response so
  * dispatchers don't need to know about HTTP status codes, JSON encoding,
  * or response normalisation.

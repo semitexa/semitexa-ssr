@@ -8,11 +8,11 @@ namespace Semitexa\Ssr\Application\Service\UiEvent;
  * Canonical framework contract for dispatching a validated UI event.
  *
  * Lives in `semitexa-ssr` because the endpoint that calls it
- * ({@see \Semitexa\Ssr\Application\Handler\PayloadHandler\UiEventEndpointHandler}
- * routed at `POST /__ui/event`) is the canonical framework inbound. Per
+ * ({@see \Semitexa\Ssr\Application\Handler\PayloadHandler\HugEventHandler}
+ * routed at `POST /__semitexa_hug`) is the canonical framework inbound. Per
  * `packages/semitexa-platform-ui/docs/transport-architecture.md` ADR-0001
- * §4.1, this is the contract that `/__ui/event` and (eventually) the
- * temporary `/__ui/dispatch` compatibility endpoint both call into.
+ * §4.1, this is the contract `POST /__semitexa_hug` calls into — the one
+ * inbound door; KISS (`/__semitexa_kiss`) is the one stream back.
  *
  * Dependency direction:
  *

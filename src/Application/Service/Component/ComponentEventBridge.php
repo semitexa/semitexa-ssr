@@ -9,7 +9,8 @@ use Semitexa\Core\Server\SwooleBootstrap;
 
 final class ComponentEventBridge
 {
-    public const ENDPOINT_PATH = '/__semitexa_component_event';
+    /** Signed into every component manifest: events go to HUG, the one inbound door. */
+    public const ENDPOINT_PATH = '/__semitexa_hug';
     public const DEFAULT_MANIFEST_TTL_SECONDS = 300;
 
     /** @var list<string> */

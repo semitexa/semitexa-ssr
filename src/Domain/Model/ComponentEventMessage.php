@@ -67,12 +67,27 @@ final class ComponentEventMessage
                 default => is_string($value),
             };
             if (!$ok) {
-                $errors[(string) $key] = ['Wrong type.'];
+                $errors[$key] = ['Wrong type.'];
                 continue;
             }
-            $message->{$setter}($value);
+            // Every field is checked: a setter's refusal is collected, not thrown,
+            // so one bad value does not hide the others.
+            try {
+                $message->{$setter}($value);
+            } catch (ValidationException $e) {
+                foreach ($e->getErrors() as $messages) {
+                    $errors[$key] = array_values(array_merge($errors[$key] ?? [], (array) $messages));
+                }
+            }
         }
-        $errors += $message->validate();
+        // Missing required fields, reported under the wire key the client sends.
+        $wireKeyOf = [];
+        foreach (self::FIELDS as $wire => $setter) {
+            $wireKeyOf[lcfirst(substr($setter, 3))] = $wire;
+        }
+        foreach ($message->validate() as $field => $messages) {
+            $errors[$wireKeyOf[$field] ?? $field] ??= $messages;
+        }
         if ($errors !== []) {
             throw new ValidationException($errors);
         }

@@ -532,7 +532,23 @@ final class HugEventHandlerTest extends TestCase
         } catch (ValidationException $e) {
             $errors = $e->getErrorContext()['errors'];
             self::assertArrayHasKey('handler', $errors, 'an unknown field is named');
-            self::assertArrayHasKey('signature', $errors, 'a missing required field is named');
+            self::assertArrayHasKey('signature', $errors, 'a missing required field is named by its wire key');
+            self::assertArrayNotHasKey('componentId', $errors, 'one key style: the wire one');
+        }
+    }
+
+    #[Test]
+    public function every_bad_component_event_field_is_reported_at_once(): void
+    {
+        try {
+            $this->handlerFor($this->postRequest(['componentEvent' => ['signature' => '', 'foo' => 1, 'issued_at' => -5]]))
+                ->handle(new HugEventPayload(), new ResourceResponse());
+            self::fail('Must be refused.');
+        } catch (ValidationException $e) {
+            $errors = $e->getErrorContext()['errors'];
+            foreach (['signature', 'foo', 'issued_at', 'component_id'] as $key) {
+                self::assertArrayHasKey($key, $errors);
+            }
         }
     }
 }

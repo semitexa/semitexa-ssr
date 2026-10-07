@@ -9,6 +9,7 @@ use Semitexa\Ssr\Application\Service\Async\SseSessionCoroutines;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Request;
+use Semitexa\Core\Support\Row;
 use Semitexa\Core\Server\PageTimeline;
 use Semitexa\Core\Log\LoggerInterface;
 use Semitexa\Core\Pipeline\RequestTracerInterface;
@@ -32,9 +33,6 @@ use Swoole\Coroutine;
 #[AsService]
 final class DeferredBlockOrchestrator
 {
-    /** How long the stream waits for one deferred component before it stops waiting. */
-    private const COMPONENT_RENDER_TIMEOUT_SECONDS = 30.0;
-
     #[InjectAsReadonly]
     protected SseServer $sseServer;
 
@@ -341,7 +339,7 @@ final class DeferredBlockOrchestrator
      * deferred short-circuit via $forceImmediateRender=true) and emit a 'deferred_component'
      * SSE frame for the client to swap into the matching placeholder.
      *
-     * @param array<int, array{instance_id: string, name: string, props: array<array-key, mixed>}> $instances
+     * @param list<array<string, mixed>> $instances as stored with the page: read back, so checked here
      */
     private function streamComponentInstances(
         string $sessionId,
@@ -356,26 +354,20 @@ final class DeferredBlockOrchestrator
             return $eventId;
         }
 
-        // Each instance renders in its own session coroutine, all at once, and
-        // is sent as it finishes: a slow one no longer holds up the others.
-        // Without coroutines (CLI, a test) they render one after another.
-        $concurrent = class_exists(\Swoole\Coroutine\Channel::class, false)
-            && class_exists(Coroutine::class, false) && Coroutine::getCid() > 0 && count($instances) > 1;
-        $channel = $concurrent ? new \Swoole\Coroutine\Channel(count($instances)) : null;
-        $rendered = [];
-        $expected = 0;
+        // How the renders run — at once, each in its own session coroutine, and
+        // waited for with a timeout — is DeferredComponentRenderFanOut's.
+        $renders = [];
         /** @var array<string, string> $pending instance id => component name, until it answers */
         $pending = [];
         foreach ($instances as $instance) {
-            $instanceId = (string) ($instance['instance_id'] ?? '');
-            $name = (string) ($instance['name'] ?? '');
+            $instanceId = Row::asString($instance['instance_id'] ?? '');
+            $name = Row::asString($instance['name'] ?? '');
             $props = is_array($instance['props'] ?? null) ? $instance['props'] : [];
             if ($instanceId === '' || $name === '') {
                 continue;
             }
-            $expected++;
             $pending[$instanceId] = $name;
-            $render = function () use ($sessionId, $instanceId, $name, $props, $locale, $uiSseSession, $visitor): array {
+            $renders[] = function () use ($sessionId, $instanceId, $name, $props, $locale, $uiSseSession, $visitor): array {
                 if (!$this->sseServer->isSessionActive($sessionId)) {
                     return [$instanceId, $name, null];
                 }
@@ -402,34 +394,15 @@ final class DeferredBlockOrchestrator
                     return [$instanceId, $name, null];
                 }
             };
-            if ($channel === null) {
-                $rendered[] = $render();
-                continue;
-            }
-            $spawned = $this->sseServer->createSessionCoroutine(static function () use ($render, $channel): void {
-                $result = [null, null, null];
-                try {
-                    $result = $render();
-                } finally {
-                    $channel->push($result); // always: the loop below waits for one answer per instance
-                }
-            }, $sessionId);
-            if ($spawned === false) {
-                $channel->push([null, null, null]);
-            }
         }
 
-        for ($i = 0; $i < $expected; $i++) {
-            if (!$this->sseServer->isSessionActive($sessionId)) {
-                break;
-            }
-            $item = $channel !== null ? $channel->pop(self::COMPONENT_RENDER_TIMEOUT_SECONDS) : ($rendered[$i] ?? false);
-            if (!is_array($item)) {
+        foreach ((new DeferredComponentRenderFanOut($this->sseServer))->answers($sessionId, $renders) as $item) {
+            if ($item === null) {
                 // Nothing answered in time: what is still pending keeps its
                 // placeholder on the page. Said out loud, not left to look like
                 // a slow network.
                 $this->logger->error('Deferred components not rendered in time', [
-                    'timeout_seconds' => self::COMPONENT_RENDER_TIMEOUT_SECONDS,
+                    'timeout_seconds' => DeferredComponentRenderFanOut::TIMEOUT_SECONDS,
                     'pending' => $pending,
                 ]);
                 PageTimeline::record($sessionId, 'deferred', ['timeout' => true, 'pending' => array_keys($pending)]);

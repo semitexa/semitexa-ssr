@@ -13,15 +13,14 @@ use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Core\Request;
 use Semitexa\Ssr\Application\Payload\Request\HugEventPayload;
-use Semitexa\Ssr\Application\Service\Component\ComponentEventReceiver;
 use Semitexa\Ssr\Application\Service\Stream\FeedStreamControl;
+use Semitexa\Ssr\Application\Service\UiEvent\HugUploadReceiverInterface;
 use Semitexa\Ssr\Application\Service\UiEvent\InvalidUiEventEnvelopeException;
 use Semitexa\Ssr\Application\Service\UiEvent\NotConfiguredUiResponseDispatcher;
 use Semitexa\Ssr\Application\Service\UiEvent\SignedContext;
 use Semitexa\Ssr\Application\Service\UiEvent\UiEventEnvelope;
 use Semitexa\Ssr\Application\Service\UiEvent\UiResponseDispatcherInterface;
 use Semitexa\Ssr\Application\Service\UiEvent\UiResponseDispatchResult;
-use Semitexa\Ssr\Domain\Model\ComponentEventMessage;
 use Throwable;
 
 /**
@@ -51,9 +50,10 @@ use Throwable;
  *   record. The backend resolves the actual handler from server-side
  *   metadata. The frontend must never provide handler identity.
  *
- * Two other bodies share the door: `{"componentEvent": {…}}` goes to
- * {@see ComponentEventReceiver}, and `{"stream": {…}}` — attach, re-view or
- * detach a feed on the page's KISS stream — goes to {@see FeedStreamControl}.
+ * Two other bodies share the door: `{"stream": {…}}` — attach, re-view or
+ * detach a feed on the page's KISS stream — goes to {@see FeedStreamControl};
+ * a multipart upload `{upload: <signed upload context>, file}` goes to
+ * {@see HugUploadReceiverInterface}.
  *
  * The endpoint is intentionally single, unified, and source-kind-agnostic:
  * primitive / part / component / composite events all POST here, and the
@@ -99,14 +99,21 @@ final class HugEventHandler implements TypedHandlerInterface
     #[InjectAsReadonly]
     protected UiResponseDispatcherInterface $dispatcher;
 
-    #[InjectAsReadonly]
-    protected ComponentEventReceiver $componentEvents;
 
     #[InjectAsReadonly]
     protected FeedStreamControl $feedStreams;
 
+    #[InjectAsReadonly]
+    protected HugUploadReceiverInterface $uploads;
+
     public function handle(HugEventPayload $payload, ResourceResponse $resource): ResourceResponse
     {
+        // An upload — multipart `{upload: <signed context>, file}` — is the one
+        // body that is not JSON.
+        if ($this->request->hasFile('file') || $this->request->getPost('upload') !== '') {
+            return $this->receiveUpload($resource);
+        }
+
         $raw = $this->request->getJsonBody();
         // The body must be a JSON object, not a JSON array. `is_array($raw)`
         // alone is true for both — `array_is_list()` rejects list-shaped
@@ -118,12 +125,6 @@ final class HugEventHandler implements TypedHandlerInterface
             ]);
         }
 
-        // An #[AsComponent(event:)] event (component-events.js) travels as
-        // `{"componentEvent": {…}}` and is verified by its own signed
-        // manifest; everything else is the canonical UI event envelope.
-        if (array_key_exists('componentEvent', $raw)) {
-            return $this->receiveComponentEvent($raw, $resource);
-        }
         // Feed control — `{"stream": {op, feed, params, session,
         // subscriptionId}}` attaches, re-views or detaches a feed on the page's
         // KISS stream; the frames themselves only ever travel on KISS.
@@ -205,27 +206,6 @@ final class HugEventHandler implements TypedHandlerInterface
     /**
      * @param array<string, mixed> $raw
      */
-    private function receiveComponentEvent(array $raw, ResourceResponse $resource): ResourceResponse
-    {
-        if (count($raw) !== 1 || !is_array($raw['componentEvent']) || array_is_list($raw['componentEvent'])) {
-            throw new ValidationException([
-                'componentEvent' => ['A component event body is exactly {"componentEvent": {…}}.'],
-            ]);
-        }
-        /** @var array<string, mixed> $fields */
-        $fields = $raw['componentEvent'];
-        // Shape first: a malformed message is refused before the receiver runs.
-        $message = ComponentEventMessage::fromArray($fields);
-        $accepted = $this->componentEvents->receive($message);
-
-        return $resource
-            ->setHeader('Content-Type', 'application/json; charset=utf-8')
-            ->setContent(json_encode($accepted, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
-    }
-
-    /**
-     * @param array<string, mixed> $raw
-     */
     private function controlStream(array $raw, ResourceResponse $resource): ResourceResponse
     {
         if (count($raw) !== 1 || !is_array($raw['stream']) || array_is_list($raw['stream'])) {
@@ -234,6 +214,28 @@ final class HugEventHandler implements TypedHandlerInterface
             ]);
         }
         [$status, $body] = $this->feedStreams->control($raw['stream'], $this->request);
+
+        return $resource
+            ->setStatusCode($status)
+            ->setHeader('Content-Type', 'application/json; charset=utf-8')
+            ->setContent(json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+    }
+
+    private function receiveUpload(ResourceResponse $resource): ResourceResponse
+    {
+        $file = $this->request->getFile('file');
+        if ($file === null || count($this->request->files) !== 1 || array_keys($this->request->post) !== ['upload']) {
+            throw new ValidationException(['upload' => ['An upload is exactly {upload: <signed context>, file}.']]);
+        }
+        $claims = SignedContext::verify($this->request->getPost('upload'));
+        if ($claims === null || ($claims['k'] ?? null) !== 'upload') {
+            throw new ValidationException(['upload' => ['Upload context verification failed.']]);
+        }
+        if (!$file->isOk()) {
+            [$status, $body] = [422, ['status' => 'rejected', 'reason' => 'upload_failed', 'message' => $file->errorMessage()]];
+        } else {
+            [$status, $body] = $this->uploads->receive($claims, $file);
+        }
 
         return $resource
             ->setStatusCode($status)
@@ -318,6 +320,14 @@ final class HugEventHandler implements TypedHandlerInterface
         return $this;
     }
 
+    /** Test seam for uploads; production injects it. */
+    public function withUploads(HugUploadReceiverInterface $uploads): self
+    {
+        $this->uploads = $uploads;
+
+        return $this;
+    }
+
     /** Test seam for feed control; production injects it. */
     public function withFeedStreams(FeedStreamControl $feedStreams): self
     {
@@ -326,11 +336,4 @@ final class HugEventHandler implements TypedHandlerInterface
         return $this;
     }
 
-    /** Test seam for the component-event receiver; production injects it. */
-    public function withComponentEvents(ComponentEventReceiver $componentEvents): self
-    {
-        $this->componentEvents = $componentEvents;
-
-        return $this;
-    }
 }

@@ -7,7 +7,11 @@ namespace Semitexa\Ssr\Application\Service\Server\Lifecycle;
 use Semitexa\Core\Attribute\AsPipelineListener;
 use Semitexa\Core\Pipeline\AuthCheck;
 use Semitexa\Core\Pipeline\PipelineListenerInterface;
+use Semitexa\Core\Attribute\InjectAsMutable;
 use Semitexa\Core\Pipeline\RequestPipelineContext;
+use Semitexa\Core\Session\SessionInterface;
+use Semitexa\Core\Tenant\TenantContextInterface;
+use Semitexa\Ssr\Application\Service\UiEvent\SignedContextBinding;
 use Semitexa\Ssr\Application\Service\Component\ComponentRenderer;
 
 /**
@@ -24,8 +28,20 @@ use Semitexa\Ssr\Application\Service\Component\ComponentRenderer;
 #[AsPipelineListener(phase: AuthCheck::class, priority: 100)]
 final class BindRequestToComponentRendererListener implements PipelineListenerInterface
 {
+    /** Optional: a request without a session phase (CLI, tests) binds an empty session. */
+    #[InjectAsMutable(optional: true)]
+    protected SessionInterface $session;
+
+    #[InjectAsMutable(optional: true)]
+    protected TenantContextInterface $tenant;
+
     public function handle(RequestPipelineContext $context): void
     {
         ComponentRenderer::setCurrentRequest($context->request);
+        // Every signed UI context this request mints or presents is bound to
+        // the session it RUNS with (on a first visit, minted during it) and to
+        // its tenant.
+        $tenantId = isset($this->tenant) && method_exists($this->tenant, 'getTenantId') ? (string) $this->tenant->getTenantId() : '';
+        SignedContextBinding::bind(isset($this->session) ? $this->session->getId() : '', $tenantId);
     }
 }

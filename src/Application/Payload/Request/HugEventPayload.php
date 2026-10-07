@@ -34,7 +34,7 @@ use Semitexa\Core\Http\Response\ResourceResponse;
     methods: ['POST'],
     name: 'ssr.hug.event',
     responseWith: ResourceResponse::class,
-    consumes: ['application/json'],
+    consumes: ['application/json', 'multipart/form-data'],
     produces: ['application/json'],
 )]
 final class HugEventPayload

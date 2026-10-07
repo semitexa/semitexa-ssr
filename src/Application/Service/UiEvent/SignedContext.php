@@ -38,6 +38,14 @@ final class SignedContext
         $claims['iat'] = $issuedAt;
         $claims['exp'] = $issuedAt + $ttl;
 
+        // Bound to the session and tenant it was minted for (when a request is
+        // running): replaying it from another session or tenant is refused.
+        $binding = SignedContextBinding::current();
+        if ($binding !== null) {
+            $claims['sb'] = self::sessionDigest($binding['s']);
+            $claims['tn'] = $binding['t'];
+        }
+
         $json = json_encode(
             self::canonicalize($claims),
             JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR,
@@ -110,8 +118,40 @@ final class SignedContext
             return null;
         }
 
+        if (!self::belongsToCurrentRequest($claims)) {
+            return null;
+        }
+
         /** @var array<string, mixed> $claims */
         return $claims;
+    }
+
+    /**
+     * A bound context is valid only for the same session and tenant. Where
+     * nothing is bound (CLI, a bare test) a bound context cannot be checked
+     * and is refused; an unbound one (minted outside a request) passes.
+     *
+     * @param array<array-key, mixed> $claims
+     */
+    private static function belongsToCurrentRequest(array $claims): bool
+    {
+        if (!array_key_exists('sb', $claims) && !array_key_exists('tn', $claims)) {
+            return true;
+        }
+        $binding = SignedContextBinding::current();
+        if ($binding === null) {
+            return false;
+        }
+
+        return is_string($claims['sb'] ?? null)
+            && hash_equals(self::sessionDigest($binding['s']), $claims['sb'])
+            && ($claims['tn'] ?? null) === $binding['t'];
+    }
+
+    /** The session id never travels in the clear: a keyed digest of it does. */
+    private static function sessionDigest(string $sessionId): string
+    {
+        return substr(hash_hmac('sha256', 'session:' . $sessionId, SignedContextSecret::resolve()), 0, 32);
     }
 
     private static function base64UrlEncode(string $value): string

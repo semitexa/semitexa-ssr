@@ -36,6 +36,10 @@ final class ThemeAwareTwigLoader implements LoaderInterface
     /** @var \Closure(): ?\Semitexa\Core\Pipeline\RequestTracerInterface */
     private readonly \Closure $tracerResolver;
 
+    /**
+     * @param \Closure(): list<string>                                        $chainResolver
+     * @param null|\Closure(): ?\Semitexa\Core\Pipeline\RequestTracerInterface $tracerResolver
+     */
     public function __construct(
         private readonly FilesystemLoader $delegate,
         \Closure $chainResolver,

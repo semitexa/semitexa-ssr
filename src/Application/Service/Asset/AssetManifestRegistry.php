@@ -297,6 +297,7 @@ final class AssetManifestRegistry
         );
 
         foreach ($iterator as $file) {
+            /** @var \SplFileInfo $file the directory iterator's default CURRENT_AS_FILEINFO */
             if (!$file->isFile()) {
                 continue;
             }

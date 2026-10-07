@@ -15,6 +15,7 @@ use Semitexa\Core\Pipeline\RouteExecutor;
 use Semitexa\Core\Request;
 use Semitexa\Core\RequestFactory;
 use Semitexa\Core\Server\SwooleBootstrap;
+use Semitexa\Core\Support\Row;
 use Semitexa\Core\Session\SessionInterface;
 use Semitexa\Core\Tenant\TenantContextInterface;
 use Semitexa\Ssr\Application\Service\UiEvent\SignedContextBinding;
@@ -80,7 +81,7 @@ final class KissVisitor
     {
         $session = $scope->has(SessionInterface::class) ? $scope->get(SessionInterface::class) : null;
         $tenant = $scope->has(TenantContextInterface::class) ? $scope->get(TenantContextInterface::class) : null;
-        $tenantId = $tenant instanceof TenantContextInterface && method_exists($tenant, 'getTenantId') ? (string) $tenant->getTenantId() : '';
+        $tenantId = $tenant instanceof TenantContextInterface && method_exists($tenant, 'getTenantId') ? Row::asString($tenant->getTenantId()) : '';
         SignedContextBinding::bind($session instanceof SessionInterface ? $session : null, $tenantId);
     }
 

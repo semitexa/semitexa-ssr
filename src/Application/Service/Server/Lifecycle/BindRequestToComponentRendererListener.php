@@ -10,6 +10,7 @@ use Semitexa\Core\Pipeline\PipelineListenerInterface;
 use Semitexa\Core\Attribute\InjectAsMutable;
 use Semitexa\Core\Pipeline\RequestPipelineContext;
 use Semitexa\Core\Session\SessionInterface;
+use Semitexa\Core\Support\Row;
 use Semitexa\Core\Tenant\TenantContextInterface;
 use Semitexa\Ssr\Application\Service\UiEvent\SignedContextBinding;
 use Semitexa\Ssr\Application\Service\Component\ComponentRenderer;
@@ -41,7 +42,7 @@ final class BindRequestToComponentRendererListener implements PipelineListenerIn
         // Every signed UI context this request mints or presents is bound to
         // the session it RUNS with (on a first visit, minted during it) and to
         // its tenant.
-        $tenantId = isset($this->tenant) && method_exists($this->tenant, 'getTenantId') ? (string) $this->tenant->getTenantId() : '';
+        $tenantId = isset($this->tenant) && method_exists($this->tenant, 'getTenantId') ? Row::asString($this->tenant->getTenantId()) : '';
         SignedContextBinding::bind(isset($this->session) ? $this->session : null, $tenantId);
     }
 }

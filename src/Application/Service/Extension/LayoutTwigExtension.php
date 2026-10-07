@@ -10,6 +10,7 @@ use Semitexa\Ssr\Application\Service\Isomorphic\PlaceholderRenderer;
 use Semitexa\Ssr\Application\Service\Layout\LayoutSlotRegistry;
 use Semitexa\Ssr\Application\Service\Layout\SlotAssetCollector;
 use Semitexa\Ssr\Attribute\AsTwigExtension;
+use Semitexa\Ssr\Domain\Model\DeferredSlotDefinition;
 use Twig\Markup;
 
 /**
@@ -107,7 +108,7 @@ final class LayoutTwigExtension
         }
 
         return new Markup(
-            LayoutSlotRegistry::render($pageHandle, $slot, $context, $extraContext, $context['layout_frame'] ?? null),
+            LayoutSlotRegistry::render($pageHandle, $slot, $context, $extraContext, is_string($context['layout_frame'] ?? null) ? $context['layout_frame'] : null),
             'UTF-8',
         );
     }
@@ -120,7 +121,7 @@ final class LayoutTwigExtension
      *
      * @param array<string, mixed> $context
      */
-    private static function findDeferredSlot(array $context, string $slot): ?object
+    private static function findDeferredSlot(array $context, string $slot): ?DeferredSlotDefinition
     {
         $deferredSlots = $context['__ssr_deferred_slots'] ?? [];
         if (!is_iterable($deferredSlots)) {
@@ -128,7 +129,7 @@ final class LayoutTwigExtension
         }
 
         foreach ($deferredSlots as $definition) {
-            if (is_object($definition) && ($definition->slotId ?? null) === strtolower($slot)) {
+            if ($definition instanceof DeferredSlotDefinition && $definition->slotId === strtolower($slot)) {
                 return $definition;
             }
         }

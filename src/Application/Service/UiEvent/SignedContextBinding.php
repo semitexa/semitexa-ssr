@@ -57,8 +57,12 @@ final class SignedContextBinding
     public static function snapshot(): ?array
     {
         $binding = CoroutineLocal::get(self::CTX_KEY, null);
+        if (!is_array($binding) || !array_key_exists('session', $binding) || !isset($binding['t'])) {
+            return null;
+        }
 
-        return is_array($binding) && array_key_exists('session', $binding) && isset($binding['t']) ? $binding : null;
+        /** @var array{session: SessionInterface|string|null, t: string} $binding bind() and restore() write this key, in this shape */
+        return $binding;
     }
 
     /** @param array{session: SessionInterface|string|null, t: string}|null $binding */

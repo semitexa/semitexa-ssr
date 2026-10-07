@@ -177,7 +177,6 @@ final class AssetRenderer
                 'css'        => self::renderCssLink($entry),
                 'preload'    => self::renderPreload($entry),
                 'inline-css' => self::renderInlineCss($entry),
-                default      => '',
             };
         }
 

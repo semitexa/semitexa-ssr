@@ -45,7 +45,9 @@
         if (c) {
             // The instance root, not its event-manifest <script> (which names the
             // component too).
-            c.mount('[data-ui-component="' + name.replace(/"/g, '\\"') + '"][data-ui-component-instance-id]', {
+            // Backslash and quote escaped: inside a quoted selector string both
+            // are special.
+            c.mount('[data-ui-component="' + name.replace(/[\\"]/g, '\\$&') + '"][data-ui-component-instance-id]', {
                 connect: function (node, ctx) {
                     return mount(node, info(node, name, ctx.signal));
                 }

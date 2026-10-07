@@ -306,7 +306,8 @@ final class PlaceholderRenderer
 
         $safeId = htmlspecialchars($slotId, ENT_QUOTES, 'UTF-8');
 
-        return '<div class="ssr-skeleton" aria-busy="true" aria-label="Loading ' . $safeId . '"></div>';
+        // A status region: a name is allowed on it (not on a bare div) and announces the wait.
+        return '<div class="ssr-skeleton" role="status" aria-busy="true" aria-label="Loading ' . $safeId . '"></div>';
     }
 
     /**

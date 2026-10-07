@@ -8,6 +8,8 @@ use Semitexa\Ssr\Application\Service\Async\SseServer;
 use Semitexa\Ssr\Application\Service\Async\SseSessionCoroutines;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
+use Semitexa\Core\Request;
+use Semitexa\Core\Server\PageTimeline;
 use Semitexa\Core\Log\LoggerInterface;
 use Semitexa\Core\Pipeline\RequestTracerInterface;
 use Semitexa\Ssr\Application\Service\Async\SseAsyncResultDelivery;
@@ -30,6 +32,9 @@ use Swoole\Coroutine;
 #[AsService]
 final class DeferredBlockOrchestrator
 {
+    /** How long the stream waits for one deferred component before it stops waiting. */
+    private const COMPONENT_RENDER_TIMEOUT_SECONDS = 30.0;
+
     #[InjectAsReadonly]
     protected SseServer $sseServer;
 
@@ -41,6 +46,9 @@ final class DeferredBlockOrchestrator
 
     #[InjectAsReadonly]
     protected LoggerInterface $logger;
+
+    #[InjectAsReadonly]
+    protected KissVisitor $kissVisitor;
 
     /**
      * Set at worker boot when something registered a tracer; null in
@@ -67,7 +75,11 @@ final class DeferredBlockOrchestrator
         ?string $locale = null,
         bool $startLiveLoop = true,
         bool $keepChannelOpen = false,
+        ?Request $visitor = null,
     ): void {
+        // Everything below is rendered AS the page's visitor: the stream is
+        // served outside the route pipeline, so nothing has said who that is.
+        $visitor ??= KissVisitor::ofCurrentRequest();
         $slots = $this->getDeferredSlots($pageHandle);
         $config = IsomorphicConfig::fromEnvironment();
         $persistentDeferredSse = $config->persistentDeferredSse;
@@ -99,6 +111,7 @@ final class DeferredBlockOrchestrator
             : null;
 
         $this->applyLocale($locale);
+
         $this->applyUiSseSessionFromContext($pageContext);
 
         // Determine already-delivered slots + components for reconnect scenario
@@ -142,7 +155,7 @@ final class DeferredBlockOrchestrator
                 'reconnect' => $channelStaysOpen,
             ]);
             if ($liveEnabled) {
-                $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale, $requestSnapshot);
+                $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale, $requestSnapshot, $visitor);
             }
             return;
         }
@@ -156,6 +169,7 @@ final class DeferredBlockOrchestrator
                 $data = [];
                 try {
                     $this->applyLocale($locale);
+                    $this->kissVisitor->establish($visitor);
                     $this->applyUiSseSessionFromContext($pageContext);
                     $data = $this->resolveSlotData($slot, $pageHandle, $pageContext, $requestSnapshot);
                 } catch (\Throwable $e) {
@@ -205,7 +219,7 @@ final class DeferredBlockOrchestrator
                 'reconnect' => $channelStaysOpen,
             ]);
             if ($liveEnabled) {
-                $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale, $requestSnapshot);
+                $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale, $requestSnapshot, $visitor);
             }
             return;
         }
@@ -219,17 +233,18 @@ final class DeferredBlockOrchestrator
 
         foreach ($slots as $slot) {
             if ($channel === null) {
-                $results[] = [$slot, $this->resolveSlotSafely($slot, $pageHandle, $pageContext, $locale, $requestSnapshot)];
+                $results[] = [$slot, $this->resolveSlotSafely($slot, $pageHandle, $pageContext, $locale, $requestSnapshot, $visitor)];
                 continue;
             }
 
-            $this->sseServer->createSessionCoroutine(function () use ($sessionId, $slot, $pageContext, $pageHandle, &$results, $channel, $locale, $requestSnapshot): void {
+            $this->sseServer->createSessionCoroutine(function () use ($sessionId, $slot, $pageContext, $pageHandle, &$results, $channel, $locale, $requestSnapshot, $visitor): void {
                 if (!$this->sseServer->isSessionActive($sessionId)) {
                     return;
                 }
                 $data = [];
                 try {
                     $this->applyLocale($locale);
+                    $this->kissVisitor->establish($visitor);
                     $this->applyUiSseSessionFromContext($pageContext);
                     $data = $this->resolveSlotData($slot, $pageHandle, $pageContext, $requestSnapshot);
                 } catch (\Throwable $e) {
@@ -301,6 +316,7 @@ final class DeferredBlockOrchestrator
             $deferredRequestId,
             $locale,
             $uiSseSession,
+            $visitor,
         );
 
         $liveEnabled = $startLiveLoop && $persistentDeferredSse;
@@ -316,7 +332,7 @@ final class DeferredBlockOrchestrator
             ]);
         }
         if ($liveEnabled) {
-            $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale, $requestSnapshot);
+            $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale, $requestSnapshot, $visitor);
         }
     }
 
@@ -334,37 +350,82 @@ final class DeferredBlockOrchestrator
         ?string $deferredRequestId,
         ?string $locale,
         ?string $uiSseSession = null,
+        ?Request $visitor = null,
     ): int {
         if ($instances === []) {
             return $eventId;
         }
 
+        // Each instance renders in its own session coroutine, all at once, and
+        // is sent as it finishes: a slow one no longer holds up the others.
+        // Without coroutines (CLI, a test) they render one after another.
+        $concurrent = class_exists(\Swoole\Coroutine\Channel::class, false)
+            && class_exists(Coroutine::class, false) && Coroutine::getCid() > 0 && count($instances) > 1;
+        $channel = $concurrent ? new \Swoole\Coroutine\Channel(count($instances)) : null;
+        $rendered = [];
+        $expected = 0;
         foreach ($instances as $instance) {
-            if (!$this->sseServer->isSessionActive($sessionId)) {
-                break;
-            }
-
             $instanceId = (string) ($instance['instance_id'] ?? '');
             $name = (string) ($instance['name'] ?? '');
             $props = is_array($instance['props'] ?? null) ? $instance['props'] : [];
-
             if ($instanceId === '' || $name === '') {
                 continue;
             }
+            $expected++;
+            $render = function () use ($sessionId, $instanceId, $name, $props, $locale, $uiSseSession, $visitor): array {
+                if (!$this->sseServer->isSessionActive($sessionId)) {
+                    return [$instanceId, $name, null];
+                }
 
-            $html = '';
-            try {
-                $this->applyLocale($locale);
-                $this->applyUiSseSession($uiSseSession);
-                $html = $this->componentRenderer->render($name, $props, [], forceImmediateRender: true);
-            } catch (\Throwable $e) {
-                SseSessionCoroutines::rethrowIfCancellation($e);
-                $this->logger->error('Deferred component render failed', [
-                    'component' => $name,
-                    'instance_id' => $instanceId,
-                    'exception' => $e::class,
-                    'message' => $e->getMessage(),
-                ]);
+                try {
+                    $this->applyLocale($locale);
+                    $this->kissVisitor->establish($visitor);
+                    $this->applyUiSseSession($uiSseSession);
+
+                    $startedAt = hrtime(true);
+                    $html = $this->componentRenderer->render($name, $props, [], forceImmediateRender: true);
+                    PageTimeline::record($sessionId, 'deferred', ['component' => $name, 'instance' => $instanceId, 'ms' => round((hrtime(true) - $startedAt) / 1_000_000, 2)]);
+
+                    return [$instanceId, $name, $html];
+                } catch (\Throwable $e) {
+                    SseSessionCoroutines::rethrowIfCancellation($e);
+                    $this->logger->error('Deferred component render failed', [
+                        'component' => $name,
+                        'instance_id' => $instanceId,
+                        'exception' => $e::class,
+                        'message' => $e->getMessage(),
+                    ]);
+
+                    return [$instanceId, $name, null];
+                }
+            };
+            if ($channel === null) {
+                $rendered[] = $render();
+                continue;
+            }
+            $spawned = $this->sseServer->createSessionCoroutine(static function () use ($render, $channel): void {
+                $result = [null, null, null];
+                try {
+                    $result = $render();
+                } finally {
+                    $channel->push($result); // always: the loop below waits for one answer per instance
+                }
+            }, $sessionId);
+            if ($spawned === false) {
+                $channel->push([null, null, null]);
+            }
+        }
+
+        for ($i = 0; $i < $expected; $i++) {
+            if (!$this->sseServer->isSessionActive($sessionId)) {
+                break;
+            }
+            $item = $channel !== null ? $channel->pop(self::COMPONENT_RENDER_TIMEOUT_SECONDS) : ($rendered[$i] ?? false);
+            if (!is_array($item)) {
+                break;
+            }
+            [$instanceId, $name, $html] = $item;
+            if (!is_string($html) || !is_string($instanceId) || !is_string($name)) {
                 continue;
             }
 
@@ -398,9 +459,11 @@ final class DeferredBlockOrchestrator
         array $pageContext,
         ?string $locale,
         ?array $requestSnapshot = null,
+        ?Request $visitor = null,
     ): array {
         try {
             $this->applyLocale($locale);
+            $this->kissVisitor->establish($visitor);
             $this->applyUiSseSessionFromContext($pageContext);
             return $this->resolveSlotData($slot, $pageHandle, $pageContext, $requestSnapshot);
         } catch (\Throwable $e) {
@@ -481,6 +544,7 @@ final class DeferredBlockOrchestrator
         array $liveSlots,
         ?string $locale = null,
         ?array $requestSnapshot = null,
+        ?Request $visitor = null,
     ): void
     {
         if ($liveSlots === []) {
@@ -514,6 +578,7 @@ final class DeferredBlockOrchestrator
 
                 try {
                     $this->applyLocale($locale);
+                    $this->kissVisitor->establish($visitor);
                     $this->applyUiSseSessionFromContext($pageContext);
                     $data = $this->resolveSlotData($slot, $pageHandle, $pageContext, $requestSnapshot);
                 } catch (\Throwable $e) {

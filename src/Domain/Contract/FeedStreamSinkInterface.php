@@ -14,6 +14,7 @@ interface FeedStreamSinkInterface
     /**
      * @param array<string, mixed> $requestSnapshot the admitted feed request the owning worker rebuilds
      * @param string $routeName the feed's route name; a non-empty name also stamps the requester's tenant
+     * @param bool $acceptsPatches the subscriber applies keyed patches (`ui.collection.patch`)
      */
     public function submitSubscribe(
         string $sessionId,
@@ -23,6 +24,7 @@ interface FeedStreamSinkInterface
         array $requestSnapshot,
         string $routeName = '',
         ?string $requesterTenantId = null,
+        bool $acceptsPatches = false,
     ): bool;
 
     /** @param array<string, mixed> $params */

@@ -9,7 +9,7 @@ use Psr\Container\ContainerInterface;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Attribute\TransportType;
-use Semitexa\Core\Auth\AuthBootstrapperInterface;
+use Semitexa\Core\Auth\AuthBootstrapperFactoryInterface;
 use Semitexa\Core\Container\RequestScopedContainer;
 use Semitexa\Core\Discovery\AttributeDiscovery;
 use Semitexa\Core\Discovery\DiscoveredRoute;
@@ -87,7 +87,7 @@ final class FeedStreamControl
             : [400, ['ok' => false, 'accepted' => false, 'reason' => 'invalid_session']];
     }
 
-    /** @param array{op: string, feed: string, params: array<string, scalar|null>, session: string, subscriptionId: string} $control */
+    /** @param array{op: string, feed: string, params: array<string, scalar|null>, session: string, subscriptionId: string, patches: bool} $control */
     private function subscribe(DiscoveredRoute $route, array $control, Request $hugRequest): bool
     {
         $feedRequest = self::feedRequest($route, $control['params'], $hugRequest);
@@ -100,10 +100,11 @@ final class FeedStreamControl
             'GET',
             self::snapshot($feedRequest),
             (string) $route->name,
+            acceptsPatches: $control['patches'],
         );
     }
 
-    /** @param array{op: string, feed: string, params: array<string, scalar|null>, session: string, subscriptionId: string} $control */
+    /** @param array{op: string, feed: string, params: array<string, scalar|null>, session: string, subscriptionId: string, patches: bool} $control */
     private function view(DiscoveredRoute $route, array $control, Request $hugRequest): bool
     {
         $payload = $this->admit($route, self::feedRequest($route, $control['params'], $hugRequest));
@@ -116,12 +117,12 @@ final class FeedStreamControl
 
     /**
      * @param array<array-key, mixed> $fields
-     * @return array{op: string, feed: string, params: array<string, scalar|null>, session: string, subscriptionId: string}
+     * @return array{op: string, feed: string, params: array<string, scalar|null>, session: string, subscriptionId: string, patches: bool}
      */
     private static function validate(array $fields): array
     {
         $errors = [];
-        $allowed = ['op', 'feed', 'params', 'session', 'subscriptionId'];
+        $allowed = ['op', 'feed', 'params', 'session', 'subscriptionId', 'patches'];
         foreach (array_keys($fields) as $key) {
             if (!in_array($key, $allowed, true)) {
                 $errors['stream.' . $key] = ['Unknown stream control field.'];
@@ -153,12 +154,17 @@ final class FeedStreamControl
             }
         }
 
+        $patches = $fields['patches'] ?? false;
+        if (!is_bool($patches)) {
+            $errors['stream.patches'] = ['Must be true or false.'];
+        }
+
         if ($errors !== []) {
             throw new ValidationException($errors);
         }
 
-        /** @var array{op: string, feed: string, params: array<string, scalar|null>, session: string, subscriptionId: string} */
-        return ['op' => $op, 'feed' => $feed, 'params' => $params, 'session' => $fields['session'], 'subscriptionId' => $fields['subscriptionId']];
+        /** @var array{op: string, feed: string, params: array<string, scalar|null>, session: string, subscriptionId: string, patches: bool} */
+        return ['op' => $op, 'feed' => $feed, 'params' => $params, 'session' => $fields['session'], 'subscriptionId' => $fields['subscriptionId'], 'patches' => $patches];
     }
 
     /**
@@ -212,14 +218,17 @@ final class FeedStreamControl
         if ($this->admitter !== null) {
             return ($this->admitter)($route, $request);
         }
-        $auth = $this->container->has(AuthBootstrapperInterface::class)
-            ? $this->container->get(AuthBootstrapperInterface::class)
+        // Built through its factory, as the application builds it (it is not a
+        // container service), over the request scope the admission runs in.
+        $scope = RequestScopedContainer::forCurrentExecution($this->container);
+        $factory = $this->container->has(AuthBootstrapperFactoryInterface::class)
+            ? $this->container->get(AuthBootstrapperFactoryInterface::class)
             : null;
 
         return (new RouteExecutor(
-            RequestScopedContainer::forCurrentExecution($this->container),
+            $scope,
             $this->container,
-            $auth instanceof AuthBootstrapperInterface ? $auth : null,
+            $factory instanceof AuthBootstrapperFactoryInterface ? $factory->create($this->container, $scope) : null,
         ))->admit($route, $request);
     }
 

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Semitexa\Core\Server\PageTimeline;
 use Semitexa\Core\Support\Row;
 use Semitexa\Core\HttpResponse;
 use Semitexa\Core\Log\StaticLoggerBridge;
@@ -54,7 +55,7 @@ final class SseControlRouter
             SseControlFrame::RERUN => $this->handleReRun($sessionId, $response, $data),
             SseControlFrame::VIEWCHANGE => $this->handleViewChange($sessionId, $response, $data),
             SseControlFrame::SUBSCRIBE => $this->handleSubscribe($sessionId, $response, $data),
-            SseControlFrame::UNSUBSCRIBE => $this->handleUnsubscribe($data),
+            SseControlFrame::UNSUBSCRIBE => $this->handleUnsubscribe($sessionId, $data),
             null => SseControlFrame::NOT_CONTROL,
             default => $this->refuseUnknownControl($sessionId, $data),
         };
@@ -112,6 +113,7 @@ final class SseControlRouter
             return;
         }
 
+        $this->diff()->forget($streamingId);
         try {
             $this->runtime->connectCoordinator?->onDisconnect($streamingId);
         } catch (\Throwable $e) {
@@ -147,7 +149,7 @@ final class SseControlRouter
             return SseControlFrame::HANDLED_CONTINUE;
         }
 
-        $outcome = $this->dispatchReRun($streamingId, $sessionId, $response, $context, []);
+        $outcome = $this->dispatchReRun($streamingId, $sessionId, $response, $context, [], true);
         $this->clearPending($streamingId);
 
         return $outcome;
@@ -181,7 +183,8 @@ final class SseControlRouter
             return SseControlFrame::HANDLED_CONTINUE;
         }
 
-        return $this->dispatchReRun($streamingId, $sessionId, $response, $context, $override);
+        // A new view is a new page: sent whole, never as a patch.
+        return $this->dispatchReRun($streamingId, $sessionId, $response, $context, $override, false);
     }
 
     /**
@@ -257,10 +260,12 @@ final class SseControlRouter
 
         // Authorized: register both tiers, THEN push the initial frame.
         $this->attach($attachment->record, $attachment->context);
+        $this->diff()->accept($streamingId, ($data['patches'] ?? false) === true);
+        PageTimeline::record($sessionId, 'subscribe', ['feed' => $frame->string('route_name'), 'sub' => $streamingId, 'patches' => ($data['patches'] ?? false) === true]);
 
         $wrote = $this->transport()->writeFrame(
             $response,
-            $this->frames->build(SseFrameFactory::stampSubscriptionId($this->frameData($result->getFrame()), $streamingId)),
+            $this->frames->build(SseFrameFactory::stampSubscriptionId($this->diff()->next($streamingId, $this->frameData($result->getFrame()), false) ?? [], $streamingId)),
         );
 
         if (!$wrote) {
@@ -276,11 +281,12 @@ final class SseControlRouter
     /**
      * @param array<string, mixed> $data
      */
-    private function handleUnsubscribe(array $data): int
+    private function handleUnsubscribe(string $sessionId, array $data): int
     {
         $streamingId = trim(Row::of($data)->string('streaming_id'));
         if ($streamingId !== '') {
             $this->detach($streamingId);
+            PageTimeline::record($sessionId, 'unsubscribe', ['sub' => $streamingId]);
         }
 
         return SseControlFrame::HANDLED_CONTINUE;
@@ -297,6 +303,7 @@ final class SseControlRouter
         mixed $response,
         ReRunContext $context,
         array $filterOverride,
+        bool $mayPatch = false,
     ): int {
         try {
             $this->scope->begin();
@@ -341,7 +348,18 @@ final class SseControlRouter
         // for a view change, the new view), so this is fresh, not the stale cached
         // value: a re-run over a now-absent resource yields the handler's
         // empty/"gone" frame, written as-is — no crash, no stale data.
-        if (!$this->transport()->writeFrame($response, $this->frames->build(SseFrameFactory::stampSubscriptionId($this->frameData($frame), $streamingId)))) {
+        // A mutation re-run sends only what changed since the page this
+        // subscription was last sent (a keyed patch), or nothing at all.
+        $data = $this->diff()->next($streamingId, $this->frameData($frame), $mayPatch);
+        PageTimeline::record($sessionId, 'rerun', [
+            'sub' => $streamingId,
+            'cause' => $mayPatch ? 'write' : 'view',
+            'sent' => $data === null ? 'nothing' : (is_string($data['_type'] ?? null) ? $data['_type'] : 'frame'),
+        ]);
+        if ($data === null) {
+            return SseControlFrame::HANDLED_CONTINUE;
+        }
+        if (!$this->transport()->writeFrame($response, $this->frames->build(SseFrameFactory::stampSubscriptionId($data, $streamingId)))) {
             return SseControlFrame::HANDLED_CLOSE;
         }
 
@@ -392,6 +410,11 @@ final class SseControlRouter
     private function clearPending(string $streamingId): void
     {
         $this->runtime->rerunCoalescer?->clearPending($streamingId);
+    }
+
+    private function diff(): CollectionFrameDiff
+    {
+        return $this->runtime->collectionDiff ??= new CollectionFrameDiff();
     }
 
     private function transport(): SseTransportInterface

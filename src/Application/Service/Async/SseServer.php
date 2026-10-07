@@ -433,6 +433,7 @@ final class SseServer implements FeedStreamSinkInterface
             $lastEventId,
             $this->canUsePersistentDeferredSse($request),
             $resolvedMode === self::TRANSPORT_MODE_LIVE,
+            \Semitexa\Core\RequestFactory::fromSwoole($request), // deferred content renders as this browser's visitor
         );
     }
 
@@ -514,6 +515,9 @@ final class SseServer implements FeedStreamSinkInterface
 
         $authenticatedUserId = $this->openSseStream($request, $response, $sessionId);
 
+        // What its last connection missed comes first: it was written before anything queued since.
+        $replay = ($transport = $this->transport()) instanceof ReplayingSseTransport ? $transport->resume($response, $sessionId, $stream->lastEventId) : [];
+
         // Flush local buffer for this session only
         $this->flushBacklog($sessionId, $response);
 
@@ -528,7 +532,7 @@ final class SseServer implements FeedStreamSinkInterface
             'event' => 'connected',
             'connected' => true,
             'mode' => $resolvedMode,
-        ]);
+        ] + $replay);
 
         // Drain mode short-circuit. deferred_request_id wins when both are
         // set — its own streamDeferredBlocks() pipeline owns the done/close
@@ -549,7 +553,7 @@ final class SseServer implements FeedStreamSinkInterface
 
         // Trigger deferred block streaming if deferred_request_id is present
         if ($stream->hasDeferredRequest()
-            && !$this->openDeferredDoor($request, $response, $sessionId, $stream->deferredRequestId, $stream->lastEventId, $resolvedMode)
+            && !$this->openDeferredDoor($request, $response, $sessionId, $stream->deferredRequestId, ReplayingSseTransport::isReplayId($stream->lastEventId) ? null : $stream->lastEventId, $resolvedMode)
         ) {
             $close();
             return;
@@ -716,7 +720,7 @@ final class SseServer implements FeedStreamSinkInterface
                 break;
             }
 
-            \Swoole\Coroutine::sleep(self::HELD_OPEN_TICK_SECONDS);
+            $this->sessionRegistry()->waitForWork($sessionId, self::HELD_OPEN_TICK_SECONDS);
         }
     }
 
@@ -1092,7 +1096,7 @@ final class SseServer implements FeedStreamSinkInterface
      */
     private function transport(): SseTransportInterface
     {
-        return $this->runtime()->transport ??= new SwooleSseTransport();
+        return $this->runtime()->transport ??= new ReplayingSseTransport(new SwooleSseTransport(), new SseReplayRing($this->redisPool()));
     }
 
     /**
@@ -1611,6 +1615,7 @@ final class SseServer implements FeedStreamSinkInterface
         array $requestSnapshot,
         string $routeName = '',
         ?string $requesterTenantId = null,
+        bool $acceptsPatches = false,
     ): bool {
         $sessionId = trim($sessionId);
         $streamingId = trim($streamingId);
@@ -1624,7 +1629,7 @@ final class SseServer implements FeedStreamSinkInterface
 
         // A HUG subscribe stamps its request's tenant; the owning worker refuses a mismatch.
         $requesterTenantId ??= $routeName !== '' ? $this->currentTenantId() : null;
-        $this->deliver($sessionId, SseControlFrame::subscribe($streamingId, $routePath, $routeMethod, $requestSnapshot, $routeName, $requesterTenantId));
+        $this->deliver($sessionId, SseControlFrame::subscribe($streamingId, $routePath, $routeMethod, $requestSnapshot, $routeName, $requesterTenantId, $acceptsPatches));
 
         return true;
     }

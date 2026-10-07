@@ -53,6 +53,10 @@ final class FeedStreamControlTest extends TestCase
         self::assertSame([self::SESSION, self::SUB, '/leads/feed', 'GET'], array_slice($call[1], 0, 4));
         self::assertSame('leads.feed', $call[1][5], 'the owning worker resolves the feed by name');
         self::assertSame('/leads/feed?q=acme&page=2', $call[1][4]['uri']);
+        self::assertFalse($this->sink->patches, 'whole frames unless the subscriber asks for patches');
+
+        $this->control()->control(['patches' => true] + $this->fields('subscribe'), $this->hugRequest());
+        self::assertTrue($this->sink->patches);
     }
 
     #[Test]
@@ -181,10 +185,12 @@ final class RecordingFeedSink implements FeedStreamSinkInterface
     /** @var list<array{0: string, 1: list<mixed>}> */
     public array $calls = [];
     public bool $accept = true;
+    public bool $patches = false;
 
-    public function submitSubscribe(string $sessionId, string $streamingId, string $routePath, string $routeMethod, array $requestSnapshot, string $routeName = '', ?string $requesterTenantId = null): bool
+    public function submitSubscribe(string $sessionId, string $streamingId, string $routePath, string $routeMethod, array $requestSnapshot, string $routeName = '', ?string $requesterTenantId = null, bool $acceptsPatches = false): bool
     {
         $this->calls[] = ['subscribe', [$sessionId, $streamingId, $routePath, $routeMethod, $requestSnapshot, $routeName]];
+        $this->patches = $acceptsPatches;
         return $this->accept;
     }
 

@@ -128,6 +128,7 @@ final class SseControlFrame
         array $requestSnapshot,
         string $routeName = '',
         ?string $requesterTenantId = null,
+        bool $acceptsPatches = false,
     ): array {
         $frame = [
             self::KEY => self::SUBSCRIBE,
@@ -144,6 +145,11 @@ final class SseControlFrame
         }
         if ($requesterTenantId !== null) {
             $frame['requester_tenant_id'] = $requesterTenantId;
+        }
+        // The client applies keyed patches (`ui.collection.patch`); without it
+        // every re-run is sent whole.
+        if ($acceptsPatches) {
+            $frame['patches'] = true;
         }
 
         return $frame;

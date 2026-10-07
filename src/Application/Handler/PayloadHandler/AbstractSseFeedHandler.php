@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Handler\PayloadHandler;
 
 use Semitexa\Core\Attribute\InjectAsReadonly;
-use Semitexa\Core\Attribute\WatchScopes;
+use Semitexa\Core\Http\WatchScopesOf;
 use Semitexa\Core\Exception\AccessDeniedException;
 use Semitexa\Core\Exception\AuthenticationException;
 use Semitexa\Core\Exception\DomainException;
@@ -53,15 +53,6 @@ abstract class AbstractSseFeedHandler
     {
         return $this->sseServer ??= AsyncResourceSseServer::instance();
     }
-
-    /**
-     * Payload class → declared `#[WatchScopes]` keys, memoized per worker.
-     * The declaration is classmap-stable for the life of a worker, so it is
-     * reflected once per feed payload class, not once per connect.
-     *
-     * @var array<class-string, list<string>>
-     */
-    private static array $watchScopeCache = [];
 
     // ---- The feed-specific seams -------------------------------------------
 
@@ -161,7 +152,7 @@ abstract class AbstractSseFeedHandler
 
     /**
      * The live-on-events scope keys a feed payload declares via
-     * `#[WatchScopes]` — the single source of
+     * `#[WatchScopes]` (or a route attribute that DeclaresWatchScopesInterface) — the single source of
      * {@see SubscriptionRecord::$scopeKeys} for canonical feeds. The watch
      * list rides the API surface itself (the payload that IS the route), one
      * declaration for both the subscription and the contract projection.
@@ -172,17 +163,7 @@ abstract class AbstractSseFeedHandler
      */
     public static function watchScopesOf(string $payloadClass): array
     {
-        return self::$watchScopeCache[$payloadClass] ??= (static function () use ($payloadClass): array {
-            $attrs = (new \ReflectionClass($payloadClass))->getAttributes(WatchScopes::class);
-            if ($attrs === []) {
-                return [];
-            }
-
-            /** @var WatchScopes $declared */
-            $declared = $attrs[0]->newInstance();
-
-            return $declared->scopes;
-        })();
+        return WatchScopesOf::payload($payloadClass);
     }
 
     /**

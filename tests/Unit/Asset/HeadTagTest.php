@@ -43,6 +43,19 @@ final class HeadTagTest extends TestCase
     }
 
     #[Test]
+    public function page_text_that_only_mentions_the_name_does_not_suppress_it(): void
+    {
+        $collector = new AssetCollector();
+        $collector->headTag('session', self::META, 'name="semitexa-ui-sse-session"');
+
+        $page = '<html><head></head><body><p>uses meta name="semitexa-ui-sse-session"</p>'
+            . '<script>if (a<b) document.querySelector(\'meta[name="semitexa-ui-sse-session"]\');</script></body></html>';
+        $html = AssetRenderer::finalizeDynamicCss($page, $collector);
+
+        self::assertStringContainsString(self::META . '</head>', $html, 'a mention is not the tag');
+    }
+
+    #[Test]
     public function it_takes_the_place_asset_head_left_for_late_arrivals(): void
     {
         $collector = new AssetCollector();

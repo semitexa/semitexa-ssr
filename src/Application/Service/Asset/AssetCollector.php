@@ -217,8 +217,10 @@ final class AssetCollector
      * one copy per part into the body. The first registration of a key wins;
      * the tag lands when the page is finalized, before </head>.
      *
-     * $unlessPresent skips the tag when the finished page already contains
-     * that text — a template that printed the tag itself, wherever it did.
+     * $unlessPresent (an attribute, e.g. `name="…"`) skips the tag when the
+     * finished page already has a tag of the same kind carrying it — a
+     * template that printed the tag itself, wherever it did. Page text that
+     * merely mentions it (a script's selector) does not count.
      */
     public function headTag(string $key, string $html, ?string $unlessPresent = null): self
     {
@@ -232,7 +234,7 @@ final class AssetCollector
     {
         $out = '';
         foreach ($this->headTags as $tag) {
-            if ($tag['unlessPresent'] !== null && str_contains($pageHtml, $tag['unlessPresent'])) {
+            if ($tag['unlessPresent'] !== null && self::pageHasTag($pageHtml, $tag['html'], $tag['unlessPresent'])) {
                 continue;
             }
             $out .= $tag['html'];
@@ -240,6 +242,14 @@ final class AssetCollector
         $this->headTags = [];
 
         return $out;
+    }
+
+    /** Whether the page has a start tag like $html's own that carries $attribute. */
+    private static function pageHasTag(string $pageHtml, string $html, string $attribute): bool
+    {
+        $element = preg_match('/^\s*<([a-zA-Z][a-zA-Z0-9-]*)/', $html, $m) === 1 ? preg_quote($m[1], '/') : '[a-zA-Z][a-zA-Z0-9-]*';
+
+        return preg_match('/<' . $element . '\b[^<>]*\s' . preg_quote($attribute, '/') . '[^<>]*>/i', $pageHtml) === 1;
     }
 
     /**

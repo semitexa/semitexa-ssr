@@ -13,7 +13,9 @@ use Semitexa\Ssr\Domain\Exception\UnknownComponentException;
  * (`component(name)`) cannot be checked statically and is left to the
  * renderer, which refuses it in development. Text that is not template code —
  * `{% verbatim %}` blocks and `{# comments #}` — is skipped: a code sample on
- * a page that SHOWS a component call does not render one.
+ * a page that SHOWS a component call does not render one. A template it
+ * cannot read is reported too: a file the lint could not open is not a file
+ * it cleared.
  */
 final class ComponentReferenceScanner
 {
@@ -22,7 +24,7 @@ final class ComponentReferenceScanner
     /**
      * @param list<string> $templateRoots directories to scan for *.twig
      * @param list<string> $known         every registered component name
-     * @return list<array{path: string, line: int, name: string, suggestion: ?string}>
+     * @return list<array{path: string, line: int, name: string, suggestion: ?string, unreadable: bool}>
      */
     public function unknownReferences(array $templateRoots, array $known): array
     {
@@ -31,6 +33,7 @@ final class ComponentReferenceScanner
         foreach ($this->templates($templateRoots) as $path) {
             $source = @file_get_contents($path);
             if (!is_string($source)) {
+                $issues[] = ['path' => $path, 'line' => 0, 'name' => '', 'suggestion' => null, 'unreadable' => true];
                 continue;
             }
             foreach ($this->references($source) as [$name, $line]) {
@@ -40,6 +43,7 @@ final class ComponentReferenceScanner
                         'line' => $line,
                         'name' => $name,
                         'suggestion' => UnknownComponentException::closest($name, $known),
+                        'unreadable' => false,
                     ];
                 }
             }

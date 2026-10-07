@@ -67,6 +67,10 @@ final class LintComponentsCommand extends Command
             return Command::SUCCESS;
         }
         foreach ($issues as $issue) {
+            if ($issue['unreadable']) {
+                $io->writeln(sprintf('  %s  could not be read, so its component references were not checked', $issue['path']));
+                continue;
+            }
             $io->writeln(sprintf(
                 '  %s:%d  component(\'%s\') — no #[AsComponent] has this name%s',
                 $issue['path'],
@@ -75,7 +79,7 @@ final class LintComponentsCommand extends Command
                 $issue['suggestion'] === null ? '' : sprintf("; did you mean '%s'?", $issue['suggestion']),
             ));
         }
-        $io->error(sprintf('%d component reference(s) name nothing registered.', count($issues)));
+        $io->error(sprintf('%d component reference(s) name nothing registered or sit in a template that could not be read.', count($issues)));
 
         return Command::FAILURE;
     }

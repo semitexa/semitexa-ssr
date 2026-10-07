@@ -4,14 +4,19 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Component;
 
+use Semitexa\Ssr\Context\IsomorphicContextStore;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Attribute\TransportType;
 use Semitexa\Core\Support\CoroutineLocal;
+use Semitexa\Core\Environment;
+use Semitexa\Core\Log\StaticLoggerBridge;
+use Semitexa\Ssr\Domain\Exception\UnknownComponentException;
 use Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore;
 use Semitexa\Ssr\Application\Service\DataProviderRegistry;
 use Semitexa\Ssr\Application\Service\Isomorphic\PlaceholderRenderer;
 use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
+use Semitexa\Ssr\Domain\Model\ComponentInstanceId;
 use Semitexa\Ssr\Domain\Model\DataProviderContext;
 
 /**
@@ -35,6 +40,9 @@ final class ComponentHtmlRenderer
 {
     private const CTX_RENDERED_SLOTS = '__ssr_rendered_slots';
     private const CTX_CURRENT_REQUEST = '__ssr_current_request';
+
+    /** Set while a deferred instance is rendered: what it nests is rendered there and then. */
+    private const CTX_IMMEDIATE = '__ssr_component_immediate';
 
     #[InjectAsReadonly]
     protected DataProviderRegistry $dataProviderRegistry;
@@ -63,6 +71,8 @@ final class ComponentHtmlRenderer
      * @param bool $forceImmediateRender Skip the #[WithTransport(Sse, deferred:true)] short-circuit
      *                                   and render synchronously. Used by DeferredBlockOrchestrator
      *                                   when resolving a previously-deferred instance for SSE delivery.
+     *                                   Components it nests render immediately too: a placeholder
+     *                                   inside a deferred render would never be filled.
      */
     public function render(
         string $name,
@@ -70,15 +80,24 @@ final class ComponentHtmlRenderer
         array $slots = [],
         bool $forceImmediateRender = false,
     ): string {
+        if ($forceImmediateRender && CoroutineLocal::get(self::CTX_IMMEDIATE, false) !== true) {
+            CoroutineLocal::set(self::CTX_IMMEDIATE, true);
+            try {
+                return $this->render($name, $props, $slots, true);
+            } finally {
+                CoroutineLocal::set(self::CTX_IMMEDIATE, false);
+            }
+        }
+
         $component = isset($this->catalog)
             ? $this->catalog->get($name)
             : ComponentRegistry::get($name);
 
         if ($component === null) {
-            return "<!-- Component '{$name}' not found -->";
+            return $this->unknownComponent($name);
         }
 
-        /** @var array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string, dataProviderClass: ?string, transportMode: TransportType, deferred: bool, providerProps: array<string, mixed>} $component */
+        /** @var array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, script: ?string, dataProviderClass: ?string, transportMode: TransportType, deferred: bool, providerProps: array<string, mixed>} $component */
         $currentSlots = CoroutineLocal::get(self::CTX_RENDERED_SLOTS, []);
         $previousSlots = $currentSlots;
         $currentSlots[$name] = $slots;
@@ -86,23 +105,29 @@ final class ComponentHtmlRenderer
 
         try {
             $template = $component['template'] ?? "components/{$name}.html.twig";
-            $manifest = null;
-            $componentId = null;
-
             $transportMode = $component['transportMode'] ?? TransportType::Http;
             $deferred = $component['deferred'] ?? false;
-            $deferringNow = $deferred && $transportMode === TransportType::Sse && !$forceImmediateRender;
+            // Deferred only where a deferred stream will fill the placeholder:
+            // a page whose deferral is set up. Inside a deferred render, a KISS
+            // re-render (an island, a morph), a feed or the CLI it renders now —
+            // a placeholder there would never be filled.
+            $immediate = $forceImmediateRender || CoroutineLocal::get(self::CTX_IMMEDIATE, false) === true;
+            $deferringNow = !$immediate && $deferred && $transportMode === TransportType::Sse
+                && IsomorphicContextStore::getPageHandle() !== '';
 
-            if (
-                ($component['event'] ?? null) !== null
-                || ($component['script'] ?? null) !== null
-                || $deferringNow
-            ) {
-                $componentId = 'cmp_' . bin2hex(random_bytes(8));
-            }
+            // ONE identity per rendered instance. A re-render passes its id back
+            // as the `instanceId` prop, so the instance keeps it.
+            $componentId = ComponentInstanceId::isSafe($props['instanceId'] ?? null)
+                ? (string) $props['instanceId']
+                : ComponentInstanceId::mint();
+
+            // Page-request overlays (Platform UI's #[UiUrl]) adjust the caller's
+            // props — before a deferral records them, since the deferred render
+            // later runs on KISS without the page's query string.
+            $props = ComponentPropsOverlays::apply($name, $props, CoroutineLocal::get(self::CTX_CURRENT_REQUEST, null));
 
             if ($deferringNow) {
-                ComponentInstanceStore::record($componentId ?? '', $name, $props);
+                ComponentInstanceStore::record($componentId, $name, $props);
                 return PlaceholderRenderer::renderComponentPlaceholder($name, $componentId);
             }
 
@@ -130,15 +155,7 @@ final class ComponentHtmlRenderer
 
             $props = array_merge($metaProps, $providerData, $explicitProps);
 
-            if (($component['event'] ?? null) !== null) {
-                $manifest = ComponentEventBridge::buildManifest($component, $componentId);
-            }
-
             $collector = AssetCollectorStore::get();
-
-            if (($component['event'] ?? null) !== null) {
-                $collector->require('ssr:js:component-events');
-            }
 
             if (($component['script'] ?? null) !== null) {
                 $collector->require('ssr:js:component-runtime');
@@ -146,8 +163,10 @@ final class ComponentHtmlRenderer
             }
 
             $context = array_merge($props, [
+                // The caller's own props, apart from what providers added: what
+                // a re-render of this instance must be given again.
+                '_props' => $explicitProps,
                 '_component' => $component,
-                '_component_event_manifest' => $manifest,
                 '_component_id' => $componentId,
                 '_slots' => $slots,
             ]);
@@ -156,14 +175,36 @@ final class ComponentHtmlRenderer
 
             $html = $this->processNestedComponents($html);
 
-            if ($componentId !== null) {
-                $html = ComponentEventBridge::annotateRoot($html, $component, $componentId, $manifest);
+            if (($component['script'] ?? null) !== null) {
+                $html = ComponentRootAnnotator::annotate($html, $component, $componentId);
             }
 
-            return $html;
+            return ComponentRenderFinishers::apply($name, (string) ($component['class'] ?? ''), $componentId, $explicitProps, $html);
         } finally {
             CoroutineLocal::set(self::CTX_RENDERED_SLOTS, $previousSlots);
         }
+    }
+
+    /**
+     * A template asked for a name no #[AsComponent] declares — a typo, or a
+     * component renamed on one side only. It used to render as an HTML comment
+     * and nothing else: a hole in the page that only view-source showed. In
+     * development that is now an error naming the nearest registered name; in
+     * production the comment stays (a visitor should not get an error page for
+     * it) and the miss is logged where someone will see it.
+     */
+    private function unknownComponent(string $name): string
+    {
+        $known = array_keys(isset($this->catalog) ? $this->catalog->all() : ComponentRegistry::all());
+        if (Environment::getEnvValue('APP_ENV') === 'dev') {
+            throw UnknownComponentException::named($name, $known);
+        }
+        StaticLoggerBridge::warning('ssr', 'component_not_found', [
+            'component' => $name,
+            'did_you_mean' => UnknownComponentException::closest($name, $known),
+        ]);
+
+        return "<!-- Component '{$name}' not found -->";
     }
 
     private function processNestedComponents(string $html): string

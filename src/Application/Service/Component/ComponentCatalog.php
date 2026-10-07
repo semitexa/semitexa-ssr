@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Component;
 
-use Semitexa\Core\Attribute\AsEvent;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Attribute\TransportType;
@@ -19,7 +18,7 @@ use Semitexa\Core\Discovery\ClassDiscovery;
 #[AsService]
 final class ComponentCatalog
 {
-    /** @var array<string, array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string, dataProviderClass: ?string, transportMode: TransportType, deferred: bool, providerProps: array<string, mixed>}> */
+    /** @var array<string, array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, script: ?string, dataProviderClass: ?string, transportMode: TransportType, deferred: bool, providerProps: array<string, mixed>}> */
     /** @var array<string, array<string, mixed>> */
     private array $components = [];
     private bool $initialized = false;
@@ -65,34 +64,6 @@ final class ComponentCatalog
 
             /** @var AsComponent $attr */
             $attr = $attrs[0]->newInstance();
-            $triggers = ComponentEventBridge::normalizeTriggers($attr->triggers);
-
-            if ($attr->event === null && $triggers !== []) {
-                throw new \LogicException(sprintf(
-                    'Component %s declares triggers without an event class.',
-                    $class,
-                ));
-            }
-
-            if ($attr->event !== null) {
-                if (!class_exists($attr->event)) {
-                    throw new \LogicException(sprintf(
-                        'Component %s references missing event class %s.',
-                        $class,
-                        $attr->event,
-                    ));
-                }
-
-                $eventReflection = new \ReflectionClass($attr->event);
-                if ($eventReflection->getAttributes(AsEvent::class) === []) {
-                    throw new \LogicException(sprintf(
-                        'Component %s event %s must be marked with #[AsEvent].',
-                        $class,
-                        $attr->event,
-                    ));
-                }
-            }
-
             if ($attr->script !== null) {
                 $script = trim($attr->script);
                 if ($script === '') {
@@ -171,9 +142,7 @@ final class ComponentCatalog
                 'name' => $attr->name,
                 'template' => $attr->template,
                 'layout' => $attr->layout,
-                'cacheable' => $attr->event === null ? $attr->cacheable : false,
-                'event' => $attr->event,
-                'triggers' => $triggers,
+                'cacheable' => $attr->cacheable,
                 'script' => $attr->script !== null ? trim($attr->script) : null,
                 'dataProviderClass' => $dataProviderClass,
                 'transportMode' => $transportMode,
@@ -217,7 +186,7 @@ final class ComponentCatalog
     }
 
     /**
-     * @param array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string, dataProviderClass?: ?string, transportMode?: TransportType, deferred?: bool, providerProps?: array<string, mixed>} $component
+     * @param array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, script: ?string, dataProviderClass?: ?string, transportMode?: TransportType, deferred?: bool, providerProps?: array<string, mixed>} $component
      */
     public function register(array $component): void
     {

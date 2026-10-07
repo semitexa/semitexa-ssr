@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Extension;
 
-use Semitexa\Ssr\Application\Service\Component\ComponentEventBridge;
 use Semitexa\Ssr\Application\Service\Component\ComponentRenderer;
 use Semitexa\Ssr\Application\Service\Component\ComponentSlotRenderer;
 use Semitexa\Ssr\Application\Service\Isomorphic\PlaceholderRenderer;
@@ -41,7 +40,6 @@ final class LayoutTwigExtension
 
         TwigExtensionRegistry::registerFunction('component', [$this, 'component'], ['is_safe' => ['html']]);
         TwigExtensionRegistry::registerFunction('slot', [$this, 'componentSlot'], self::CONTEXTUAL_HTML);
-        TwigExtensionRegistry::registerFunction('component_event_attrs', [$this, 'componentEventAttrs'], self::CONTEXTUAL_HTML);
     }
 
     /**
@@ -95,18 +93,6 @@ final class LayoutTwigExtension
     public function componentSlot(array $context, string $name): Markup
     {
         return new Markup(ComponentSlotRenderer::render($name, $context), 'UTF-8');
-    }
-
-    /**
-     * @param array<array-key, mixed> $context
-     * @param array<array-key, mixed> $payload
-     */
-    public function componentEventAttrs(array $context, string $trigger, array $payload = []): Markup
-    {
-        return new Markup(
-            ComponentEventBridge::renderTriggerAttributes($context, $trigger, $payload),
-            'UTF-8',
-        );
     }
 
     /**

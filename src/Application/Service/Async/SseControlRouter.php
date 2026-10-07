@@ -209,9 +209,14 @@ final class SseControlRouter
 
         // A subscription admitted on HUG carries the tenant its request resolved;
         // it must be the tenant this KISS connection captured, or one tenant's
-        // page could attach another tenant's feed.
+        // page could attach another tenant's feed. A named frame always carries
+        // that claim; one without it is refused rather than left unchecked.
         $requesterTenant = $data['requester_tenant_id'] ?? null;
-        if (is_string($requesterTenant) && $requesterTenant !== ($this->sessions->capturedTenantId($sessionId) ?? '')) {
+        $named = $frame->string('route_name') !== '';
+        if (
+            ($named && !is_string($requesterTenant))
+            || (is_string($requesterTenant) && $requesterTenant !== ($this->sessions->capturedTenantId($sessionId) ?? ''))
+        ) {
             return $this->deny($response, $streamingId, 'subscribe_tenant_mismatch', UiSseEventType::UiError->value);
         }
 

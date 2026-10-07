@@ -489,6 +489,28 @@ final class ControlFrameReRunTest extends TestCase
         self::assertStringContainsString('subscribe_tenant_mismatch', $transport->frames[0]->toWire());
     }
 
+    #[Test]
+    public function a_named_subscribe_without_a_tenant_claim_is_denied(): void
+    {
+        $subs = $this->staticCoordinator();
+        $factory = $this->namedRecordingFactory();
+        AsyncResourceSseServer::setSubscriptionFactory($factory);
+        AsyncResourceSseServer::setReRunner($this->freshFrameReRunner());
+        $transport = $this->captureTransport();
+        $this->setTransport($transport);
+        $this->seedSessionTenant('sess_a', 'acme', '{"org":"acme"}');
+
+        $this->drain('sess_a', [
+            '__ctrl' => 'subscribe', 'streaming_id' => 'str_b',
+            'route_path' => '', 'route_method' => 'GET', 'request_snapshot' => [],
+            'route_name' => 'orders.feed',
+        ]);
+
+        self::assertNull($factory->seenRouteName, 'a named subscribe with no tenant claim never reaches the factory');
+        self::assertFalse($subs->has('str_b'));
+        self::assertStringContainsString('subscribe_tenant_mismatch', $transport->frames[0]->toWire());
+    }
+
     private function namedRecordingFactory(): SubscriptionFactoryInterface
     {
         return new class(

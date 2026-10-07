@@ -31,7 +31,7 @@ final class SseStreamRequest
     }
 
     /**
-     * @param mixed $request a Swoole HTTP request
+     * @param object $request a Swoole HTTP request
      */
     public static function fromRequest(mixed $request): self
     {

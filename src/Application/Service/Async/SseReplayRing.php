@@ -67,6 +67,7 @@ final class SseReplayRing
                 $key = self::KEY_PREFIX . $sessionId;
                 // One round trip per frame, not three.
                 $redis->pipeline(static function ($pipe) use ($key, $encoded): void {
+                    /** @var \Predis\ClientContextInterface $pipe */
                     $pipe->rpush($key, [$encoded]);
                     $pipe->ltrim($key, -self::CAPACITY, -1);
                     $pipe->expire($key, self::TTL_SECONDS);

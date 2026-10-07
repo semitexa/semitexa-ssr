@@ -245,9 +245,9 @@ final class SseServer implements FeedStreamSinkInterface
     public function handle(Request $request, Response $response): bool
     {
         $server = is_array($request->server) ? $request->server : [];
-        $path = $server['path_info'] ?? '';
+        $path = is_string($server['path_info'] ?? null) ? $server['path_info'] : '';
         if ($path === '') {
-            $uri = $server['request_uri'] ?? '/';
+            $uri = is_string($server['request_uri'] ?? null) ? $server['request_uri'] : '/';
             $path = parse_url($uri, PHP_URL_PATH) ?: '/';
         }
 
@@ -382,8 +382,8 @@ final class SseServer implements FeedStreamSinkInterface
 
         // Flush pending table for this session only
         foreach ($this->workerTables()->takePendingFor($sessionId) as $payload) {
-            $data = json_decode($payload, true);
-            if (is_array($data)) {
+            $data = SseFrameFactory::decodeQueued($payload);
+            if ($data !== null) {
                 $this->writeSse($response, $data);
             }
         }
@@ -799,8 +799,8 @@ final class SseServer implements FeedStreamSinkInterface
         $consumed = [];
 
         foreach ($tables->readDeliveriesFor($tables->currentWorkerId(), $sessionId) as $row) {
-            $data = json_decode($row['payload'], true);
-            if (!is_array($data)) {
+            $data = SseFrameFactory::decodeQueued($row['payload']);
+            if ($data === null) {
                 continue;
             }
 
@@ -968,7 +968,7 @@ final class SseServer implements FeedStreamSinkInterface
         // streaming_id so a multiplexed connection can demux the frame client-side;
         // the SAME stamp lands on every re-run frame (see dispatchReRun), so the
         // synchrony-pin byte-identity between initial and re-run frames holds.
-        $streamingId = $record?->streamingId ?? $sessionId;
+        $streamingId = $record->streamingId ?? $sessionId;
 
         // Past the caps on purpose: a first frame can cost as much as the
         // request itself (the graphql one IS a document execution).
@@ -1038,8 +1038,8 @@ final class SseServer implements FeedStreamSinkInterface
                 break;
             }
 
-            $data = json_decode((string) $raw, true);
-            if (!is_array($data)) {
+            $data = SseFrameFactory::decodeQueued((string) $raw);
+            if ($data === null) {
                 continue;
             }
 
@@ -1072,7 +1072,7 @@ final class SseServer implements FeedStreamSinkInterface
         return false;
     }
 
-    /** @param array<array-key, mixed> $data */
+    /** @param array<string, mixed> $data */
     private function writeSse(Response $response, array $data): bool
     {
         return $this->transport()->writeFrame($response, $this->buildFrame($data));
@@ -1175,7 +1175,7 @@ final class SseServer implements FeedStreamSinkInterface
      * enum), then by the `str_replace` on the rendered `event` line.
      * Defence in depth.
      *
-     * @param array<array-key, mixed> $data
+     * @param array<string, mixed> $data
      */
     private function buildFrame(array $data): SseFrame
     {
@@ -1272,12 +1272,12 @@ final class SseServer implements FeedStreamSinkInterface
         }
 
         $handle = $resource->getRenderHandle();
-        if (!$handle) {
+        if (!is_string($handle) || $handle === '' || $handle === '0') {
             return '';
         }
 
         $context = method_exists($resource, 'getRenderContext') ? $resource->getRenderContext() : [];
-        $context = array_merge($context, (array) $resource);
+        $context = array_merge(is_array($context) ? $context : [], (array) $resource);
 
         try {
             return \Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry::getTwig()->render(
@@ -1479,7 +1479,7 @@ final class SseServer implements FeedStreamSinkInterface
     private function resolveTenantContext(): ?object
     {
         $ctx = '\Semitexa\Tenancy\Context\TenantContext';
-        if (class_exists($ctx) && method_exists($ctx, 'get')) {
+        if (class_exists($ctx)) {
             $tenant = $ctx::get();
 
             return is_object($tenant) ? $tenant : null;
@@ -1628,7 +1628,7 @@ final class SseServer implements FeedStreamSinkInterface
         }
 
         // A HUG subscribe stamps its request's tenant; the owning worker refuses a mismatch.
-        $requesterTenantId ??= $routeName !== '' ? $this->currentTenantId() : null;
+        $requesterTenantId ??= $this->currentTenantId();
         $this->deliver($sessionId, SseControlFrame::subscribe($streamingId, $routePath, $routeMethod, $requestSnapshot, $routeName, $requesterTenantId, $acceptsPatches));
 
         return true;

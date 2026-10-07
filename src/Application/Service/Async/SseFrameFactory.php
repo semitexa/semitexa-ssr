@@ -48,6 +48,24 @@ final class SseFrameFactory
     }
 
     /**
+     * A queued frame back from its wire form. Every session queue and worker
+     * table row holds what {@see SseServer::deliver()} encoded: frame data,
+     * a JSON object, so its keys are strings. Anything else is no frame.
+     *
+     * @return array<string, mixed>|null
+     */
+    public static function decodeQueued(string $raw): ?array
+    {
+        $data = json_decode($raw, true);
+        if (!is_array($data)) {
+            return null;
+        }
+
+        /** @var array<string, mixed> $data */
+        return $data;
+    }
+
+    /**
      * Tag a frame with the subscription it belongs to, so a multiplexed client
      * can demux it. The SAME stamp lands on the initial frame and on every
      * re-run frame, which is what makes those two byte-identical — a pinned

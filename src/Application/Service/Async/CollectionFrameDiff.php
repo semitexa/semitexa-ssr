@@ -85,10 +85,12 @@ final class CollectionFrameDiff
             return $frame;
         }
 
+        /** @var list<mixed> $data page() keyed it, so the frame's data is a list */
+        $data = $frame['data'];
         $upsert = [];
         foreach ($page['order'] as $index => $id) {
             if (($previous['rows'][$id] ?? null) !== $page['rows'][$id]) {
-                $upsert[] = $frame['data'][$index];
+                $upsert[] = $data[$index];
             }
         }
         $remove = array_values(array_diff($previous['order'], $page['order']));

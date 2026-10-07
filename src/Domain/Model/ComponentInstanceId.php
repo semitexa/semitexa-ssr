@@ -23,6 +23,7 @@ final class ComponentInstanceId
         return self::PREFIX . bin2hex(random_bytes(8));
     }
 
+    /** @phpstan-assert-if-true string $id */
     public static function isSafe(mixed $id): bool
     {
         return is_string($id) && preg_match(self::SAFE_PATTERN, $id) === 1;

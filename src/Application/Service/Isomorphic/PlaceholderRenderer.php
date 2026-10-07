@@ -155,8 +155,8 @@ final class PlaceholderRenderer
 
         $componentManifest = [];
         foreach ($components as $component) {
-            $instanceId = (string) ($component['instance_id'] ?? '');
-            $name = (string) ($component['name'] ?? '');
+            $instanceId = $component['instance_id'];
+            $name = $component['name'];
             if ($instanceId === '' || $name === '') {
                 continue;
             }
@@ -232,7 +232,7 @@ final class PlaceholderRenderer
 
         $out = [];
         foreach ($instances as $instance) {
-            $instanceId = $instance['instance_id'] ?? '';
+            $instanceId = $instance['instance_id'];
             if ($instanceId !== '' && isset($renderedIds[$instanceId])) {
                 $out[] = $instance;
             }

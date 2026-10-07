@@ -44,7 +44,12 @@ final class ComponentInstanceStore
     public static function all(): array
     {
         $value = CoroutineLocal::get(self::CTX_KEY, []);
-        return is_array($value) ? $value : [];
+        if (!is_array($value)) {
+            return [];
+        }
+
+        /** @var array<string, array{instance_id: string, name: string, props: array<array-key, mixed>}> $value only record() writes this key */
+        return $value;
     }
 
     public static function reset(): void
@@ -63,9 +68,6 @@ final class ComponentInstanceStore
     {
         $sanitized = [];
         foreach ($props as $key => $value) {
-            if (!is_string($key) && !is_int($key)) {
-                continue;
-            }
             $normalized = self::sanitizeValue($value);
             if ($normalized === self::unsupportedMarker()) {
                 continue;
@@ -85,9 +87,6 @@ final class ComponentInstanceStore
         }
         $out = [];
         foreach ($value as $key => $item) {
-            if (!is_string($key) && !is_int($key)) {
-                continue;
-            }
             $normalized = self::sanitizeValue($item);
             if ($normalized === self::unsupportedMarker()) {
                 continue;
@@ -99,6 +98,7 @@ final class ComponentInstanceStore
 
     private static function unsupportedMarker(): object
     {
+        /** @var \stdClass|null $marker */
         static $marker;
         return $marker ??= new \stdClass();
     }

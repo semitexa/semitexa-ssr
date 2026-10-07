@@ -65,6 +65,14 @@ final class ComponentHtmlRenderer
         CoroutineLocal::set(self::CTX_CURRENT_REQUEST, $request);
     }
 
+    /** The request {@see setCurrentRequest()} bound to this coroutine, if any. */
+    private function currentRequest(): ?object
+    {
+        $request = CoroutineLocal::get(self::CTX_CURRENT_REQUEST, null);
+
+        return is_object($request) ? $request : null;
+    }
+
     /**
      * @param array<array-key, mixed> $props
      * @param array<array-key, mixed> $slots
@@ -97,16 +105,18 @@ final class ComponentHtmlRenderer
             return $this->unknownComponent($name);
         }
 
-        /** @var array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, script: ?string, dataProviderClass: ?string, transportMode: TransportType, deferred: bool, providerProps: array<string, mixed>} $component */
         $currentSlots = CoroutineLocal::get(self::CTX_RENDERED_SLOTS, []);
+        if (!is_array($currentSlots)) {
+            $currentSlots = [];
+        }
         $previousSlots = $currentSlots;
         $currentSlots[$name] = $slots;
         CoroutineLocal::set(self::CTX_RENDERED_SLOTS, $currentSlots);
 
         try {
             $template = $component['template'] ?? "components/{$name}.html.twig";
-            $transportMode = $component['transportMode'] ?? TransportType::Http;
-            $deferred = $component['deferred'] ?? false;
+            $transportMode = $component['transportMode'];
+            $deferred = $component['deferred'];
             // Deferred only where a deferred stream will fill the placeholder:
             // a page whose deferral is set up. Inside a deferred render, a KISS
             // re-render (an island, a morph), a feed or the CLI it renders now —
@@ -117,14 +127,15 @@ final class ComponentHtmlRenderer
 
             // ONE identity per rendered instance. A re-render passes its id back
             // as the `instanceId` prop, so the instance keeps it.
-            $componentId = ComponentInstanceId::isSafe($props['instanceId'] ?? null)
-                ? (string) $props['instanceId']
+            $requestedId = $props['instanceId'] ?? null;
+            $componentId = ComponentInstanceId::isSafe($requestedId)
+                ? $requestedId
                 : ComponentInstanceId::mint();
 
             // Page-request overlays (Platform UI's #[UiUrl]) adjust the caller's
             // props — before a deferral records them, since the deferred render
             // later runs on KISS without the page's query string.
-            $props = ComponentPropsOverlays::apply($name, $props, CoroutineLocal::get(self::CTX_CURRENT_REQUEST, null));
+            $props = ComponentPropsOverlays::apply($name, $props, $this->currentRequest());
 
             if ($deferringNow) {
                 ComponentInstanceStore::record($componentId, $name, $props);
@@ -145,7 +156,7 @@ final class ComponentHtmlRenderer
                 if ($provider !== null) {
                     $providerData = $provider->resolve(
                         new DataProviderContext(
-                            request: CoroutineLocal::get(self::CTX_CURRENT_REQUEST, null),
+                            request: $this->currentRequest(),
                             instanceId: $componentId,
                         ),
                         $explicitProps,
@@ -179,7 +190,7 @@ final class ComponentHtmlRenderer
                 $html = ComponentRootAnnotator::annotate($html, $component, $componentId);
             }
 
-            return ComponentRenderFinishers::apply($name, (string) ($component['class'] ?? ''), $componentId, $explicitProps, $html);
+            return ComponentRenderFinishers::apply($name, $component['class'], $componentId, $explicitProps, $html);
         } finally {
             CoroutineLocal::set(self::CTX_RENDERED_SLOTS, $previousSlots);
         }

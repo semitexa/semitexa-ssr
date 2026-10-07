@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Component;
 
+use Semitexa\Core\Support\Row;
 use Semitexa\Ssr\Domain\Contract\ComponentPropsOverlayInterface;
 
 /**
@@ -51,14 +52,18 @@ final class ComponentPropsOverlays
         return $props;
     }
 
-    /** A GET for a page — not HUG/KISS or any other `/__` door. */
+    /**
+     * A GET for a page — not HUG/KISS or any other `/__` door.
+     *
+     * @phpstan-assert-if-true object $request
+     */
     private static function isPageRequest(?object $request): bool
     {
         if ($request === null || !method_exists($request, 'getMethod') || !method_exists($request, 'getPath')) {
             return false;
         }
 
-        return strtoupper((string) $request->getMethod()) === 'GET'
-            && !str_starts_with((string) $request->getPath(), '/__');
+        return strtoupper(Row::asString($request->getMethod())) === 'GET'
+            && !str_starts_with(Row::asString($request->getPath()), '/__');
     }
 }

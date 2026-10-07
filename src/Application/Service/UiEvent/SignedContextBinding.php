@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\UiEvent;
 
+use Semitexa\Core\Session\SessionInterface;
 use Semitexa\Core\Support\CoroutineLocal;
 
 /**
@@ -22,20 +23,45 @@ final class SignedContextBinding
 {
     private const CTX_KEY = 'ssr.signed_context.binding';
 
-    public static function bind(string $sessionId, string $tenantId): void
+    /**
+     * Binds to the session object, not to the id it has now: a sign-in
+     * regenerates the id mid-request, and contexts minted after that must
+     * carry the id the browser presents next. A string pins an id as is.
+     */
+    public static function bind(SessionInterface|string|null $session, string $tenantId): void
     {
-        CoroutineLocal::set(self::CTX_KEY, ['s' => trim($sessionId), 't' => trim($tenantId)]);
+        CoroutineLocal::set(self::CTX_KEY, ['session' => $session, 't' => trim($tenantId)]);
     }
 
     /** @return array{s: string, t: string}|null null when nothing bound this coroutine (CLI, a bare test) */
     public static function current(): ?array
     {
-        $binding = CoroutineLocal::get(self::CTX_KEY, null);
+        $binding = self::snapshot();
+        if ($binding === null) {
+            return null;
+        }
+        $session = $binding['session'];
 
-        return is_array($binding) && isset($binding['s'], $binding['t']) ? $binding : null;
+        return [
+            's' => trim($session instanceof SessionInterface ? $session->getId() : (string) $session),
+            't' => $binding['t'],
+        ];
     }
 
-    /** @param array{s: string, t: string}|null $binding */
+    /**
+     * The binding as held, for carrying into a coroutine a request spawns
+     * ({@see restore()}); it keeps following the session there too.
+     *
+     * @return array{session: SessionInterface|string|null, t: string}|null
+     */
+    public static function snapshot(): ?array
+    {
+        $binding = CoroutineLocal::get(self::CTX_KEY, null);
+
+        return is_array($binding) && array_key_exists('session', $binding) && isset($binding['t']) ? $binding : null;
+    }
+
+    /** @param array{session: SessionInterface|string|null, t: string}|null $binding */
     public static function restore(?array $binding): void
     {
         if ($binding === null) {

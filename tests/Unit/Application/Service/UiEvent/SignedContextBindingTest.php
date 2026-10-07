@@ -6,6 +6,8 @@ namespace Semitexa\Ssr\Tests\Unit\Application\Service\UiEvent;
 
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+use Semitexa\Core\Session\Session;
+use Semitexa\Core\Session\SessionHandlerInterface;
 use Semitexa\Core\Support\CoroutineLocal;
 use Semitexa\Ssr\Application\Service\UiEvent\SignedContext;
 use Semitexa\Ssr\Application\Service\UiEvent\SignedContextBinding;
@@ -82,5 +84,29 @@ final class SignedContextBindingTest extends TestCase
 
         SignedContextBinding::bind(self::SESSION_A, 'acme');
         self::assertNotNull(SignedContext::verify($ctx));
+    }
+
+    #[Test]
+    public function a_context_minted_after_sign_in_verifies_on_the_next_request(): void
+    {
+        $handler = new class implements SessionHandlerInterface {
+            public function read(string $sessionId): array { return []; }
+            public function write(string $sessionId, array $data, int $lifetimeSeconds = 3600): void {}
+            public function destroy(string $sessionId): void {}
+        };
+        $session = new Session(self::SESSION_A, $handler, 'semitexa_session');
+        SignedContextBinding::bind($session, 'acme');
+
+        // Sign-in: the id is regenerated, then the page renders its components.
+        $session->regenerate();
+        $ctx = SignedContext::sign(['c' => 'demo', 'i' => 'uci_1']);
+        $session->save();
+
+        // The next request presents the cookie with the new id.
+        SignedContextBinding::bind($session->getSessionIdForCookie(), 'acme');
+        self::assertNotNull(SignedContext::verify($ctx), 'bound to the id the browser presents next, not the one it arrived with');
+
+        SignedContextBinding::bind(self::SESSION_A, 'acme');
+        self::assertNull(SignedContext::verify($ctx), 'the pre-sign-in session cannot present it');
     }
 }

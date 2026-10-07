@@ -72,7 +72,7 @@ final class SseSessionCoroutines
         $context = $container?->captureExecutionContext();
         // The signed-context binding is coroutine-local too: a deferred render
         // must mint contexts bound to the same session and tenant as its page.
-        $binding = SignedContextBinding::current();
+        $binding = SignedContextBinding::snapshot();
 
         /** @var int|false $result */
         $result = Coroutine::create(function () use ($callback, $sessionId, $container, $context, $binding): void {

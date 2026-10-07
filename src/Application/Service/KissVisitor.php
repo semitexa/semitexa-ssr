@@ -81,7 +81,7 @@ final class KissVisitor
         $session = $scope->has(SessionInterface::class) ? $scope->get(SessionInterface::class) : null;
         $tenant = $scope->has(TenantContextInterface::class) ? $scope->get(TenantContextInterface::class) : null;
         $tenantId = $tenant instanceof TenantContextInterface && method_exists($tenant, 'getTenantId') ? (string) $tenant->getTenantId() : '';
-        SignedContextBinding::bind($session instanceof SessionInterface ? $session->getId() : '', $tenantId);
+        SignedContextBinding::bind($session instanceof SessionInterface ? $session : null, $tenantId);
     }
 
     /**

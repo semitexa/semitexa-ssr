@@ -42,6 +42,6 @@ final class BindRequestToComponentRendererListener implements PipelineListenerIn
         // the session it RUNS with (on a first visit, minted during it) and to
         // its tenant.
         $tenantId = isset($this->tenant) && method_exists($this->tenant, 'getTenantId') ? (string) $this->tenant->getTenantId() : '';
-        SignedContextBinding::bind(isset($this->session) ? $this->session->getId() : '', $tenantId);
+        SignedContextBinding::bind(isset($this->session) ? $this->session : null, $tenantId);
     }
 }

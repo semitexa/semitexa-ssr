@@ -364,6 +364,8 @@ final class DeferredBlockOrchestrator
         $channel = $concurrent ? new \Swoole\Coroutine\Channel(count($instances)) : null;
         $rendered = [];
         $expected = 0;
+        /** @var array<string, string> $pending instance id => component name, until it answers */
+        $pending = [];
         foreach ($instances as $instance) {
             $instanceId = (string) ($instance['instance_id'] ?? '');
             $name = (string) ($instance['name'] ?? '');
@@ -372,6 +374,7 @@ final class DeferredBlockOrchestrator
                 continue;
             }
             $expected++;
+            $pending[$instanceId] = $name;
             $render = function () use ($sessionId, $instanceId, $name, $props, $locale, $uiSseSession, $visitor): array {
                 if (!$this->sseServer->isSessionActive($sessionId)) {
                     return [$instanceId, $name, null];
@@ -422,9 +425,20 @@ final class DeferredBlockOrchestrator
             }
             $item = $channel !== null ? $channel->pop(self::COMPONENT_RENDER_TIMEOUT_SECONDS) : ($rendered[$i] ?? false);
             if (!is_array($item)) {
+                // Nothing answered in time: what is still pending keeps its
+                // placeholder on the page. Said out loud, not left to look like
+                // a slow network.
+                $this->logger->error('Deferred components not rendered in time', [
+                    'timeout_seconds' => self::COMPONENT_RENDER_TIMEOUT_SECONDS,
+                    'pending' => $pending,
+                ]);
+                PageTimeline::record($sessionId, 'deferred', ['timeout' => true, 'pending' => array_keys($pending)]);
                 break;
             }
             [$instanceId, $name, $html] = $item;
+            if (is_string($instanceId)) {
+                unset($pending[$instanceId]);
+            }
             if (!is_string($html) || !is_string($instanceId) || !is_string($name)) {
                 continue;
             }

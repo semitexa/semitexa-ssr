@@ -8,7 +8,6 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Core\Session\Session;
 use Semitexa\Core\Session\SessionHandlerInterface;
-use Semitexa\Core\Support\CoroutineLocal;
 use Semitexa\Ssr\Application\Service\UiEvent\SignedContext;
 use Semitexa\Ssr\Application\Service\UiEvent\SignedContextBinding;
 
@@ -22,17 +21,28 @@ final class SignedContextBindingTest extends TestCase
     private const SESSION_A = '0123456789abcdef0123456789abcdef';
     private const SESSION_B = 'fedcba9876543210fedcba9876543210';
 
+    /** @var array<string, string|false> */
+    private array $previousEnv = [];
+
+    /** @var array{session: \Semitexa\Core\Session\SessionInterface|string|null, t: string}|null */
+    private ?array $previousBinding = null;
+
     protected function setUp(): void
     {
+        foreach (['APP_SECRET', 'APP_ENV'] as $name) {
+            $this->previousEnv[$name] = getenv($name);
+        }
+        $this->previousBinding = SignedContextBinding::snapshot();
         putenv('APP_SECRET=signed-context-binding-test');
         putenv('APP_ENV=dev');
     }
 
     protected function tearDown(): void
     {
-        CoroutineLocal::resetCliStore();
-        putenv('APP_SECRET');
-        putenv('APP_ENV');
+        SignedContextBinding::restore($this->previousBinding);
+        foreach ($this->previousEnv as $name => $value) {
+            putenv($value === false ? $name : $name . '=' . $value);
+        }
     }
 
     #[Test]

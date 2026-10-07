@@ -23,9 +23,17 @@ use Semitexa\Ssr\Application\Service\UiEvent\SignedContextBinding;
  */
 final class KissVisitorBindingTest extends TestCase
 {
+    /** @var array{session: SessionInterface|string|null, t: string}|null */
+    private ?array $previousBinding = null;
+
+    protected function setUp(): void
+    {
+        $this->previousBinding = SignedContextBinding::snapshot();
+    }
+
     protected function tearDown(): void
     {
-        SignedContextBinding::clear();
+        SignedContextBinding::restore($this->previousBinding);
     }
 
     #[Test]

@@ -88,9 +88,6 @@ final class TwigFunctionContractTest extends TestCase
                 'ui_form_fields',
                 'ui_chart',
                 'ui_dashboard', 'ui_dashboard_entries', 'ui_dashboard_widget',
-                // semitexa/crud: the app shell's navigation plus every
-                // #[AsCrud] screen the visitor may read
-                'crud_nav',
                 // platform-ui: the visitor's permissions, as the Authorizer answers them
                 'can',
                 'signed_in',
@@ -151,6 +148,12 @@ final class TwigFunctionContractTest extends TestCase
             // apps where the packages are not installed, and a ::class constant
             // would make static analysis of this package chase a class it cannot
             // see.
+            // semitexa/crud is optional (semitexa/dev only suggests it): the
+            // app shell's navigation plus every #[AsCrud] screen the visitor
+            // may read.
+            'Semitexa\\Crud\\Application\\Service\\Twig\\CrudTwigExtension' => [
+                'crud_nav',
+            ],
             'Semitexa\\Demo\\Application\\Service\\Twig\\CodeHighlightTwigExtension' => [
                 'highlight_php',
                 'highlight_php_lines',

@@ -37,6 +37,10 @@ final class HugEventHandlerTest extends TestCase
 
     protected function tearDown(): void
     {
+        foreach ($this->tempFiles as $file) {
+            @unlink($file);
+        }
+        $this->tempFiles = [];
         foreach ($this->envBackup as $key => $value) {
             if ($value === false) {
                 unset($_ENV[$key]);
@@ -507,48 +511,144 @@ final class HugEventHandlerTest extends TestCase
     }
 
     #[Test]
-    public function a_component_event_must_be_the_only_key(): void
+    public function a_retired_component_event_body_is_just_a_malformed_envelope(): void
     {
-        // `{"componentEvent": {…}}` is a component event; anything mixed in is
-        // neither shape and must not fall through to either pipeline.
+        // verify:accept-test-change the {componentEvent} path is gone (one component model: #[UiOn] on the canonical envelope); the body must now be refused, not routed
         try {
-            $this->handlerFor($this->postRequest(['componentEvent' => ['component_id' => 'x'], 'eventId' => 'e1']))
+            $this->handlerFor($this->postRequest(['componentEvent' => ['component_id' => 'c1']]))
+                ->handle(new HugEventPayload(), new ResourceResponse());
+            self::fail('A {componentEvent} body must be refused.');
+        } catch (ValidationException $e) {
+            self::assertArrayHasKey('signedContext', $e->getErrorContext()['errors'], 'refused as an envelope missing its signed context');
+        }
+    }
+
+    #[Test]
+    public function a_feed_control_must_be_the_only_key(): void
+    {
+        try {
+            $this->handlerFor($this->postRequest(['stream' => ['op' => 'subscribe'], 'eventId' => 'e1']))
                 ->handle(new HugEventPayload(), new ResourceResponse());
             self::fail('A mixed body must be refused.');
         } catch (ValidationException $e) {
-            self::assertArrayHasKey('componentEvent', $e->getErrorContext()['errors']);
+            self::assertArrayHasKey('stream', $e->getErrorContext()['errors']);
         }
     }
 
     #[Test]
-    public function a_component_event_with_unknown_or_missing_fields_is_refused_before_dispatch(): void
+    public function a_feed_control_answers_with_the_controls_status_and_body(): void
     {
-        try {
-            $this->handlerFor($this->postRequest(['componentEvent' => [
-                'component_id' => 'c1',
-                'handler' => 'App\\Evil',
-            ]]))->handle(new HugEventPayload(), new ResourceResponse());
-            self::fail('Unknown and missing fields must be refused.');
-        } catch (ValidationException $e) {
-            $errors = $e->getErrorContext()['errors'];
-            self::assertArrayHasKey('handler', $errors, 'an unknown field is named');
-            self::assertArrayHasKey('signature', $errors, 'a missing required field is named by its wire key');
-            self::assertArrayNotHasKey('componentId', $errors, 'one key style: the wire one');
-        }
+        $routes = new \Semitexa\Core\Discovery\RouteRegistry();
+        $control = (new \Semitexa\Ssr\Application\Service\Stream\FeedStreamControl())->withCollaborators(
+            $routes,
+            new \Semitexa\Core\Discovery\AttributeDiscovery(new \Semitexa\Core\Discovery\ClassDiscovery(), new \Semitexa\Core\ModuleRegistry(), new \Semitexa\Core\Discovery\RouteRegistry()),
+            static fn (): object => new \stdClass(),
+            new class implements \Semitexa\Ssr\Domain\Contract\FeedStreamSinkInterface {
+                public function submitSubscribe(string $sessionId, string $streamingId, string $routePath, string $routeMethod, array $requestSnapshot, string $routeName = '', ?string $requesterTenantId = null, bool $acceptsPatches = false): bool { return true; }
+                public function submitViewChange(string $sessionId, array $params, ?string $streamingId = null): bool { return true; }
+                public function submitUnsubscribe(string $sessionId, string $streamingId): bool { return true; }
+            },
+        );
+
+        $response = $this->handlerFor($this->postRequest(['stream' => [
+            'op' => 'subscribe', 'feed' => 'no.such.feed', 'params' => [],
+            'session' => 'sse_' . str_repeat('a', 32), 'subscriptionId' => 'sse_' . str_repeat('b', 32),
+        ]]))->withFeedStreams($control)->handle(new HugEventPayload(), new ResourceResponse());
+
+        self::assertSame(404, $response->getStatusCode());
+        self::assertSame('unknown_feed', json_decode($response->getContent(), true)['reason']);
+    }
+
+    // ---- tk-la-uploads: multipart {upload, file} ------------------------
+
+    private function uploadRequest(array $post, array $files): Request
+    {
+        return new Request(
+            method: 'POST',
+            uri: '/__semitexa_hug',
+            headers: ['content-type' => 'multipart/form-data; boundary=x'],
+            query: [],
+            post: $post,
+            server: [],
+            cookies: [],
+            files: $files,
+        );
+    }
+
+    /** @var list<string> temp files the upload tests made, removed in tearDown() */
+    private array $tempFiles = [];
+
+    private function uploadedFile(): \Semitexa\Core\Http\UploadedFile
+    {
+        $tmp = tempnam(sys_get_temp_dir(), 'hug');
+        file_put_contents($tmp, 'hello');
+        $this->tempFiles[] = $tmp;
+
+        return new \Semitexa\Core\Http\UploadedFile('file', 'a.txt', 'text/plain', 5, $tmp);
     }
 
     #[Test]
-    public function every_bad_component_event_field_is_reported_at_once(): void
+    public function an_upload_with_a_verified_upload_context_reaches_the_receiver(): void
     {
+        $receiver = new HugTestUploadReceiver();
+        $ctx = SignedContext::sign(['k' => 'upload', 'fn' => 'avatar', 'i' => 'uci_hug_upload_0001']);
+        $response = $this->handlerFor($this->uploadRequest(['upload' => $ctx], ['file' => $this->uploadedFile()]))
+            ->withUploads($receiver)
+            ->handle(new HugEventPayload(), new ResourceResponse());
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame('avatar', $receiver->claims['fn'] ?? null);
+        self::assertSame(['status' => 'accepted', 'ticket' => 't'], json_decode($response->getContent(), true));
+    }
+
+    #[Test]
+    public function an_event_context_cannot_be_used_to_upload(): void
+    {
+        $receiver = new HugTestUploadReceiver();
+        $ctx = SignedContext::sign(['c' => 'demo', 'i' => 'uci_hug_upload_0001', 'p' => 'x', 'e' => 'click']);
         try {
-            $this->handlerFor($this->postRequest(['componentEvent' => ['signature' => '', 'foo' => 1, 'issued_at' => -5]]))
+            $this->handlerFor($this->uploadRequest(['upload' => $ctx], ['file' => $this->uploadedFile()]))
+                ->withUploads($receiver)
                 ->handle(new HugEventPayload(), new ResourceResponse());
-            self::fail('Must be refused.');
+            self::fail('expected a refusal');
         } catch (ValidationException $e) {
-            $errors = $e->getErrorContext()['errors'];
-            foreach (['signature', 'foo', 'issued_at', 'component_id'] as $key) {
-                self::assertArrayHasKey($key, $errors);
-            }
+            self::assertArrayHasKey('upload', $e->getErrors());
         }
+        self::assertNull($receiver->claims, 'never reached the receiver');
+    }
+
+    #[Test]
+    public function an_upload_body_is_exactly_upload_and_file(): void
+    {
+        $ctx = SignedContext::sign(['k' => 'upload', 'fn' => 'avatar']);
+        $this->expectException(ValidationException::class);
+        $this->handlerFor($this->uploadRequest(['upload' => $ctx, 'action' => 'admin.delete'], ['file' => $this->uploadedFile()]))
+            ->withUploads(new HugTestUploadReceiver())
+            ->handle(new HugEventPayload(), new ResourceResponse());
+    }
+
+    #[Test]
+    public function without_a_bound_receiver_uploads_are_refused(): void
+    {
+        $ctx = SignedContext::sign(['k' => 'upload', 'fn' => 'avatar']);
+        $response = $this->handlerFor($this->uploadRequest(['upload' => $ctx], ['file' => $this->uploadedFile()]))
+            ->withUploads(new \Semitexa\Ssr\Application\Service\UiEvent\NotConfiguredHugUploadReceiver())
+            ->handle(new HugEventPayload(), new ResourceResponse());
+
+        self::assertSame(422, $response->getStatusCode());
+        self::assertSame('uploads_not_configured', json_decode($response->getContent(), true)['reason']);
+    }
+}
+
+final class HugTestUploadReceiver implements \Semitexa\Ssr\Application\Service\UiEvent\HugUploadReceiverInterface
+{
+    /** @var array<string, mixed>|null */
+    public ?array $claims = null;
+
+    public function receive(array $claims, \Semitexa\Core\Http\UploadedFile $file): array
+    {
+        $this->claims = $claims;
+
+        return [200, ['status' => 'accepted', 'ticket' => 't']];
     }
 }

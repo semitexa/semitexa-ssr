@@ -38,7 +38,7 @@ final class AssetRenderer
     public static function renderHead(AssetCollector $collector): string
     {
         $entries = $collector->resolve();
-        $html = self::renderImportMap($entries);
+        $html = self::renderScriptPrelude($entries);
         $renderedKeys = [];
 
         // Worked out before the loop so the links can go where the first
@@ -113,7 +113,11 @@ final class AssetRenderer
     {
         $collector->runFinalizeCallbacks($html);
         $styles = self::renderLateHeadAssets($collector)
-            . self::renderRawInlineCss($collector->takeRawInlineCss());
+            . self::renderRawInlineCss($collector->takeRawInlineCss())
+            // Head tags only ever land here, with the whole page in hand: that
+            // is the only point a tag's "unless the page already has it" can be
+            // answered, whichever of the two was written first.
+            . $collector->takeHeadTags($html);
 
         if (str_contains($html, self::DYNAMIC_CSS_MARKER)) {
             return str_replace(self::DYNAMIC_CSS_MARKER, $styles, $html);
@@ -173,7 +177,6 @@ final class AssetRenderer
                 'css'        => self::renderCssLink($entry),
                 'preload'    => self::renderPreload($entry),
                 'inline-css' => self::renderInlineCss($entry),
-                default      => '',
             };
         }
 
@@ -264,6 +267,23 @@ final class AssetRenderer
         $json = json_encode(['imports' => $imports], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
 
         return '<script type="importmap"' . ScriptNonceSource::attribute() . '>' . str_ireplace('</script', '<\/script', $json) . '</script>' . "\n";
+    }
+
+    /**
+     * What a page with module scripts needs before any of them: the largest
+     * request the server takes, then the import map. Swoole refuses a bigger
+     * request before any handler runs and the browser sees only a dropped
+     * connection, so ui-core says "too large" itself, before sending.
+     *
+     * @param AssetEntry[] $entries
+     */
+    private static function renderScriptPrelude(array $entries): string
+    {
+        $map = self::renderImportMap($entries);
+
+        return $map === ''
+            ? ''
+            : '<meta name="semitexa-request-max" content="' . Environment::requestLimit() . '">' . "\n" . $map;
     }
 
     /**

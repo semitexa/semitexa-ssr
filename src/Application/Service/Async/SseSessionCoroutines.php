@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Semitexa\Ssr\Application\Service\UiEvent\SignedContextBinding;
+
 use Semitexa\Core\Container\SemitexaContainer;
 use Swoole\Coroutine;
 
@@ -68,13 +70,17 @@ final class SseSessionCoroutines
         // its region rendered empty. Carry the parent's context into the child.
         $container = $this->container;
         $context = $container?->captureExecutionContext();
+        // The signed-context binding is coroutine-local too: a deferred render
+        // must mint contexts bound to the same session and tenant as its page.
+        $binding = SignedContextBinding::snapshot();
 
         /** @var int|false $result */
-        $result = Coroutine::create(function () use ($callback, $sessionId, $container, $context): void {
+        $result = Coroutine::create(function () use ($callback, $sessionId, $container, $context, $binding): void {
             $cid = self::currentCid();
             if ($cid >= 0) {
                 $this->bySession[$sessionId][$cid] = true;
             }
+            SignedContextBinding::restore($binding);
 
             try {
                 if ($container !== null && $context !== null) {

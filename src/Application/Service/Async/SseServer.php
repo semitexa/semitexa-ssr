@@ -20,6 +20,7 @@ use Semitexa\Ssr\Domain\Contract\SubscriptionFactoryInterface;
 use Semitexa\Ssr\Domain\Model\SubscriptionRecord;
 use Predis\Client;
 use Swoole\Http\Request;
+use Semitexa\Ssr\Domain\Contract\FeedStreamSinkInterface;
 use Swoole\Http\Response;
 
 /**
@@ -37,7 +38,7 @@ use Swoole\Http\Response;
  * {@see SseRuntime} documents why null-until-wired is deliberate.
  */
 #[AsService]
-final class SseServer
+final class SseServer implements FeedStreamSinkInterface
 {
     /**
      * Strict shape for an anonymous bearer-channel subscriber id.
@@ -244,9 +245,9 @@ final class SseServer
     public function handle(Request $request, Response $response): bool
     {
         $server = is_array($request->server) ? $request->server : [];
-        $path = $server['path_info'] ?? '';
+        $path = is_string($server['path_info'] ?? null) ? $server['path_info'] : '';
         if ($path === '') {
-            $uri = $server['request_uri'] ?? '/';
+            $uri = is_string($server['request_uri'] ?? null) ? $server['request_uri'] : '/';
             $path = parse_url($uri, PHP_URL_PATH) ?: '/';
         }
 
@@ -381,8 +382,8 @@ final class SseServer
 
         // Flush pending table for this session only
         foreach ($this->workerTables()->takePendingFor($sessionId) as $payload) {
-            $data = json_decode($payload, true);
-            if (is_array($data)) {
+            $data = SseFrameFactory::decodeQueued($payload);
+            if ($data !== null) {
                 $this->writeSse($response, $data);
             }
         }
@@ -432,6 +433,7 @@ final class SseServer
             $lastEventId,
             $this->canUsePersistentDeferredSse($request),
             $resolvedMode === self::TRANSPORT_MODE_LIVE,
+            \Semitexa\Core\RequestFactory::fromSwoole($request), // deferred content renders as this browser's visitor
         );
     }
 
@@ -513,6 +515,9 @@ final class SseServer
 
         $authenticatedUserId = $this->openSseStream($request, $response, $sessionId);
 
+        // What its last connection missed comes first: it was written before anything queued since.
+        $replay = ($transport = $this->transport()) instanceof ReplayingSseTransport ? $transport->resume($response, $sessionId, $stream->lastEventId) : [];
+
         // Flush local buffer for this session only
         $this->flushBacklog($sessionId, $response);
 
@@ -527,7 +532,7 @@ final class SseServer
             'event' => 'connected',
             'connected' => true,
             'mode' => $resolvedMode,
-        ]);
+        ] + $replay);
 
         // Drain mode short-circuit. deferred_request_id wins when both are
         // set — its own streamDeferredBlocks() pipeline owns the done/close
@@ -548,7 +553,7 @@ final class SseServer
 
         // Trigger deferred block streaming if deferred_request_id is present
         if ($stream->hasDeferredRequest()
-            && !$this->openDeferredDoor($request, $response, $sessionId, $stream->deferredRequestId, $stream->lastEventId, $resolvedMode)
+            && !$this->openDeferredDoor($request, $response, $sessionId, $stream->deferredRequestId, ReplayingSseTransport::isReplayId($stream->lastEventId) ? null : $stream->lastEventId, $resolvedMode)
         ) {
             $close();
             return;
@@ -715,7 +720,7 @@ final class SseServer
                 break;
             }
 
-            \Swoole\Coroutine::sleep(self::HELD_OPEN_TICK_SECONDS);
+            $this->sessionRegistry()->waitForWork($sessionId, self::HELD_OPEN_TICK_SECONDS);
         }
     }
 
@@ -794,8 +799,8 @@ final class SseServer
         $consumed = [];
 
         foreach ($tables->readDeliveriesFor($tables->currentWorkerId(), $sessionId) as $row) {
-            $data = json_decode($row['payload'], true);
-            if (!is_array($data)) {
+            $data = SseFrameFactory::decodeQueued($row['payload']);
+            if ($data === null) {
                 continue;
             }
 
@@ -963,7 +968,7 @@ final class SseServer
         // streaming_id so a multiplexed connection can demux the frame client-side;
         // the SAME stamp lands on every re-run frame (see dispatchReRun), so the
         // synchrony-pin byte-identity between initial and re-run frames holds.
-        $streamingId = $record?->streamingId ?? $sessionId;
+        $streamingId = $record->streamingId ?? $sessionId;
 
         // Past the caps on purpose: a first frame can cost as much as the
         // request itself (the graphql one IS a document execution).
@@ -1033,8 +1038,8 @@ final class SseServer
                 break;
             }
 
-            $data = json_decode((string) $raw, true);
-            if (!is_array($data)) {
+            $data = SseFrameFactory::decodeQueued((string) $raw);
+            if ($data === null) {
                 continue;
             }
 
@@ -1067,7 +1072,7 @@ final class SseServer
         return false;
     }
 
-    /** @param array<array-key, mixed> $data */
+    /** @param array<string, mixed> $data */
     private function writeSse(Response $response, array $data): bool
     {
         return $this->transport()->writeFrame($response, $this->buildFrame($data));
@@ -1091,7 +1096,7 @@ final class SseServer
      */
     private function transport(): SseTransportInterface
     {
-        return $this->runtime()->transport ??= new SwooleSseTransport();
+        return $this->runtime()->transport ??= new ReplayingSseTransport(new SwooleSseTransport(), new SseReplayRing($this->redisPool()));
     }
 
     /**
@@ -1170,7 +1175,7 @@ final class SseServer
      * enum), then by the `str_replace` on the rendered `event` line.
      * Defence in depth.
      *
-     * @param array<array-key, mixed> $data
+     * @param array<string, mixed> $data
      */
     private function buildFrame(array $data): SseFrame
     {
@@ -1267,12 +1272,12 @@ final class SseServer
         }
 
         $handle = $resource->getRenderHandle();
-        if (!$handle) {
+        if (!is_string($handle) || $handle === '' || $handle === '0') {
             return '';
         }
 
         $context = method_exists($resource, 'getRenderContext') ? $resource->getRenderContext() : [];
-        $context = array_merge($context, (array) $resource);
+        $context = array_merge(is_array($context) ? $context : [], (array) $resource);
 
         try {
             return \Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry::getTwig()->render(
@@ -1474,7 +1479,7 @@ final class SseServer
     private function resolveTenantContext(): ?object
     {
         $ctx = '\Semitexa\Tenancy\Context\TenantContext';
-        if (class_exists($ctx) && method_exists($ctx, 'get')) {
+        if (class_exists($ctx)) {
             $tenant = $ctx::get();
 
             return is_object($tenant) ? $tenant : null;
@@ -1608,18 +1613,23 @@ final class SseServer
         string $routePath,
         string $routeMethod,
         array $requestSnapshot,
+        string $routeName = '',
+        ?string $requesterTenantId = null,
+        bool $acceptsPatches = false,
     ): bool {
         $sessionId = trim($sessionId);
         $streamingId = trim($streamingId);
         if (
             $sessionId === '' || preg_match(self::SAFE_BEARER_SESSION_ID_PATTERN, $sessionId) !== 1
             || $streamingId === '' || preg_match(self::SAFE_BEARER_SESSION_ID_PATTERN, $streamingId) !== 1
-            || $routePath === ''
+            || $routeName === ''
         ) {
             return false;
         }
 
-        $this->deliver($sessionId, SseControlFrame::subscribe($streamingId, $routePath, $routeMethod, $requestSnapshot));
+        // A HUG subscribe stamps its request's tenant; the owning worker refuses a mismatch.
+        $requesterTenantId ??= $this->currentTenantId();
+        $this->deliver($sessionId, SseControlFrame::subscribe($streamingId, $routePath, $routeMethod, $requestSnapshot, $routeName, $requesterTenantId, $acceptsPatches));
 
         return true;
     }

@@ -121,7 +121,10 @@ final class TwigExtensionCatalog
     {
         if (isset($this->container)) {
             try {
-                return $this->container->get($class);
+                /** @var object $extension a class id is answered with an instance of that class */
+                $extension = $this->container->get($class);
+
+                return $extension;
             } catch (NotFoundExceptionInterface) {
                 // The ONLY failure `new` is an answer to: the container has
                 // never heard of this class, which is what a static-only

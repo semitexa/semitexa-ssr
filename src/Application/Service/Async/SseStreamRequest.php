@@ -31,7 +31,7 @@ final class SseStreamRequest
     }
 
     /**
-     * @param mixed $request a Swoole HTTP request
+     * @param object $request a Swoole HTTP request
      */
     public static function fromRequest(mixed $request): self
     {
@@ -48,8 +48,11 @@ final class SseStreamRequest
             $rawSessionId = null;
         }
 
-        $lastEventId = $header['last-event-id'] ?? null;
         $query = Row::of($get);
+        // The browser sends Last-Event-ID itself when it reconnects the same
+        // EventSource; a page that opens a NEW one (a revived tab, a reopened
+        // stream) carries it in the query instead.
+        $lastEventId = $header['last-event-id'] ?? ($get['last_event_id'] ?? null);
 
         return new self(
             // A client may bring its own id (that is how a reconnect rejoins its

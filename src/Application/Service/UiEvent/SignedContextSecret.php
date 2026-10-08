@@ -9,8 +9,7 @@ use Semitexa\Core\Environment;
 /**
  * Shared APP_SECRET resolution for the signed-context substrate.
  *
- * Mirrors the existing ComponentEventBridge::resolveSecret() rule so both
- * substrates remain on one security model:
+ * The one secret rule for every signed component context:
  *   - APP_SECRET is required outside dev/test;
  *   - dev/test fall back to a deterministic derivative of APP_NAME/HOST/PORT.
  *

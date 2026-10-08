@@ -46,7 +46,6 @@ final class TwigFunctionContractTest extends TestCase
                 'layout_slot_deferred',
                 'component',
                 'slot',
-                'component_event_attrs',
                 // SEO / document head
                 'page_title',
                 'meta',
@@ -61,6 +60,8 @@ final class TwigFunctionContractTest extends TestCase
                 // with no unsafe-inline
                 'csp_nonce_attr',
                 'csp_nonce',
+                'csrf_field',
+                'csrf_token',
                 // app shell — the one mark a layout makes to say which of its
                 // regions change per page
                 'shell_region',
@@ -82,6 +83,17 @@ final class TwigFunctionContractTest extends TestCase
                 'enum_cases',
                 'primitive',
                 'icon',
+                'ui_href',
+                'ui_field_props',
+                'ui_form_fields',
+                'ui_chart',
+                'ui_dashboard', 'ui_dashboard_entries', 'ui_dashboard_widget',
+                // semitexa/crud: the app shell's navigation plus every
+                // #[AsCrud] screen the visitor may read
+                'crud_nav',
+                // platform-ui: the visitor's permissions, as the Authorizer answers them
+                'can',
+                'signed_in',
                 'inject_scripts',
                 // the release the application is running, for a footer to
                 // print; null on a working tree, where core resolves to a dev
@@ -100,9 +112,12 @@ final class TwigFunctionContractTest extends TestCase
                 'ui_form_resolve_submit_action',
                 'ui_form_strip_submit_markers',
                 'ui_component_events',
+                'ui_upload_context',
+                'ui_upload_ceiling',
                 'ui_form_issue_submit_csrf',
                 'ui_page_sse_session',
                 'ui_page_sse_session_meta',
+                'ui_page_live_channel',
                 'theme_asset',
                 'theme_info',
                 'theme_layout',
@@ -251,6 +266,13 @@ final class TwigFunctionContractTest extends TestCase
      * not ours to declare; diffing against a bare environment keeps the contract
      * about the framework's surface rather than Twig's release notes.
      *
+     * The application's own extensions are subtracted too. The booted Twig is
+     * the PROJECT's, so it carries whatever #[AsTwigExtension] a project module
+     * declares — and a framework test that went red because an application
+     * added a template function (as the UI Playground's wallet demo did,
+     * 2026-10-07) is asking every consumer to edit a vendor file. A function
+     * belongs to the extension class its callable was written in.
+     *
      * @return list<string>
      */
     private static function frameworkFunctionNames(): array
@@ -259,7 +281,28 @@ final class TwigFunctionContractTest extends TestCase
             (new \Twig\Environment(new \Twig\Loader\ArrayLoader()))->getFunctions(),
         );
 
-        return array_values(array_diff(array_keys(self::bootedTwig()->getFunctions()), $stock));
+        $names = [];
+        foreach (self::bootedTwig()->getFunctions() as $name => $function) {
+            if (in_array($name, $stock, true) || self::isApplicationFunction($function->getCallable())) {
+                continue;
+            }
+            $names[] = $name;
+        }
+
+        return $names;
+    }
+
+    /** A callable written in a project module (Semitexa\Modules\…) rather than a framework package. */
+    private static function isApplicationFunction(mixed $callable): bool
+    {
+        $class = match (true) {
+            $callable instanceof \Closure => (new \ReflectionFunction($callable))->getClosureScopeClass()?->getName(),
+            is_array($callable) && is_object($callable[0] ?? null) => $callable[0]::class,
+            is_array($callable) && is_string($callable[0] ?? null) => $callable[0],
+            default => null,
+        };
+
+        return is_string($class) && str_starts_with($class, 'Semitexa\\Modules\\');
     }
 
     private static function bootedTwig(): \Twig\Environment

@@ -39,6 +39,14 @@ final class AssetCollector
     private array $rawInlineCss = [];
 
     /**
+     * Tags for <head> keyed by what they are, written once per page however
+     * many times they are asked for. See {@see headTag()}.
+     *
+     * @var array<string, array{html: string, unlessPresent: ?string}>
+     */
+    private array $headTags = [];
+
+    /**
      * Callbacks to run once, right after the page's Twig render completes and
      * before the dynamic-CSS marker is resolved. This is the post-render seam:
      * a Twig extension that accumulated usage during render registers one of
@@ -203,6 +211,48 @@ final class AssetCollector
     }
 
     /**
+     * Ask for a tag in this page's <head> — once, however many times it is
+     * asked for. Several parts of a page can need the same thing (every live
+     * island needs the page's KISS session), and each printing it itself put
+     * one copy per part into the body. The first registration of a key wins;
+     * the tag lands when the page is finalized, before </head>.
+     *
+     * $unlessPresent (an attribute, e.g. `name="…"`) skips the tag when the
+     * finished page already has a tag of the same kind carrying it — a
+     * template that printed the tag itself, wherever it did. Page text that
+     * merely mentions it (a script's selector) does not count.
+     */
+    public function headTag(string $key, string $html, ?string $unlessPresent = null): self
+    {
+        $this->headTags[$key] ??= ['html' => $html, 'unlessPresent' => $unlessPresent];
+
+        return $this;
+    }
+
+    /** The registered head tags the finished page still lacks, drained. */
+    public function takeHeadTags(string $pageHtml): string
+    {
+        $out = '';
+        foreach ($this->headTags as $tag) {
+            if ($tag['unlessPresent'] !== null && self::pageHasTag($pageHtml, $tag['html'], $tag['unlessPresent'])) {
+                continue;
+            }
+            $out .= $tag['html'];
+        }
+        $this->headTags = [];
+
+        return $out;
+    }
+
+    /** Whether the page has a start tag like $html's own that carries $attribute. */
+    private static function pageHasTag(string $pageHtml, string $html, string $attribute): bool
+    {
+        $element = preg_match('/^\s*<([a-zA-Z][a-zA-Z0-9-]*)/', $html, $m) === 1 ? preg_quote($m[1], '/') : '[a-zA-Z][a-zA-Z0-9-]*';
+
+        return preg_match('/<' . $element . '\b[^<>]*\s' . preg_quote($attribute, '/') . '[^<>]*>/i', $pageHtml) === 1;
+    }
+
+    /**
      * Register a callback for the post-render seam. It runs exactly once, when
      * the rendered page HTML is finalized ({@see AssetRenderer::finalizeDynamicCss()}),
      * receiving this collector and the rendered HTML — scan the HTML, compile,
@@ -327,6 +377,7 @@ final class AssetCollector
     {
         $this->required = [];
         $this->rawInlineCss = [];
+        $this->headTags = [];
         $this->finalizeCallbacks = [];
     }
 

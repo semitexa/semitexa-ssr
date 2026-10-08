@@ -17,17 +17,16 @@ use Semitexa\Ssr\Domain\Contract\SseFeedPayloadInterface;
  * collection feed serves `{data: [...], meta}`, a document feed serves
  * `{data: {...}, meta}` — the live shared state of ONE collaborative document
  * (a form's draft field values + version + presence/lock projection). It
- * inherits the ENTIRE held-open choreography from {@see AbstractSseFeedHandler}
- * verbatim (server-minted stream id, the held-open serve, the
- * `X-Semitexa-Stream-Rehydrate` re-hydrate intake, SSE-vs-JSON negotiation,
- * the JSON degrade, the `#[WatchScopes]` subscription, and the Track-R re-run
- * loop) and only PINS the document vocabulary: the `buildDocumentResponse()`
- * seam and the `ui.document.*` frame types.
+ * inherits the serving choreography from {@see AbstractSseFeedHandler}
+ * verbatim (the framed re-run on the KISS-owning worker, the `#[WatchScopes]`
+ * declaration, the Track-R re-run loop) and only PINS the document
+ * vocabulary: the `buildDocumentResponse()` seam and the `ui.document.*`
+ * frame types.
  *
  * Because the live mechanism is the generic one, a document re-runs and
  * re-frames exactly like a grid: when its watched scope (the document's
  * `formdoc:{key}:{id}` channel — declared via `#[WatchScopes]`) is touched,
- * every subscriber's held-open stream re-runs the chain and pushes the fresh
+ * every subscription re-runs the chain and pushes the fresh
  * single-record envelope. That is the seam the collaborative-form inbound
  * handler drives — it mutates the draft/presence/lock store and touches the
  * document scope; this feed re-projects the new shared state to all editors.

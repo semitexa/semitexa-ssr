@@ -362,15 +362,14 @@ class HtmlResponse extends ResourceResponse
             IsomorphicContextStore::setSessionId($sessionId);
         }
 
-        $slotIds = array_map(static fn ($s) => $s->slotId, $deferredSlots);
-        $serializableContext = self::sanitizeDeferredContext($context);
         $bindToken = bin2hex(random_bytes(16));
-        $locale = \Semitexa\Locale\Context\LocaleContextStore::getLocale();
-        DeferredRequestRegistry::store($requestId, $handle, $serializableContext, $slotIds, $bindToken, $locale);
-
-        $requestSnapshot = DeferredRequestRegistry::snapshotFromCurrentSwooleRequest();
-        if ($requestSnapshot !== null) {
-            DeferredRequestRegistry::storeRequestSnapshot($requestId, $requestSnapshot);
+        if ($deferredSlots !== []) {
+            self::storeDeferredRequest($requestId, $handle, $context, $deferredSlots, $bindToken);
+        } else {
+            // Only deferred COMPONENTS can appear, and most pages render none:
+            // the request is stored after rendering, and only when one did
+            // (finalizeIsomorphicHtml) — not serialized on every page.
+            $context['__ssr_deferred_store_late'] = true;
         }
 
         IsomorphicContextStore::setPageHandle($handle);
@@ -394,6 +393,24 @@ class HtmlResponse extends ResourceResponse
     }
 
     /**
+     * What the deferred stream re-renders the page's deferred content from.
+     *
+     * @param array<string, mixed> $context
+     * @param list<\Semitexa\Ssr\Domain\Model\DeferredSlotDefinition> $deferredSlots
+     */
+    private static function storeDeferredRequest(string $requestId, string $handle, array $context, array $deferredSlots, string $bindToken): void
+    {
+        $slotIds = array_map(static fn ($s) => $s->slotId, $deferredSlots);
+        $locale = \Semitexa\Locale\Context\LocaleContextStore::getLocale();
+        DeferredRequestRegistry::store($requestId, $handle, self::sanitizeDeferredContext($context), $slotIds, $bindToken, $locale);
+
+        $requestSnapshot = DeferredRequestRegistry::snapshotFromCurrentSwooleRequest();
+        if ($requestSnapshot !== null) {
+            DeferredRequestRegistry::storeRequestSnapshot($requestId, $requestSnapshot);
+        }
+    }
+
+    /**
      * @param array<string, mixed> $context
      */
     private function finalizeIsomorphicHtml(string $html, array $context): string
@@ -411,6 +428,11 @@ class HtmlResponse extends ResourceResponse
             ))
         );
         try {
+            if (($context['__ssr_deferred_store_late'] ?? false) === true && ComponentInstanceStore::all() !== []) {
+                // The page's own context, as it was before the deferral keys joined it.
+                $pageContext = array_filter($context, static fn (string|int $key): bool => !str_starts_with((string) $key, '__ssr_'), ARRAY_FILTER_USE_KEY);
+                self::storeDeferredRequest($requestId, IsomorphicContextStore::getPageHandle(), $pageContext, [], is_string($context['__ssr_deferred_bind_token'] ?? null) ? $context['__ssr_deferred_bind_token'] : '');
+            }
             $renderedSlotIds = array_map(static fn ($slot) => $slot->slotId, $renderedSlots);
             DeferredRequestRegistry::updateSlots($requestId, $renderedSlotIds);
 

@@ -221,7 +221,7 @@ class LayoutSlotRegistry
     /**
      * Get all deferred slot definitions for a given page handle.
      *
-     * @return DeferredSlotDefinition[]
+     * @return list<DeferredSlotDefinition> in priority order
      */
     public static function getDeferredSlots(string $handle): array
     {

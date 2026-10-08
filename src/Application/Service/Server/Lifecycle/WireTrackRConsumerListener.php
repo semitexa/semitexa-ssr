@@ -7,7 +7,7 @@ namespace Semitexa\Ssr\Application\Service\Server\Lifecycle;
 use Psr\Container\ContainerInterface;
 use Semitexa\Core\Attribute\AsServerLifecycleListener;
 use Semitexa\Core\Attribute\InjectAsReadonly;
-use Semitexa\Core\Auth\AuthBootstrapperInterface;
+use Semitexa\Core\Auth\AuthBootstrapperFactoryInterface;
 use Semitexa\Core\Container\RequestScopedContainer;
 use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Core\Pipeline\ReRun\RouteReRunner;
@@ -129,14 +129,21 @@ final class WireTrackRConsumerListener implements ServerLifecycleListenerInterfa
         // canonical RoutePhase construction (a RequestScopedContainer wrapping the
         // worker container + the optional AuthBootstrapper) so a re-run re-resolves
         // identity from the live session each tick.
-        $authBootstrapper = $container->has(AuthBootstrapperInterface::class)
-            ? $container->get(AuthBootstrapperInterface::class)
+        // The bootstrapper is not a container service: it is built through its
+        // factory, as the application builds it, over the SAME request scope the
+        // re-run establishes the session in — the session handler reads the
+        // visitor from it. Looked up with has(AuthBootstrapperInterface) it was
+        // always null, and a re-run never re-resolved who it ran for: a feed
+        // kept streaming to a page whose visitor had signed out (tk-ls-kiss-visitor).
+        $scope = new RequestScopedContainer($container);
+        $factory = $container->has(AuthBootstrapperFactoryInterface::class)
+            ? $container->get(AuthBootstrapperFactoryInterface::class)
             : null;
         $reRunner = new RouteReRunner(
             new RouteExecutor(
-                new RequestScopedContainer($container),
+                $scope,
                 $container,
-                $authBootstrapper instanceof AuthBootstrapperInterface ? $authBootstrapper : null,
+                $factory instanceof AuthBootstrapperFactoryInterface ? $factory->create($container, $scope) : null,
             ),
             $container,
         );

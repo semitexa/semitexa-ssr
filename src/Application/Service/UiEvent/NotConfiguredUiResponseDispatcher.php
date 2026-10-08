@@ -11,7 +11,7 @@ use Semitexa\Core\Attribute\SatisfiesServiceContract;
  *
  * Returns a stable, safe envelope indicating that no concrete UI response
  * dispatcher is installed yet. This is the framework-only baseline:
- * `POST /__ui/event` accepts, validates, verifies signed-context, and
+ * `POST /__semitexa_hug` accepts, validates, verifies signed-context, and
  * surfaces a deterministic `dispatcher_not_configured` reason code so
  * downstream consumers can distinguish "the framework endpoint is up"
  * from "a real dispatcher took over".

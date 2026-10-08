@@ -94,69 +94,9 @@ final class AbstractSseDocumentFeedHandlerTest extends TestCase
     }
 
     #[Test]
-    public function a_subscribe_header_routes_to_the_subscribe_branch(): void
-    {
-        $handler = new DeviatingDocumentFeedHandlerFixture();
-        $is = new \ReflectionMethod(AbstractSseDocumentFeedHandler::class, 'isSubscribeRequest');
-        $is->setAccessible(true);
-
-        $withHeader = new SubscribeIntakePayloadFixture(self::subscribeRequest());
-        $without = new SubscribeIntakePayloadFixture(new Request('GET', '/feed/doc?ctx=tok', [], ['ctx' => 'tok'], [], [], []));
-
-        self::assertTrue($is->invoke($handler, $withHeader));
-        self::assertFalse($is->invoke($handler, $without));
-    }
-
-    #[Test]
-    public function the_subscribe_snapshot_strips_intent_headers_and_normalises_the_method(): void
-    {
-        // The worker rebuilds + re-runs this snapshot; if an intent header or the
-        // POST method survived, the re-run's serve() would re-enter the subscribe
-        // branch instead of producing the frame. Auth cookies + feed query stay.
-        $handler = new DeviatingDocumentFeedHandlerFixture();
-        $snap = new \ReflectionMethod(AbstractSseDocumentFeedHandler::class, 'subscribeSnapshot');
-        $snap->setAccessible(true);
-
-        /** @var array<string,mixed> $out */
-        $out = $snap->invoke($handler, new SubscribeIntakePayloadFixture(self::subscribeRequest()));
-
-        self::assertSame('GET', $out['method'], 'normalised to the feed connect verb');
-        $headerKeys = array_map('strtolower', array_keys($out['headers']));
-        self::assertNotContains('x-semitexa-stream-subscribe', $headerKeys);
-        self::assertNotContains('x-semitexa-kiss-session', $headerKeys);
-        self::assertNotContains('x-semitexa-subscription-id', $headerKeys);
-        self::assertContains('accept', $headerKeys, 'a non-intent header survives');
-        self::assertSame(['session' => 'abc'], $out['cookies'], 'auth cookies preserved');
-        self::assertSame(['ctx' => 'tok'], $out['query'], 'feed params preserved');
-    }
-
-    #[Test]
-    public function a_multiplexed_view_change_targets_the_subscription_and_acks(): void
-    {
-        $accept = new \ReflectionMethod(AbstractSseDocumentFeedHandler::class, 'acceptViewChange');
-        $accept->setAccessible(true);
-        $handler = new DeviatingDocumentFeedHandlerFixture();
-        $kiss = 'sse_' . str_repeat('a', 32);
-        $sub = 'sse_' . str_repeat('b', 32);
-
-        // Both multiplex coordinates present + valid → accepted (delivered to the
-        // KISS session queue, targeting the subscription).
-        $ok = $accept->invoke($handler, new ViewChangeIntakePayloadFixture($kiss, $sub, ''), new JsonResourceResponse());
-        self::assertStringContainsString('"accepted":true', $ok->getContent());
-
-        // A half-supplied multiplex pair (kiss without subscription) is rejected.
-        $bad = $accept->invoke($handler, new ViewChangeIntakePayloadFixture($kiss, '', ''), new JsonResourceResponse());
-        self::assertStringContainsString('"accepted":false', $bad->getContent());
-
-        // No multiplex headers + a valid adopted stream id → the legacy
-        // standalone path accepts (streaming_id == session_id).
-        $legacy = $accept->invoke($handler, new ViewChangeIntakePayloadFixture('', '', $sub), new JsonResourceResponse());
-        self::assertStringContainsString('"accepted":true', $legacy->getContent());
-    }
-
-    #[Test]
     public function a_rerun_frames_the_document_even_when_the_rebuilt_request_does_not_prefer_sse(): void
     {
+        // verify:accept-test-change the subscribe/unsubscribe/view-change header branches are deleted; HUG owns feed control (FeedStreamControlTest)
         // REGRESSION (SSE transport unification · Phase 6): the multiplex re-run
         // rebuilds the request from the subscribe POST snapshot, which carries
         // `Accept: application/json` (NOT text/event-stream) — the attach rides a
@@ -242,23 +182,6 @@ final class AbstractSseDocumentFeedHandlerTest extends TestCase
         $m->invoke(AsyncResourceSseServer::instance());
     }
 
-    private static function subscribeRequest(): Request
-    {
-        return new Request(
-            'POST',
-            '/feed/doc?ctx=tok',
-            [
-                'Accept' => 'application/json',
-                'X-Semitexa-Stream-Subscribe' => '1',
-                'X-Semitexa-Kiss-Session' => 'sse_' . str_repeat('a', 32),
-                'X-Semitexa-Subscription-Id' => 'sse_' . str_repeat('b', 32),
-            ],
-            ['ctx' => 'tok'],
-            [],
-            [],
-            ['session' => 'abc'],
-        );
-    }
 
     #[Test]
     public function watch_scopes_resolve_from_the_document_payload_class_declaration(): void
@@ -275,10 +198,10 @@ final class AbstractSseDocumentFeedHandlerTest extends TestCase
         // A collaborative document's per-record scope is only known at request
         // time, so it rides DynamicallyScopedFeedInterface and is unioned with
         // the static #[WatchScopes] when the subscription record is built.
-        $resolve = new \ReflectionMethod(AbstractSseDocumentFeedHandler::class, 'resolveScopeKeys');
-        $resolve->setAccessible(true);
+        // verify:accept-test-change the union moved with the subscription record into PipelineSubscriptionFactory (the feed handler no longer builds records)
+        $resolve = new \ReflectionMethod(\Semitexa\Ssr\Application\Service\Async\PipelineSubscriptionFactory::class, 'resolveScopeKeys');
 
-        $scopes = $resolve->invoke(null, new DynamicallyScopedDocumentPayloadFixture());
+        $scopes = $resolve->invoke(null, DynamicallyScopedDocumentPayloadFixture::class, new DynamicallyScopedDocumentPayloadFixture());
 
         self::assertSame(['static_scope', 'formdoc:article:42'], $scopes);
     }
@@ -333,58 +256,8 @@ final class DocumentPayloadStub implements SseDocumentFeedPayloadInterface
 }
 
 #[\Semitexa\Core\Attribute\AsPublicPayload(path: '/feed/doc', methods: ['GET', 'POST'])]
-final class SubscribeIntakePayloadFixture implements SseDocumentFeedPayloadInterface
-{
-    public function __construct(private readonly Request $request) {}
-
-    public function getHttpRequest(): ?Request
-    {
-        return $this->request;
-    }
-
-    public function getStreamId(): ?string
-    {
-        return null;
-    }
-
-    public function toViewParams(): array
-    {
-        return [];
-    }
-}
 
 #[\Semitexa\Core\Attribute\AsPublicPayload(path: '/feed/doc', methods: ['GET', 'POST'])]
-final class ViewChangeIntakePayloadFixture implements SseDocumentFeedPayloadInterface
-{
-    public function __construct(
-        private readonly string $kissHeader,
-        private readonly string $subHeader,
-        private readonly string $streamId,
-    ) {}
-
-    public function getHttpRequest(): ?Request
-    {
-        $headers = ['X-Semitexa-Stream-Rehydrate' => '1'];
-        if ($this->kissHeader !== '') {
-            $headers['X-Semitexa-Kiss-Session'] = $this->kissHeader;
-        }
-        if ($this->subHeader !== '') {
-            $headers['X-Semitexa-Subscription-Id'] = $this->subHeader;
-        }
-
-        return new Request('POST', '/feed/doc', $headers, [], [], [], []);
-    }
-
-    public function getStreamId(): ?string
-    {
-        return $this->streamId !== '' ? $this->streamId : null;
-    }
-
-    public function toViewParams(): array
-    {
-        return ['q' => 'x'];
-    }
-}
 
 /** A plain document feed connect: `Accept: application/json`, no intent headers. */
 #[\Semitexa\Core\Attribute\AsPublicPayload(path: '/feed/doc', methods: ['GET', 'POST'])]

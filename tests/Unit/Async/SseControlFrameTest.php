@@ -143,6 +143,16 @@ final class SseControlFrameTest extends TestCase
     }
 
     #[Test]
+    public function a_hug_subscribe_frame_carries_the_feed_name_and_requester_tenant(): void
+    {
+        $frame = SseControlFrame::subscribe('sse_a', '', 'GET', [], 'platform-ui.form-doc', '');
+        self::assertSame('platform-ui.form-doc', $frame['route_name']);
+        // An empty tenant is still a tenant claim: "this request resolved none".
+        self::assertSame('', $frame['requester_tenant_id']);
+        self::assertArrayNotHasKey('route_name', SseControlFrame::subscribe('sse_a', '/feed', 'GET', []));
+    }
+
+    #[Test]
     public function an_unsubscribe_frame_names_only_the_stream(): void
     {
         self::assertSame(

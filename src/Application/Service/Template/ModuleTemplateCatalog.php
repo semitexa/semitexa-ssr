@@ -192,14 +192,7 @@ final class ModuleTemplateCatalog
         // theme overrides go through ThemeAwareTwigLoader (below) — the theme.json
         // manifest system is the single authoritative override surface.
         foreach ($this->modulePaths as $module => $config) {
-            if (!is_array($config)) {
-                continue;
-            }
-
-            $aliases = $this->normalizeAliases(
-                isset($config['aliases']) && is_array($config['aliases']) ? $config['aliases'] : [$module],
-                $module,
-            );
+            $aliases = $this->normalizeAliases($config['aliases'], $module);
 
             foreach ($aliases as $alias) {
                 // Canonical bare-alias namespace (e.g. `SsrPolygon` → `@SsrPolygon/...`).
@@ -244,7 +237,7 @@ final class ModuleTemplateCatalog
 
         $cacheDir = $this->getWritableCacheDir();
 
-        $this->twig = new TwigEnvironment($effectiveLoader, [
+        $this->twig = $twig = new TwigEnvironment($effectiveLoader, [
             'cache' => $cacheDir ?? false,
             'auto_reload' => true,
             'strict_variables' => false,
@@ -255,9 +248,9 @@ final class ModuleTemplateCatalog
 
         try {
             $env = Environment::create();
-            $this->twig->addGlobal('sse_port', $env->swooleSsePort);
+            $twig->addGlobal('sse_port', $env->swooleSsePort);
         } catch (\Throwable $e) {
-            $this->twig->addGlobal('sse_port', 9503);
+            $twig->addGlobal('sse_port', 9503);
         }
     }
 
@@ -459,7 +452,7 @@ final class ModuleTemplateCatalog
                 return 'layouts/' . $handle . '.html.twig';
             }
 
-            foreach (glob($layoutsDir . '/*/' . $handle . '.html.twig') as $file) {
+            foreach (glob($layoutsDir . '/*/' . $handle . '.html.twig') ?: [] as $file) {
                 return str_replace($dir . '/', '', $file);
             }
         }

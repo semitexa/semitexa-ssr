@@ -133,12 +133,14 @@ final class SubscriptionFactoryScopeKeysTest extends TestCase
             }
         };
 
+        // Feeds are resolved by route name now (HUG subscribes by name).
         $routes = new class () extends RouteRegistry {
-            public function find(string $path, string $method = 'GET'): ?array
+            public function findByName(string $name): ?array
             {
                 return [
                     'path' => '/probe/feed',
                     'method' => 'GET',
+                    'name' => 'probe.feed',
                     'class' => ScopedFeedRequestProbe::class,
                     'type' => 'http-request',
                 ];
@@ -153,6 +155,7 @@ final class SubscriptionFactoryScopeKeysTest extends TestCase
                 routePath: '/probe/feed',
                 routeMethod: 'GET',
                 requestSnapshot: [],
+                routeName: 'probe.feed',
             );
     }
 }

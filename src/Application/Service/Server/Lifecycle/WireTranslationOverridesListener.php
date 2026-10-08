@@ -51,10 +51,9 @@ final class WireTranslationOverridesListener implements ServerLifecycleListenerI
                 // the same name asset URLs and trans() key prefixes use. The
                 // registry lists aliases longest-first; pick the shortest
                 // non-prefixed one, falling back to the registry name.
-                $name = is_string($module['name'] ?? null) ? $module['name'] : '';
-                $aliases = is_array($module['aliases'] ?? null) ? $module['aliases'] : [];
-                foreach ($aliases as $alias) {
-                    if (is_string($alias) && $alias !== '' && !str_starts_with($alias, 'project-layouts-')
+                $name = $module['name'];
+                foreach ($module['aliases'] as $alias) {
+                    if ($alias !== '' && !str_starts_with($alias, 'project-layouts-')
                         && ($name === '' || \strlen($alias) < \strlen($name))
                     ) {
                         $name = $alias;
@@ -63,8 +62,8 @@ final class WireTranslationOverridesListener implements ServerLifecycleListenerI
                 if ($name === '') {
                     continue;
                 }
-                foreach ($module['templatePaths'] ?? [] as $templatesPath) {
-                    $localesDir = \dirname((string) $templatesPath) . '/locales';
+                foreach ($module['templatePaths'] as $templatesPath) {
+                    $localesDir = \dirname($templatesPath) . '/locales';
                     if (is_dir($localesDir)) {
                         $dirs[$name] = $localesDir;
                         break;

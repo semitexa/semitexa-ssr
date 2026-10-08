@@ -21,6 +21,7 @@ final class UiSseEventTypeTest extends TestCase
         yield 'ui.componentState' => ['ui.componentState'];
         yield 'ui.error'          => ['ui.error'];
         yield 'ui.stream.id'      => ['ui.stream.id'];
+        yield 'ui.stream.reset'   => ['ui.stream.reset'];
         yield 'ui.collection.data'  => ['ui.collection.data'];
         yield 'ui.collection.error' => ['ui.collection.error'];
     }
@@ -59,7 +60,7 @@ final class UiSseEventTypeTest extends TestCase
     public function allowed_values_lists_exactly_the_documented_types(): void
     {
         self::assertSame(
-            ['ssr.fragment', 'ui.patch', 'ui.componentState', 'ui.error', 'ui.stream.id', 'ui.collection.data', 'ui.collection.error', 'ui.document.data', 'ui.document.error'],
+            ['ssr.fragment', 'ui.patch', 'ui.componentState', 'ui.error', 'ui.stream.id', 'ui.stream.reset', 'ui.collection.data', 'ui.collection.error', 'ui.collection.patch', 'ui.document.data', 'ui.document.error'],
             UiSseEventType::allowedValues(),
         );
     }

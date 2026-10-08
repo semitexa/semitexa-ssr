@@ -35,6 +35,11 @@ enum UiSseEventType: string
     // client-controlled string can ever become the event name.
     case UiStreamId        = 'ui.stream.id';
 
+    // ep-platform-live-state · replay — a reconnect named a frame the server no
+    // longer holds (it left the replay ring, or the ring is gone): what was
+    // missed cannot be replayed, so the client re-syncs from fresh snapshots.
+    case UiStreamReset     = 'ui.stream.reset';
+
     // One Way Pattern · Phase 4 — the canonical-envelope collection stream's
     // typed frames. A `ui.collection.data` frame carries the canonical
     // `{data, meta}` collection envelope — the SAME projection the JSON pull
@@ -47,6 +52,11 @@ enum UiSseEventType: string
     // string can ever become the event name.
     case UiCollectionData  = 'ui.collection.data';
     case UiCollectionError = 'ui.collection.error';
+
+    // ep-platform-live-state · keyed list streams — a re-run's change to the
+    // page the subscription was last sent: `{patch: {key, upsert, remove,
+    // order}, meta?}` (CollectionFrameDiff). The client applies it to that page.
+    case UiCollectionPatch = 'ui.collection.patch';
 
     // Collaborative Form Data · Phase 1 — the single-document feed's typed
     // frames, the object-valued sibling of `ui.collection.data`. A

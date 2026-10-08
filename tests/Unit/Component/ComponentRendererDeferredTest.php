@@ -12,6 +12,7 @@ use Semitexa\Ssr\Application\Service\Component\ComponentRegistry;
 use Semitexa\Ssr\Application\Service\Component\ComponentRenderer;
 use Semitexa\Ssr\Application\Service\Template\ModuleTemplateCatalog;
 use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
+use Semitexa\Ssr\Context\IsomorphicContextStore;
 use Twig\Environment as TwigEnvironment;
 use Twig\Loader\ArrayLoader;
 
@@ -27,6 +28,7 @@ final class ComponentRendererDeferredTest extends TestCase
 
     protected function tearDown(): void
     {
+        IsomorphicContextStore::reset();
         $this->resetRegistries();
         ComponentInstanceStore::reset();
         ComponentRenderer::setDataProviderRegistry(null);
@@ -97,18 +99,32 @@ final class ComponentRendererDeferredTest extends TestCase
     public function testDeferredSseComponentEmitsPlaceholderAndRecordsInstance(): void
     {
         $this->registerDeferredSseComponent();
+        IsomorphicContextStore::setPageHandle('demo.page'); // a page whose deferral is set up
 
         $html = ComponentRenderer::render('deferred_demo', ['title' => 'Hello']);
 
         self::assertStringContainsString('data-ssr-deferred-component="deferred_demo"', $html);
-        self::assertStringContainsString('data-ssr-component-instance="cmp_', $html);
+        self::assertStringContainsString('data-ssr-component-instance="uci_', $html);
 
         $recorded = ComponentInstanceStore::all();
         self::assertCount(1, $recorded);
         $entry = array_values($recorded)[0];
         self::assertSame('deferred_demo', $entry['name']);
         self::assertSame(['title' => 'Hello'], $entry['props']);
-        self::assertStringStartsWith('cmp_', $entry['instance_id']);
+        self::assertStringStartsWith('uci_', $entry['instance_id']);
+    }
+
+    /**
+     * tk-ls-async-props: a placeholder is only drawn where a deferred stream
+     * will fill it — not on a page whose deferral is not set up, and not in
+     * what a deferred render nests.
+     */
+    public function testWithoutADeferredPageTheComponentRendersNow(): void
+    {
+        $this->registerDeferredSseComponent();
+
+        self::assertSame('rendered:Hello', ComponentRenderer::render('deferred_demo', ['title' => 'Hello']));
+        self::assertSame([], ComponentInstanceStore::all());
     }
 
     public function testForceImmediateRenderSkipsDeferredShortCircuit(): void

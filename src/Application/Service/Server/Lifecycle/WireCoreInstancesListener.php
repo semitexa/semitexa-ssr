@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Server\Lifecycle;
 
+use Semitexa\Core\Server\PageTimeline;
+use Semitexa\Core\Server\PageTimelineSinkInterface;
 use Semitexa\Core\Attribute\AsServerLifecycleListener;
 use Psr\Container\ContainerInterface;
 use Semitexa\Core\Attribute\InjectAsReadonly;
@@ -149,5 +151,12 @@ final class WireCoreInstancesListener implements ServerLifecycleListenerInterfac
         // deferred resolves here, in the SSE process, and its duration is what
         // says whether the skeleton was worth a round trip.
         $this->deferredBlockOrchestrator->setRequestTracer($tracer);
+
+        // A page's live timeline (the Observatory's, in development): absent in
+        // production, where PageTimeline stays a no-op.
+        $timeline = $this->container->has(PageTimelineSinkInterface::class)
+            ? $this->container->get(PageTimelineSinkInterface::class)
+            : null;
+        PageTimeline::use($timeline instanceof PageTimelineSinkInterface ? $timeline : null);
     }
 }

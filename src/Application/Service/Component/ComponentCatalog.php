@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Component;
 
-use Semitexa\Core\Attribute\AsEvent;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Attribute\TransportType;
@@ -16,11 +15,13 @@ use Semitexa\Ssr\Domain\Contract\DataProviderInterface;
 use Semitexa\Ssr\Domain\Exception\InvalidComponentConfigurationException;
 use Semitexa\Core\Discovery\ClassDiscovery;
 
+/**
+ * @phpstan-type ComponentDefinition array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, script: ?string, dataProviderClass: ?string, transportMode: TransportType, deferred: bool, providerProps: array<string, mixed>}
+ */
 #[AsService]
 final class ComponentCatalog
 {
-    /** @var array<string, array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string, dataProviderClass: ?string, transportMode: TransportType, deferred: bool, providerProps: array<string, mixed>}> */
-    /** @var array<string, array<string, mixed>> */
+    /** @var array<string, ComponentDefinition> */
     private array $components = [];
     private bool $initialized = false;
     #[InjectAsReadonly]
@@ -56,6 +57,7 @@ final class ComponentCatalog
         $componentClasses = $this->classDiscovery->findClassesWithAttribute(AsComponent::class);
 
         foreach ($componentClasses as $class) {
+            /** @var class-string $class discovery returns the names of loaded classes */
             $reflection = new \ReflectionClass($class);
             $attrs = $reflection->getAttributes(AsComponent::class);
 
@@ -65,34 +67,6 @@ final class ComponentCatalog
 
             /** @var AsComponent $attr */
             $attr = $attrs[0]->newInstance();
-            $triggers = ComponentEventBridge::normalizeTriggers($attr->triggers);
-
-            if ($attr->event === null && $triggers !== []) {
-                throw new \LogicException(sprintf(
-                    'Component %s declares triggers without an event class.',
-                    $class,
-                ));
-            }
-
-            if ($attr->event !== null) {
-                if (!class_exists($attr->event)) {
-                    throw new \LogicException(sprintf(
-                        'Component %s references missing event class %s.',
-                        $class,
-                        $attr->event,
-                    ));
-                }
-
-                $eventReflection = new \ReflectionClass($attr->event);
-                if ($eventReflection->getAttributes(AsEvent::class) === []) {
-                    throw new \LogicException(sprintf(
-                        'Component %s event %s must be marked with #[AsEvent].',
-                        $class,
-                        $attr->event,
-                    ));
-                }
-            }
-
             if ($attr->script !== null) {
                 $script = trim($attr->script);
                 if ($script === '') {
@@ -171,9 +145,7 @@ final class ComponentCatalog
                 'name' => $attr->name,
                 'template' => $attr->template,
                 'layout' => $attr->layout,
-                'cacheable' => $attr->event === null ? $attr->cacheable : false,
-                'event' => $attr->event,
-                'triggers' => $triggers,
+                'cacheable' => $attr->cacheable,
                 'script' => $attr->script !== null ? trim($attr->script) : null,
                 'dataProviderClass' => $dataProviderClass,
                 'transportMode' => $transportMode,
@@ -185,14 +157,14 @@ final class ComponentCatalog
         $this->initialized = true;
     }
 
-    /** @return array<string, mixed>|null */
+    /** @return ComponentDefinition|null */
     public function get(string $name): ?array
     {
         $this->initialize();
         return $this->components[$name] ?? null;
     }
 
-    /** @return array<string, array<string, mixed>> */
+    /** @return array<string, ComponentDefinition> */
     public function all(): array
     {
         $this->initialize();
@@ -209,7 +181,7 @@ final class ComponentCatalog
     {
         $this->initialize();
         foreach ($this->components as $component) {
-            if (($component['deferred'] ?? false) && ($component['transportMode'] ?? null) === TransportType::Sse) {
+            if ($component['deferred'] && $component['transportMode'] === TransportType::Sse) {
                 return true;
             }
         }
@@ -217,7 +189,7 @@ final class ComponentCatalog
     }
 
     /**
-     * @param array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string, dataProviderClass?: ?string, transportMode?: TransportType, deferred?: bool, providerProps?: array<string, mixed>} $component
+     * @param array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, script: ?string, dataProviderClass?: ?string, transportMode?: TransportType, deferred?: bool, providerProps?: array<string, mixed>} $component
      */
     public function register(array $component): void
     {

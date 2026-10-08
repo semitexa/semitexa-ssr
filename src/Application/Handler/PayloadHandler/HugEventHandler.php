@@ -12,7 +12,9 @@ use Semitexa\Core\Exception\ValidationException;
 use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Core\Request;
-use Semitexa\Ssr\Application\Payload\Request\UiEventEnvelopePayload;
+use Semitexa\Ssr\Application\Payload\Request\HugEventPayload;
+use Semitexa\Ssr\Application\Service\Stream\FeedStreamControl;
+use Semitexa\Ssr\Application\Service\UiEvent\HugUploadReceiverInterface;
 use Semitexa\Ssr\Application\Service\UiEvent\InvalidUiEventEnvelopeException;
 use Semitexa\Ssr\Application\Service\UiEvent\NotConfiguredUiResponseDispatcher;
 use Semitexa\Ssr\Application\Service\UiEvent\SignedContext;
@@ -22,7 +24,7 @@ use Semitexa\Ssr\Application\Service\UiEvent\UiResponseDispatchResult;
 use Throwable;
 
 /**
- * Canonical handler for `POST /__ui/event` — the framework's single unified
+ * Canonical handler for `POST /__semitexa_hug` — the framework's single unified
  * inbound UI event endpoint.
  *
  * Pipeline (each step fails closed before the next):
@@ -48,6 +50,11 @@ use Throwable;
  *   record. The backend resolves the actual handler from server-side
  *   metadata. The frontend must never provide handler identity.
  *
+ * Two other bodies share the door: `{"stream": {…}}` — attach, re-view or
+ * detach a feed on the page's KISS stream — goes to {@see FeedStreamControl};
+ * a multipart upload `{upload: <signed upload context>, file}` goes to
+ * {@see HugUploadReceiverInterface}.
+ *
  * The endpoint is intentionally single, unified, and source-kind-agnostic:
  * primitive / part / component / composite events all POST here, and the
  * envelope + signed context identify the source kind.
@@ -69,8 +76,8 @@ use Throwable;
  *     // + any non-colliding keys the dispatcher chose to surface.
  *   }
  */
-#[AsPayloadHandler(payload: UiEventEnvelopePayload::class, resource: ResourceResponse::class)]
-final class UiEventEndpointHandler implements TypedHandlerInterface
+#[AsPayloadHandler(payload: HugEventPayload::class, resource: ResourceResponse::class)]
+final class HugEventHandler implements TypedHandlerInterface
 {
     /**
      * Canonical envelope keys the endpoint always emits. A dispatcher's
@@ -92,8 +99,21 @@ final class UiEventEndpointHandler implements TypedHandlerInterface
     #[InjectAsReadonly]
     protected UiResponseDispatcherInterface $dispatcher;
 
-    public function handle(UiEventEnvelopePayload $payload, ResourceResponse $resource): ResourceResponse
+
+    #[InjectAsReadonly]
+    protected FeedStreamControl $feedStreams;
+
+    #[InjectAsReadonly]
+    protected HugUploadReceiverInterface $uploads;
+
+    public function handle(HugEventPayload $payload, ResourceResponse $resource): ResourceResponse
     {
+        // An upload — multipart `{upload: <signed context>, file}` — is the one
+        // body that is not JSON.
+        if ($this->request->hasFile('file') || $this->request->getPost('upload') !== '') {
+            return $this->receiveUpload($resource);
+        }
+
         $raw = $this->request->getJsonBody();
         // The body must be a JSON object, not a JSON array. `is_array($raw)`
         // alone is true for both — `array_is_list()` rejects list-shaped
@@ -103,6 +123,13 @@ final class UiEventEndpointHandler implements TypedHandlerInterface
             throw new ValidationException([
                 'body' => ['Request body must be a JSON object.'],
             ]);
+        }
+
+        // Feed control — `{"stream": {op, feed, params, session,
+        // subscriptionId}}` attaches, re-views or detaches a feed on the page's
+        // KISS stream; the frames themselves only ever travel on KISS.
+        if (array_key_exists('stream', $raw)) {
+            return $this->controlStream($raw, $resource);
         }
 
         try {
@@ -174,6 +201,46 @@ final class UiEventEndpointHandler implements TypedHandlerInterface
             ->setStatusCode($result->statusCode)
             ->setHeader('Content-Type', 'application/json; charset=utf-8')
             ->setContent($content);
+    }
+
+    /**
+     * @param array<string, mixed> $raw
+     */
+    private function controlStream(array $raw, ResourceResponse $resource): ResourceResponse
+    {
+        if (count($raw) !== 1 || !is_array($raw['stream']) || array_is_list($raw['stream'])) {
+            throw new ValidationException([
+                'stream' => ['A feed control body is exactly {"stream": {…}}.'],
+            ]);
+        }
+        [$status, $body] = $this->feedStreams->control($raw['stream'], $this->request);
+
+        return $resource
+            ->setStatusCode($status)
+            ->setHeader('Content-Type', 'application/json; charset=utf-8')
+            ->setContent(json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+    }
+
+    private function receiveUpload(ResourceResponse $resource): ResourceResponse
+    {
+        $file = $this->request->getFile('file');
+        if ($file === null || count($this->request->files) !== 1 || array_keys($this->request->post) !== ['upload']) {
+            throw new ValidationException(['upload' => ['An upload is exactly {upload: <signed context>, file}.']]);
+        }
+        $claims = SignedContext::verify($this->request->getPost('upload'));
+        if ($claims === null || ($claims['k'] ?? null) !== 'upload') {
+            throw new ValidationException(['upload' => ['Upload context verification failed.']]);
+        }
+        if (!$file->isOk()) {
+            [$status, $body] = [422, ['status' => 'rejected', 'reason' => 'upload_failed', 'message' => $file->errorMessage()]];
+        } else {
+            [$status, $body] = $this->uploads->receive($claims, $file);
+        }
+
+        return $resource
+            ->setStatusCode($status)
+            ->setHeader('Content-Type', 'application/json; charset=utf-8')
+            ->setContent(json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
     }
 
     private function dispatcherFailureResult(): UiResponseDispatchResult
@@ -252,4 +319,21 @@ final class UiEventEndpointHandler implements TypedHandlerInterface
 
         return $this;
     }
+
+    /** Test seam for uploads; production injects it. */
+    public function withUploads(HugUploadReceiverInterface $uploads): self
+    {
+        $this->uploads = $uploads;
+
+        return $this;
+    }
+
+    /** Test seam for feed control; production injects it. */
+    public function withFeedStreams(FeedStreamControl $feedStreams): self
+    {
+        $this->feedStreams = $feedStreams;
+
+        return $this;
+    }
+
 }

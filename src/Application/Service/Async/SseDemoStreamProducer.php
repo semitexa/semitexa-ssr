@@ -100,6 +100,7 @@ final class SseDemoStreamProducer
         while ($this->sessions->isOpen($sessionId)) {
             \Swoole\Coroutine::sleep(self::secondsToNextBoundary(microtime(true)));
 
+            // @phpstan-ignore booleanNot.alwaysFalse (the session can close while this coroutine sleeps)
             if (!$this->sessions->isOpen($sessionId)) {
                 break;
             }

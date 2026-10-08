@@ -18,6 +18,9 @@ use Semitexa\Core\Discovery\ClassDiscovery;
  * Not documented public API, so this is a full deletion candidate once the last
  * static caller is migrated.
  */
+/**
+ * @phpstan-import-type ComponentDefinition from ComponentCatalog
+ */
 final class ComponentRegistry
 {
     private static ?ComponentCatalog $catalog = null;
@@ -43,7 +46,7 @@ final class ComponentRegistry
     }
 
     /**
-     * @return array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string, dataProviderClass: ?string, transportMode: TransportType, deferred: bool, providerProps: array<string, mixed>}|null
+     * @return ComponentDefinition|null
      */
     public static function get(string $name): ?array
     {
@@ -51,7 +54,7 @@ final class ComponentRegistry
     }
 
     /**
-     * @return array<string, array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, event: ?string, triggers: list<string>, script: ?string, dataProviderClass: ?string, transportMode: TransportType, deferred: bool, providerProps: array<string, mixed>}>
+     * @return array<string, ComponentDefinition>
      */
     public static function all(): array
     {
@@ -64,7 +67,7 @@ final class ComponentRegistry
     }
 
     /**
-     * @param array<string, mixed> $component
+     * @param array{class: string, name: string, template: ?string, layout: ?string, cacheable: bool, script: ?string, dataProviderClass?: ?string, transportMode?: TransportType, deferred?: bool, providerProps?: array<string, mixed>} $component
      */
     public static function register(array $component): void
     {

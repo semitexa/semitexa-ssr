@@ -9,15 +9,15 @@ use PHPUnit\Framework\TestCase;
 use Semitexa\Core\Exception\ValidationException;
 use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Request;
-use Semitexa\Ssr\Application\Handler\PayloadHandler\UiEventEndpointHandler;
-use Semitexa\Ssr\Application\Payload\Request\UiEventEnvelopePayload;
+use Semitexa\Ssr\Application\Handler\PayloadHandler\HugEventHandler;
+use Semitexa\Ssr\Application\Payload\Request\HugEventPayload;
 use Semitexa\Ssr\Application\Service\UiEvent\NotConfiguredUiResponseDispatcher;
 use Semitexa\Ssr\Application\Service\UiEvent\SignedContext;
 use Semitexa\Ssr\Application\Service\UiEvent\UiEventEnvelope;
 use Semitexa\Ssr\Application\Service\UiEvent\UiResponseDispatcherInterface;
 use Semitexa\Ssr\Application\Service\UiEvent\UiResponseDispatchResult;
 
-final class UiEventEndpointHandlerTest extends TestCase
+final class HugEventHandlerTest extends TestCase
 {
     /** @var array<string, mixed> */
     private array $envBackup = [];
@@ -37,6 +37,10 @@ final class UiEventEndpointHandlerTest extends TestCase
 
     protected function tearDown(): void
     {
+        foreach ($this->tempFiles as $file) {
+            @unlink($file);
+        }
+        $this->tempFiles = [];
         foreach ($this->envBackup as $key => $value) {
             if ($value === false) {
                 unset($_ENV[$key]);
@@ -74,7 +78,7 @@ final class UiEventEndpointHandlerTest extends TestCase
     {
         return new Request(
             method: 'POST',
-            uri: '/__ui/event',
+            uri: '/__semitexa_hug',
             headers: ['content-type' => 'application/json'],
             query: [],
             post: [],
@@ -84,13 +88,13 @@ final class UiEventEndpointHandlerTest extends TestCase
         );
     }
 
-    private function handlerFor(Request $request, ?UiResponseDispatcherInterface $dispatcher = null): UiEventEndpointHandler
+    private function handlerFor(Request $request, ?UiResponseDispatcherInterface $dispatcher = null): HugEventHandler
     {
         // Default to the framework's not-configured dispatcher — that's
         // exactly what production wiring resolves when no platform
         // package overrides the contract, so it's the right baseline
         // for "no test seam injected" calls.
-        $handler = (new UiEventEndpointHandler())->withRequest($request);
+        $handler = (new HugEventHandler())->withRequest($request);
         $handler->withDispatcher($dispatcher ?? new NotConfiguredUiResponseDispatcher());
         return $handler;
     }
@@ -104,7 +108,7 @@ final class UiEventEndpointHandlerTest extends TestCase
         // `accepted / foundation / dispatcher_not_configured` envelope.
         $signed = SignedContext::sign(['ctx' => 'valid'], 60);
         $resource = $this->handlerFor($this->postRequest($this->validBody($signed)))
-            ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+            ->handle(new HugEventPayload(), new ResourceResponse());
 
         self::assertSame(202, $resource->getStatusCode());
         $body = json_decode($resource->getContent(), true);
@@ -152,7 +156,7 @@ final class UiEventEndpointHandlerTest extends TestCase
         };
 
         $resource = $this->handlerFor($this->postRequest($this->validBody($signed)), $recording)
-            ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+            ->handle(new HugEventPayload(), new ResourceResponse());
 
         self::assertSame(200, $resource->getStatusCode());
         self::assertInstanceOf(UiEventEnvelope::class, $recording->envelope);
@@ -204,7 +208,7 @@ final class UiEventEndpointHandlerTest extends TestCase
         };
 
         $resource = $this->handlerFor($this->postRequest($this->validBody($signed)), $hostile)
-            ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+            ->handle(new HugEventPayload(), new ResourceResponse());
 
         $body = json_decode($resource->getContent(), true);
         // canonical keys preserved
@@ -239,7 +243,7 @@ final class UiEventEndpointHandlerTest extends TestCase
         };
 
         $resource = $this->handlerFor($this->postRequest($this->validBody($signed)), $thrower)
-            ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+            ->handle(new HugEventPayload(), new ResourceResponse());
 
         self::assertSame(500, $resource->getStatusCode());
         $body = json_decode($resource->getContent(), true);
@@ -281,7 +285,7 @@ final class UiEventEndpointHandlerTest extends TestCase
         };
 
         $resource = $this->handlerFor($this->postRequest($this->validBody($signed)), $brokenBody)
-            ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+            ->handle(new HugEventPayload(), new ResourceResponse());
 
         self::assertSame(500, $resource->getStatusCode());
         $body = json_decode($resource->getContent(), true);
@@ -312,7 +316,7 @@ final class UiEventEndpointHandlerTest extends TestCase
 
         try {
             $this->handlerFor($this->postRequest($this->validBody($signed)), $sentinel)
-                ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+                ->handle(new HugEventPayload(), new ResourceResponse());
             self::fail('Tampered signed context must be rejected before the dispatcher is called.');
         } catch (ValidationException $e) {
             self::assertArrayHasKey('signedContext', $e->getErrorContext()['errors']);
@@ -329,7 +333,7 @@ final class UiEventEndpointHandlerTest extends TestCase
 
         try {
             $this->handlerFor($this->postRequest($this->validBody($signed)))
-                ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+                ->handle(new HugEventPayload(), new ResourceResponse());
             self::fail('Tampered signed context must be rejected.');
         } catch (ValidationException $e) {
             self::assertArrayHasKey('signedContext', $e->getErrorContext()['errors']);
@@ -345,7 +349,7 @@ final class UiEventEndpointHandlerTest extends TestCase
 
             try {
                 $this->handlerFor($this->postRequest($body))
-                    ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+                    ->handle(new HugEventPayload(), new ResourceResponse());
                 self::fail("Handler should have rejected top-level '{$field}'");
             } catch (ValidationException $e) {
                 self::assertArrayHasKey($field, $e->getErrorContext()['errors'], "expected error key on '{$field}'");
@@ -361,7 +365,7 @@ final class UiEventEndpointHandlerTest extends TestCase
 
         try {
             $this->handlerFor($this->postRequest($body))
-                ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+                ->handle(new HugEventPayload(), new ResourceResponse());
             self::fail('Handler should have rejected nested payload.handler');
         } catch (ValidationException $e) {
             self::assertArrayHasKey('payload.handler', $e->getErrorContext()['errors']);
@@ -384,7 +388,7 @@ final class UiEventEndpointHandlerTest extends TestCase
 
         try {
             $this->handlerFor($this->postRequest($body))
-                ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+                ->handle(new HugEventPayload(), new ResourceResponse());
             self::fail('Handler should have rejected nested payload.meta.dispatch.handler');
         } catch (ValidationException $e) {
             self::assertArrayHasKey('payload.meta.dispatch.handler', $e->getErrorContext()['errors']);
@@ -406,7 +410,7 @@ final class UiEventEndpointHandlerTest extends TestCase
             $body = $this->validBody($signed, [$container => $extra]);
             try {
                 $this->handlerFor($this->postRequest($body))
-                    ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+                    ->handle(new HugEventPayload(), new ResourceResponse());
                 self::fail("Handler should have rejected nested {$container} smuggling");
             } catch (ValidationException $e) {
                 $key = array_key_first($extra);
@@ -423,7 +427,7 @@ final class UiEventEndpointHandlerTest extends TestCase
 
         $this->expectException(ValidationException::class);
         $this->handlerFor($this->postRequest($body))
-            ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+            ->handle(new HugEventPayload(), new ResourceResponse());
     }
 
     #[Test]
@@ -434,7 +438,7 @@ final class UiEventEndpointHandlerTest extends TestCase
 
         $this->expectException(ValidationException::class);
         $this->handlerFor($this->postRequest($body))
-            ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+            ->handle(new HugEventPayload(), new ResourceResponse());
     }
 
     #[Test]
@@ -442,7 +446,7 @@ final class UiEventEndpointHandlerTest extends TestCase
     {
         $req = new Request(
             method: 'POST',
-            uri: '/__ui/event',
+            uri: '/__semitexa_hug',
             headers: ['content-type' => 'application/json'],
             query: [],
             post: [],
@@ -452,8 +456,8 @@ final class UiEventEndpointHandlerTest extends TestCase
         );
 
         $this->expectException(ValidationException::class);
-        (new UiEventEndpointHandler())->withRequest($req)
-            ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+        (new HugEventHandler())->withRequest($req)
+            ->handle(new HugEventPayload(), new ResourceResponse());
     }
 
     #[Test]
@@ -464,7 +468,7 @@ final class UiEventEndpointHandlerTest extends TestCase
         // into envelope validation and produce confusing per-field errors.
         $req = new Request(
             method: 'POST',
-            uri: '/__ui/event',
+            uri: '/__semitexa_hug',
             headers: ['content-type' => 'application/json'],
             query: [],
             post: [],
@@ -474,8 +478,8 @@ final class UiEventEndpointHandlerTest extends TestCase
         );
 
         try {
-            (new UiEventEndpointHandler())->withRequest($req)
-                ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+            (new HugEventHandler())->withRequest($req)
+                ->handle(new HugEventPayload(), new ResourceResponse());
             self::fail('List-shaped JSON body must be rejected at the body guard.');
         } catch (ValidationException $e) {
             self::assertArrayHasKey('body', $e->getErrorContext()['errors']);
@@ -499,10 +503,152 @@ final class UiEventEndpointHandlerTest extends TestCase
 
         try {
             $this->handlerFor($this->postRequest($body))
-                ->handle(new UiEventEnvelopePayload(), new ResourceResponse());
+                ->handle(new HugEventPayload(), new ResourceResponse());
             self::fail('Envelope should have rejected payload.items.0.handler');
         } catch (ValidationException $e) {
             self::assertArrayHasKey('payload.items.0.handler', $e->getErrorContext()['errors']);
         }
+    }
+
+    #[Test]
+    public function a_retired_component_event_body_is_just_a_malformed_envelope(): void
+    {
+        // verify:accept-test-change the {componentEvent} path is gone (one component model: #[UiOn] on the canonical envelope); the body must now be refused, not routed
+        try {
+            $this->handlerFor($this->postRequest(['componentEvent' => ['component_id' => 'c1']]))
+                ->handle(new HugEventPayload(), new ResourceResponse());
+            self::fail('A {componentEvent} body must be refused.');
+        } catch (ValidationException $e) {
+            self::assertArrayHasKey('signedContext', $e->getErrorContext()['errors'], 'refused as an envelope missing its signed context');
+        }
+    }
+
+    #[Test]
+    public function a_feed_control_must_be_the_only_key(): void
+    {
+        try {
+            $this->handlerFor($this->postRequest(['stream' => ['op' => 'subscribe'], 'eventId' => 'e1']))
+                ->handle(new HugEventPayload(), new ResourceResponse());
+            self::fail('A mixed body must be refused.');
+        } catch (ValidationException $e) {
+            self::assertArrayHasKey('stream', $e->getErrorContext()['errors']);
+        }
+    }
+
+    #[Test]
+    public function a_feed_control_answers_with_the_controls_status_and_body(): void
+    {
+        $routes = new \Semitexa\Core\Discovery\RouteRegistry();
+        $control = (new \Semitexa\Ssr\Application\Service\Stream\FeedStreamControl())->withCollaborators(
+            $routes,
+            new \Semitexa\Core\Discovery\AttributeDiscovery(new \Semitexa\Core\Discovery\ClassDiscovery(), new \Semitexa\Core\ModuleRegistry(), new \Semitexa\Core\Discovery\RouteRegistry()),
+            static fn (): object => new \stdClass(),
+            new class implements \Semitexa\Ssr\Domain\Contract\FeedStreamSinkInterface {
+                public function submitSubscribe(string $sessionId, string $streamingId, string $routePath, string $routeMethod, array $requestSnapshot, string $routeName = '', ?string $requesterTenantId = null, bool $acceptsPatches = false): bool { return true; }
+                public function submitViewChange(string $sessionId, array $params, ?string $streamingId = null): bool { return true; }
+                public function submitUnsubscribe(string $sessionId, string $streamingId): bool { return true; }
+            },
+        );
+
+        $response = $this->handlerFor($this->postRequest(['stream' => [
+            'op' => 'subscribe', 'feed' => 'no.such.feed', 'params' => [],
+            'session' => 'sse_' . str_repeat('a', 32), 'subscriptionId' => 'sse_' . str_repeat('b', 32),
+        ]]))->withFeedStreams($control)->handle(new HugEventPayload(), new ResourceResponse());
+
+        self::assertSame(404, $response->getStatusCode());
+        self::assertSame('unknown_feed', json_decode($response->getContent(), true)['reason']);
+    }
+
+    // ---- tk-la-uploads: multipart {upload, file} ------------------------
+
+    private function uploadRequest(array $post, array $files): Request
+    {
+        return new Request(
+            method: 'POST',
+            uri: '/__semitexa_hug',
+            headers: ['content-type' => 'multipart/form-data; boundary=x'],
+            query: [],
+            post: $post,
+            server: [],
+            cookies: [],
+            files: $files,
+        );
+    }
+
+    /** @var list<string> temp files the upload tests made, removed in tearDown() */
+    private array $tempFiles = [];
+
+    private function uploadedFile(): \Semitexa\Core\Http\UploadedFile
+    {
+        $tmp = tempnam(sys_get_temp_dir(), 'hug');
+        file_put_contents($tmp, 'hello');
+        $this->tempFiles[] = $tmp;
+
+        return new \Semitexa\Core\Http\UploadedFile('file', 'a.txt', 'text/plain', 5, $tmp);
+    }
+
+    #[Test]
+    public function an_upload_with_a_verified_upload_context_reaches_the_receiver(): void
+    {
+        $receiver = new HugTestUploadReceiver();
+        $ctx = SignedContext::sign(['k' => 'upload', 'fn' => 'avatar', 'i' => 'uci_hug_upload_0001']);
+        $response = $this->handlerFor($this->uploadRequest(['upload' => $ctx], ['file' => $this->uploadedFile()]))
+            ->withUploads($receiver)
+            ->handle(new HugEventPayload(), new ResourceResponse());
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame('avatar', $receiver->claims['fn'] ?? null);
+        self::assertSame(['status' => 'accepted', 'ticket' => 't'], json_decode($response->getContent(), true));
+    }
+
+    #[Test]
+    public function an_event_context_cannot_be_used_to_upload(): void
+    {
+        $receiver = new HugTestUploadReceiver();
+        $ctx = SignedContext::sign(['c' => 'demo', 'i' => 'uci_hug_upload_0001', 'p' => 'x', 'e' => 'click']);
+        try {
+            $this->handlerFor($this->uploadRequest(['upload' => $ctx], ['file' => $this->uploadedFile()]))
+                ->withUploads($receiver)
+                ->handle(new HugEventPayload(), new ResourceResponse());
+            self::fail('expected a refusal');
+        } catch (ValidationException $e) {
+            self::assertArrayHasKey('upload', $e->getErrors());
+        }
+        self::assertNull($receiver->claims, 'never reached the receiver');
+    }
+
+    #[Test]
+    public function an_upload_body_is_exactly_upload_and_file(): void
+    {
+        $ctx = SignedContext::sign(['k' => 'upload', 'fn' => 'avatar']);
+        $this->expectException(ValidationException::class);
+        $this->handlerFor($this->uploadRequest(['upload' => $ctx, 'action' => 'admin.delete'], ['file' => $this->uploadedFile()]))
+            ->withUploads(new HugTestUploadReceiver())
+            ->handle(new HugEventPayload(), new ResourceResponse());
+    }
+
+    #[Test]
+    public function without_a_bound_receiver_uploads_are_refused(): void
+    {
+        $ctx = SignedContext::sign(['k' => 'upload', 'fn' => 'avatar']);
+        $response = $this->handlerFor($this->uploadRequest(['upload' => $ctx], ['file' => $this->uploadedFile()]))
+            ->withUploads(new \Semitexa\Ssr\Application\Service\UiEvent\NotConfiguredHugUploadReceiver())
+            ->handle(new HugEventPayload(), new ResourceResponse());
+
+        self::assertSame(422, $response->getStatusCode());
+        self::assertSame('uploads_not_configured', json_decode($response->getContent(), true)['reason']);
+    }
+}
+
+final class HugTestUploadReceiver implements \Semitexa\Ssr\Application\Service\UiEvent\HugUploadReceiverInterface
+{
+    /** @var array<string, mixed>|null */
+    public ?array $claims = null;
+
+    public function receive(array $claims, \Semitexa\Core\Http\UploadedFile $file): array
+    {
+        $this->claims = $claims;
+
+        return [200, ['status' => 'accepted', 'ticket' => 't']];
     }
 }

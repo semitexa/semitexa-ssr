@@ -6,9 +6,13 @@ Twig-based server-side rendering with components, layout slots, theme overrides,
 
 Renders HTML responses using Twig. Provides a component system discovered via `#[AsComponent]`, layout slot composition via `#[AsLayoutSlot]`, theme override support for module templates, and locale-aware URL generation.
 
+## Install
+
+Included in every project created by the installer (https://semitexa.com/install.sh).
+
 ## Role in Semitexa
 
-Depends on Twig, Locale, and Tenancy. Used by Mail, Platform WM, Platform User, Platform Settings, and Demo. Required for packages that render HTML pages.
+Depends on Twig, Locale, Tenancy, Scheduler and Platform Settings. Used by Mail, Platform UI, Theme, CMS, CRUD, OS and Demo, among others. Required for packages that render HTML pages.
 
 ## Key Features
 
@@ -37,4 +41,4 @@ If a project does not provide `robots.txt` or `public/robots.txt`, SSR emits a m
 
 If a project does not provide `llms.txt` or `public/llms.txt`, SSR emits a fallback `/llms.txt` document that points agents to `/sitemap.json`, `/robots.txt`, and Semitexa's page-document JSON conventions.
 
-When an SSR page route declares extra response formats via `#[AsPayload(produces: ...)]`, Semitexa renders `<link rel="alternate" type="...">` tags for the non-HTML variants of the current payload DTO. This keeps the `<head>` aligned with the actual route contract instead of hardcoding alternates in Twig.
+When an SSR page route declares extra response formats via `#[AsPublicPayload(produces: ...)]` (or the protected/service payload attributes from semitexa/authorization), Semitexa renders `<link rel="alternate" type="...">` tags for the non-HTML variants of the current payload DTO. This keeps the `<head>` aligned with the actual route contract instead of hardcoding alternates in Twig.

@@ -5,7 +5,7 @@ Changes to `semitexa/ssr` that a consuming application can notice. Sections are
 next release tag. This file is machine-read by `update:changelog` and the OS
 "What's new" surface — keep entries short and operator-facing.
 
-## Unreleased
+## 2026.10.08.0620 — 2026-10-08
 
 ### Removed
 - `#[AsComponent(event:, triggers:)]`, `component_event_attrs()` and

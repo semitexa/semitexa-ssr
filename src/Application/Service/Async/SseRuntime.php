@@ -61,6 +61,9 @@ final class SseRuntime
     /** Builds a multiplexed subscription from a subscribe control. */
     public ?SubscriptionFactoryInterface $subscriptionFactory = null;
 
+    /** What each collection subscription was last sent, for keyed patches. */
+    public ?CollectionFrameDiff $collectionDiff = null;
+
     /** Renders the deferred blocks a page requested. */
     public ?DeferredBlockOrchestrator $deferredBlockOrchestrator = null;
 

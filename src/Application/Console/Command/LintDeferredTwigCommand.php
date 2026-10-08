@@ -63,7 +63,7 @@ final class LintDeferredTwigCommand extends Command
                         'name' => $e::class,
                         'message' => $e->getMessage(),
                     ]],
-                ], JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
+                ], JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT), OutputInterface::OUTPUT_RAW);
             } else {
                 $io->error('Deferred Twig compatibility lint failed: ' . $e->getMessage());
             }
@@ -78,7 +78,7 @@ final class LintDeferredTwigCommand extends Command
                     static fn (FrontendTwigCompatibilityIssue $issue): array => $issue->toArray(),
                     $issues
                 ),
-            ], JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
+            ], JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT), OutputInterface::OUTPUT_RAW);
 
             return $issues === [] ? Command::SUCCESS : Command::FAILURE;
         }

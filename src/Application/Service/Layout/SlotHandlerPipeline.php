@@ -190,6 +190,7 @@ final class SlotHandlerPipeline
     private static function injectedProperties(string $handlerClass): array
     {
         try {
+            // @phpstan-ignore argument.type (any declared name: one that names no class is answered by the catch)
             $reflection = new ReflectionClass($handlerClass);
         } catch (ReflectionException) {
             return [];
@@ -211,6 +212,7 @@ final class SlotHandlerPipeline
     private static function isContainerBuilt(string $handlerClass): bool
     {
         try {
+            // @phpstan-ignore argument.type (any declared name: one that names no class is answered by the catch)
             $reflection = new ReflectionClass($handlerClass);
         } catch (ReflectionException) {
             return false;

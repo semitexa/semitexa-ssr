@@ -59,6 +59,9 @@ final class SseSessionRegistry
     /** @var array<string, list<array<string, mixed>>> frames awaiting a held socket. */
     private array $queues = [];
 
+    /** @var array<string, \Swoole\Coroutine\Channel> sessionId => the held-open loop's wake-up */
+    private array $wakers = [];
+
     /** @var array<string, list<array<string, mixed>>> frames for a not-yet-connected session. */
     private array $buffers = [];
 
@@ -132,6 +135,27 @@ final class SseSessionRegistry
     }
 
     /**
+     * The held-open loop's pause between ticks — cut short the moment a frame
+     * is queued for the session on this worker (tk-ls-kiss-wakeup). The loop
+     * used to sleep its whole tick, so a frame queued right after a tick (a
+     * deferred block, an answer to a click) waited up to that long for nothing.
+     * Frames from another worker still arrive on the next tick.
+     */
+    public function waitForWork(string $sessionId, float $seconds): void
+    {
+        if (!class_exists(\Swoole\Coroutine\Channel::class, false) || \Swoole\Coroutine::getCid() < 0) {
+            usleep((int) ($seconds * 1_000_000));
+
+            return;
+        }
+        if (($this->queues[$sessionId] ?? []) !== []) {
+            return; // work is already waiting
+        }
+        $this->wakers[$sessionId] ??= new \Swoole\Coroutine\Channel(1);
+        $this->wakers[$sessionId]->pop($seconds);
+    }
+
+    /**
      * Create an empty queue for a session that has just connected, so a later
      * `deliver()` on this worker appends rather than deciding the session is
      * unknown and taking the cross-worker path.
@@ -147,6 +171,10 @@ final class SseSessionRegistry
     public function enqueue(string $sessionId, array $data): void
     {
         $this->queues[$sessionId][] = $data;
+        $waker = $this->wakers[$sessionId] ?? null;
+        if ($waker !== null && $waker->isEmpty()) {
+            $waker->push(true, 0.001); // the held-open loop writes it now, not on its next tick
+        }
 
         $depth = count($this->queues[$sessionId]);
         if ($depth <= self::queueCap()) {
@@ -393,7 +421,11 @@ final class SseSessionRegistry
      */
     public function close(string $sessionId): void
     {
+        if (isset($this->wakers[$sessionId])) {
+            $this->wakers[$sessionId]->close();
+        }
         unset(
+            $this->wakers[$sessionId],
             $this->sessions[$sessionId],
             $this->queues[$sessionId],
             $this->buffers[$sessionId],

@@ -8,6 +8,7 @@ use Semitexa\Core\Attribute\AsDiscoveryContributor;
 use Semitexa\Core\Config\EnvValueResolver;
 use Semitexa\Core\Discovery\BootDiagnostics;
 use Semitexa\Core\Discovery\DiscoveryContributor;
+use Semitexa\Core\Support\Row;
 use Semitexa\Ssr\Application\Service\Layout\LayoutSlotRegistry;
 use Semitexa\Ssr\Attribute\AsLayoutSlot;
 
@@ -44,7 +45,7 @@ final class LayoutSlotContributor implements DiscoveryContributor
         LayoutSlotRegistry::register(
             $attribute->handle,
             $attribute->slot,
-            EnvValueResolver::resolve($attribute->template),
+            Row::asString(EnvValueResolver::resolve($attribute->template)),
             self::coerceStringMap(EnvValueResolver::resolve($attribute->context)),
             $attribute->priority,
             $attribute->deferred,

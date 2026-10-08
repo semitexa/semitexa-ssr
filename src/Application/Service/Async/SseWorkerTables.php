@@ -78,13 +78,7 @@ final class SseWorkerTables
             return -1;
         }
 
-        if (method_exists($this->server, 'getWorkerId')) {
-            return (int) $this->server->getWorkerId();
-        }
-
-        $workerId = $this->server->worker_id ?? -1;
-
-        return is_numeric($workerId) ? (int) $workerId : -1;
+        return (int) $this->server->getWorkerId();
     }
 
     public function canRouteCrossWorker(): bool

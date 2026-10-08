@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Semitexa\Core\Request as CoreRequest;
 use Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator;
 use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRecord;
@@ -101,6 +102,7 @@ final class SseDeferredDoor
         mixed $lastEventId,
         bool $allowPersistentDeferredSse,
         bool $keepChannelOpen,
+        ?CoreRequest $visitor = null,
     ): bool {
         if (!DeferredRequestRegistry::matchesBindToken($deferredRequestId, $bindToken)) {
             // Written straight to the response rather than queued: the caller
@@ -126,6 +128,7 @@ final class SseDeferredDoor
             is_string($lastEventId) ? $lastEventId : null,
             $allowPersistentDeferredSse,
             $keepChannelOpen,
+            $visitor,
         );
 
         return true;
@@ -137,6 +140,7 @@ final class SseDeferredDoor
         ?string $lastEventId,
         bool $allowPersistentDeferredSse,
         bool $keepChannelOpen,
+        ?CoreRequest $visitor = null,
     ): void {
         $registry = ($this->readRegistry)($deferredRequestId);
 
@@ -159,7 +163,7 @@ final class SseDeferredDoor
             'locale' => $registry->locale,
         ]);
 
-        $run = function () use ($sessionId, $registry, $lastEventId, $deferredRequestId, $allowPersistentDeferredSse, $keepChannelOpen): void {
+        $run = function () use ($sessionId, $registry, $lastEventId, $deferredRequestId, $allowPersistentDeferredSse, $keepChannelOpen, $visitor): void {
             $this->streamBlocks(
                 $sessionId,
                 $registry,
@@ -167,6 +171,7 @@ final class SseDeferredDoor
                 $deferredRequestId,
                 $allowPersistentDeferredSse,
                 $keepChannelOpen,
+                $visitor,
             );
         };
 
@@ -188,6 +193,7 @@ final class SseDeferredDoor
         string $deferredRequestId,
         bool $allowPersistentDeferredSse,
         bool $keepChannelOpen,
+        ?CoreRequest $visitor = null,
     ): void {
         try {
             $orchestrator = ($this->orchestrator)();
@@ -202,6 +208,7 @@ final class SseDeferredDoor
                 locale: $registry->locale !== '' ? $registry->locale : null,
                 startLiveLoop: $allowPersistentDeferredSse,
                 keepChannelOpen: $keepChannelOpen,
+                visitor: $visitor,
             );
         } catch (\Throwable $e) {
             // A cancelled coroutine is a normal shutdown, not a failure: the

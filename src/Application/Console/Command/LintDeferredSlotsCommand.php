@@ -80,7 +80,7 @@ final class LintDeferredSlotsCommand extends Command
                     'clean' => false,
                     'error' => $e->getMessage(),
                     'findings' => [],
-                ], JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
+                ], JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT), OutputInterface::OUTPUT_RAW);
             } else {
                 $io->error('Deferred slot audit failed: ' . $e->getMessage());
             }
@@ -96,7 +96,7 @@ final class LintDeferredSlotsCommand extends Command
                     static fn (DeferralIntentFinding $f): array => $f->toArray(),
                     $findings
                 ),
-            ], JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
+            ], JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT), OutputInterface::OUTPUT_RAW);
 
             return $findings === [] || !$strict ? Command::SUCCESS : Command::FAILURE;
         }

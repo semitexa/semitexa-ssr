@@ -105,7 +105,7 @@ final class SiteHeadCommand extends Command
             $output->writeln((string) json_encode([
                 'values' => (object) $head->values,
                 'rejected' => (object) $head->rejected,
-            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), OutputInterface::OUTPUT_RAW);
 
             return Command::SUCCESS;
         }

@@ -116,12 +116,13 @@ final class PipelineSubscriptionFactory implements SubscriptionFactoryInterface
         array $requestSnapshot,
         ?string $tenantId = null,
         ?string $tenantBlob = null,
+        string $routeName = '',
     ): ?SubscriptionAttachment {
-        $route = $this->routeRegistry->findRouteTyped(
-            $routePath,
-            $routeMethod !== '' ? $routeMethod : 'GET',
-            $this->attributeDiscovery->getHandlerRegistry(),
-        );
+        // A feed is subscribed through HUG by name (a Hug-exposed feed has no
+        // path); an unnamed subscribe has no route to resolve.
+        $route = $routeName !== ''
+            ? $this->routeRegistry->findByNameTyped($routeName, $this->attributeDiscovery->getHandlerRegistry())
+            : null;
         if ($route === null) {
             return null;
         }
@@ -131,6 +132,7 @@ final class PipelineSubscriptionFactory implements SubscriptionFactoryInterface
             return null;
         }
 
+        $requestSnapshot = self::normalizeSnapshot($requestSnapshot);
         $request = self::rebuildRequest($requestSnapshot);
 
         // Built the way the ordinary request path builds it — see
@@ -224,21 +226,81 @@ final class PipelineSubscriptionFactory implements SubscriptionFactoryInterface
      * same shape {@see ReRunContext::rebuildRequest()} produces, so the re-hydrated
      * DTO and the re-run's request agree.
      *
-     * @param array<string, mixed> $s
+     * @param array{
+     *     method: string,
+     *     uri: string,
+     *     headers: array<string, string>,
+     *     query: array<array-key, string|array<mixed>>,
+     *     post: array<array-key, string|array<mixed>>,
+     *     server: array<string, mixed>,
+     *     cookies: array<string, string>,
+     *     content: ?string,
+     *     files: array{},
+     * } $s
      */
     private static function rebuildRequest(array $s): Request
     {
         return new Request(
-            method: is_string($s['method'] ?? null) ? $s['method'] : 'GET',
-            uri: is_string($s['uri'] ?? null) ? $s['uri'] : '/',
-            headers: is_array($s['headers'] ?? null) ? $s['headers'] : [],
-            query: is_array($s['query'] ?? null) ? $s['query'] : [],
-            post: is_array($s['post'] ?? null) ? $s['post'] : [],
-            server: is_array($s['server'] ?? null) ? $s['server'] : [],
-            cookies: is_array($s['cookies'] ?? null) ? $s['cookies'] : [],
-            content: is_string($s['content'] ?? null) ? $s['content'] : null,
-            files: is_array($s['files'] ?? null) ? $s['files'] : [],
+            method: $s['method'],
+            uri: $s['uri'],
+            headers: $s['headers'],
+            query: $s['query'],
+            post: $s['post'],
+            server: $s['server'],
+            cookies: $s['cookies'],
+            content: $s['content'],
+            files: $s['files'],
         );
+    }
+
+    /**
+     * The subscribe snapshot in the shape {@see Request} and {@see ReRunContext}
+     * take. It is {@see \Semitexa\Ssr\Application\Service\Stream\FeedStreamControl::snapshot()}
+     * of a real Request — headers, query, post, server and cookies keep the
+     * element types that Request gave them — carried across the control
+     * queue. A part that is missing or of the wrong kind falls back to its
+     * empty default, as it always did.
+     *
+     * `files` is always empty: the feed request is built with no uploads, and
+     * an UploadedFile would not survive the JSON trip across workers anyway.
+     *
+     * @param array<array-key, mixed> $s
+     * @return array{
+     *     method: string,
+     *     uri: string,
+     *     headers: array<string, string>,
+     *     query: array<array-key, string|array<mixed>>,
+     *     post: array<array-key, string|array<mixed>>,
+     *     server: array<string, mixed>,
+     *     cookies: array<string, string>,
+     *     content: ?string,
+     *     files: array{},
+     * }
+     */
+    private static function normalizeSnapshot(array $s): array
+    {
+        /** @var array<string, string> $headers */
+        $headers = is_array($s['headers'] ?? null) ? $s['headers'] : [];
+        /** @var array<array-key, string|array<mixed>> $query */
+        $query = is_array($s['query'] ?? null) ? $s['query'] : [];
+        /** @var array<array-key, string|array<mixed>> $post */
+        $post = is_array($s['post'] ?? null) ? $s['post'] : [];
+        /** @var array<string, mixed> $server */
+        $server = is_array($s['server'] ?? null) ? $s['server'] : [];
+        /** @var array<string, string> $cookies */
+        $cookies = is_array($s['cookies'] ?? null) ? $s['cookies'] : [];
+
+        return [
+            'method' => is_string($s['method'] ?? null) ? $s['method'] : 'GET',
+            'uri' => is_string($s['uri'] ?? null) ? $s['uri'] : '/',
+            'headers' => $headers,
+            'query' => $query,
+            'post' => $post,
+            'server' => $server,
+            'cookies' => $cookies,
+            'content' => is_string($s['content'] ?? null) ? $s['content'] : null,
+            'files' => [],
+        ];
     }
 
     /**
@@ -271,7 +333,7 @@ final class PipelineSubscriptionFactory implements SubscriptionFactoryInterface
             }
         }
 
-        return array_values($scopes);
+        return $scopes;
     }
 
     /** Tenant discriminator, defensively (mirrors the standalone handler). */
@@ -307,7 +369,7 @@ final class PipelineSubscriptionFactory implements SubscriptionFactoryInterface
     private static function resolveTenant(): ?object
     {
         $ctx = '\Semitexa\Tenancy\Context\TenantContext';
-        if (class_exists($ctx) && method_exists($ctx, 'get')) {
+        if (class_exists($ctx)) {
             $tenant = $ctx::get();
 
             return is_object($tenant) ? $tenant : null;
@@ -324,7 +386,7 @@ final class PipelineSubscriptionFactory implements SubscriptionFactoryInterface
     private static function currentSubjectRef(): string
     {
         $store = '\Semitexa\Auth\Context\AuthContextStore';
-        if (class_exists($store) && method_exists($store, 'getUser')) {
+        if (class_exists($store)) {
             /** @var object|null $user */
             $user = $store::getUser();
             if (is_object($user) && method_exists($user, 'getId')) {

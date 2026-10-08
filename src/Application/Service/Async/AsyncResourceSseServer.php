@@ -168,9 +168,9 @@ final class AsyncResourceSseServer
     }
 
     /** @param array<string, mixed> $requestSnapshot */
-    public static function submitSubscribe(string $sessionId, string $streamingId, string $routePath, string $routeMethod, array $requestSnapshot): bool
+    public static function submitSubscribe(string $sessionId, string $streamingId, string $routePath, string $routeMethod, array $requestSnapshot, string $routeName = '', ?string $requesterTenantId = null, bool $acceptsPatches = false): bool
     {
-        return self::instance()->submitSubscribe($sessionId, $streamingId, $routePath, $routeMethod, $requestSnapshot);
+        return self::instance()->submitSubscribe($sessionId, $streamingId, $routePath, $routeMethod, $requestSnapshot, $routeName, $requesterTenantId, $acceptsPatches);
     }
 
     public static function submitUnsubscribe(string $sessionId, string $streamingId): bool

@@ -4,13 +4,13 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Extension;
 
-use Semitexa\Ssr\Application\Service\Component\ComponentEventBridge;
 use Semitexa\Ssr\Application\Service\Component\ComponentRenderer;
 use Semitexa\Ssr\Application\Service\Component\ComponentSlotRenderer;
 use Semitexa\Ssr\Application\Service\Isomorphic\PlaceholderRenderer;
 use Semitexa\Ssr\Application\Service\Layout\LayoutSlotRegistry;
 use Semitexa\Ssr\Application\Service\Layout\SlotAssetCollector;
 use Semitexa\Ssr\Attribute\AsTwigExtension;
+use Semitexa\Ssr\Domain\Model\DeferredSlotDefinition;
 use Twig\Markup;
 
 /**
@@ -41,7 +41,6 @@ final class LayoutTwigExtension
 
         TwigExtensionRegistry::registerFunction('component', [$this, 'component'], ['is_safe' => ['html']]);
         TwigExtensionRegistry::registerFunction('slot', [$this, 'componentSlot'], self::CONTEXTUAL_HTML);
-        TwigExtensionRegistry::registerFunction('component_event_attrs', [$this, 'componentEventAttrs'], self::CONTEXTUAL_HTML);
     }
 
     /**
@@ -98,18 +97,6 @@ final class LayoutTwigExtension
     }
 
     /**
-     * @param array<array-key, mixed> $context
-     * @param array<array-key, mixed> $payload
-     */
-    public function componentEventAttrs(array $context, string $trigger, array $payload = []): Markup
-    {
-        return new Markup(
-            ComponentEventBridge::renderTriggerAttributes($context, $trigger, $payload),
-            'UTF-8',
-        );
-    }
-
-    /**
      * @param array<string, mixed> $context
      * @param array<string, mixed> $extraContext
      */
@@ -121,7 +108,7 @@ final class LayoutTwigExtension
         }
 
         return new Markup(
-            LayoutSlotRegistry::render($pageHandle, $slot, $context, $extraContext, $context['layout_frame'] ?? null),
+            LayoutSlotRegistry::render($pageHandle, $slot, $context, $extraContext, is_string($context['layout_frame'] ?? null) ? $context['layout_frame'] : null),
             'UTF-8',
         );
     }
@@ -134,7 +121,7 @@ final class LayoutTwigExtension
      *
      * @param array<string, mixed> $context
      */
-    private static function findDeferredSlot(array $context, string $slot): ?object
+    private static function findDeferredSlot(array $context, string $slot): ?DeferredSlotDefinition
     {
         $deferredSlots = $context['__ssr_deferred_slots'] ?? [];
         if (!is_iterable($deferredSlots)) {
@@ -142,7 +129,7 @@ final class LayoutTwigExtension
         }
 
         foreach ($deferredSlots as $definition) {
-            if (is_object($definition) && ($definition->slotId ?? null) === strtolower($slot)) {
+            if ($definition instanceof DeferredSlotDefinition && $definition->slotId === strtolower($slot)) {
                 return $definition;
             }
         }

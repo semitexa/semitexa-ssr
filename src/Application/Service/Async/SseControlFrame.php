@@ -126,14 +126,33 @@ final class SseControlFrame
         string $routePath,
         string $routeMethod,
         array $requestSnapshot,
+        string $routeName = '',
+        ?string $requesterTenantId = null,
+        bool $acceptsPatches = false,
     ): array {
-        return [
+        $frame = [
             self::KEY => self::SUBSCRIBE,
             'streaming_id' => $streamingId,
             'route_path' => $routePath,
             'route_method' => $routeMethod !== '' ? $routeMethod : 'GET',
             'request_snapshot' => $requestSnapshot,
         ];
+        // A feed subscribed through HUG is named, not pathed (an exposure: Hug
+        // feed has no path), and carries the tenant the subscribing request
+        // resolved so the owning worker can refuse a cross-tenant attach.
+        if ($routeName !== '') {
+            $frame['route_name'] = $routeName;
+        }
+        if ($requesterTenantId !== null) {
+            $frame['requester_tenant_id'] = $requesterTenantId;
+        }
+        // The client applies keyed patches (`ui.collection.patch`); without it
+        // every re-run is sent whole.
+        if ($acceptsPatches) {
+            $frame['patches'] = true;
+        }
+
+        return $frame;
     }
 
     /**

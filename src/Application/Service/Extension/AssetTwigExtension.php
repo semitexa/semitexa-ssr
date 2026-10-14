@@ -37,6 +37,7 @@ final class AssetTwigExtension
         TwigExtensionRegistry::registerFunction('asset_head', [$this, 'renderHead'], ['is_safe' => ['html']]);
         TwigExtensionRegistry::registerFunction('asset_body', [$this, 'renderBody'], ['is_safe' => ['html']]);
         TwigExtensionRegistry::registerFunction('asset_require', [$this, 'requireAsset'], ['is_safe' => ['html']]);
+        TwigExtensionRegistry::registerFunction('asset_import_map', [$this, 'renderImportMap'], ['is_safe' => ['html']]);
     }
 
     /**
@@ -69,6 +70,17 @@ final class AssetTwigExtension
     public function renderHead(): Markup
     {
         return new Markup(AssetRenderer::renderHead(AssetCollectorStore::get()), 'UTF-8');
+    }
+
+    /**
+     * Only what module scripts need before them: the import map (and the
+     * request-size meta ui-core reads). For a page that writes its own head —
+     * the OS shell — and cannot take asset_head(), whose stylesheets would
+     * restyle it, yet loads platform-ui modules that import by specifier.
+     */
+    public function renderImportMap(): Markup
+    {
+        return new Markup(AssetRenderer::renderModulePrelude(AssetCollectorStore::get()), 'UTF-8');
     }
 
     public function renderBody(): Markup

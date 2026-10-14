@@ -270,6 +270,15 @@ final class AssetRenderer
     }
 
     /**
+     * The module prelude alone, for a page that renders its own head instead
+     * of {@see renderHead()} (which prints the same prelude first).
+     */
+    public static function renderModulePrelude(AssetCollector $collector): string
+    {
+        return self::renderScriptPrelude($collector->resolve());
+    }
+
+    /**
      * What a page with module scripts needs before any of them: the largest
      * request the server takes, then the import map. Swoole refuses a bigger
      * request before any handler runs and the browser sees only a dropped

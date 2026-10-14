@@ -55,6 +55,8 @@ final class TwigFunctionContractTest extends TestCase
                 'asset_head',
                 'asset_body',
                 'asset_require',
+                // the module prelude alone, for a page that writes its own head
+                'asset_import_map',
                 // content-security-policy — the nonce a template stamps on the
                 // script tag it writes itself, so the page survives a policy
                 // with no unsafe-inline

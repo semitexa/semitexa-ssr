@@ -24,8 +24,12 @@ final class SseRedisFailureReportTest extends TestCase
     /** @var list<string> */
     private array $lines = [];
 
+    /** The bridge's logger before this test, put back afterwards (it is process-wide). */
+    private mixed $previousLogger = null;
+
     protected function setUp(): void
     {
+        $this->previousLogger = (new \ReflectionProperty(StaticLoggerBridge::class, 'logger'))->getValue();
         $lines = &$this->lines;
         StaticLoggerBridge::set(new class ($lines) implements LoggerInterface {
             /** @param list<string> $lines */
@@ -64,7 +68,7 @@ final class SseRedisFailureReportTest extends TestCase
 
     protected function tearDown(): void
     {
-        StaticLoggerBridge::reset();
+        (new \ReflectionProperty(StaticLoggerBridge::class, 'logger'))->setValue(null, $this->previousLogger);
     }
 
     #[Test]

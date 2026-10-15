@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service\Async;
 
 use Predis\Client;
-use Semitexa\Core\Log\StaticLoggerBridge;
 
 /**
  * The Redis-backed durability store for a session's undelivered SSE frames.
@@ -22,7 +21,8 @@ use Semitexa\Core\Log\StaticLoggerBridge;
  * would have made a queue depend on the control vocabulary and on the wire.
  *
  * Every operation is **fail-soft**: no pool, or a Redis error, is logged and
- * swallowed rather than propagated. Durability is a best-effort enhancement —
+ * swallowed rather than propagated, and while Redis is down the worker's
+ * {@see SseRedisOutageGate} backs every call off and logs the outage once. Durability is a best-effort enhancement —
  * losing it must never take a live stream down with it. The one asymmetry worth
  * knowing: a failed pop returns "stop draining" rather than "queue empty", so a
  * Redis outage mid-drain ends the drain instead of spinning on the error.
@@ -32,8 +32,10 @@ final class SseRedisSessionQueue
     private const KEY_PREFIX = 'semitexa_sse_queue:';
     private const TTL_SECONDS = 7200;
 
-    public function __construct(private readonly SseRedisPool $pool)
-    {
+    public function __construct(
+        private readonly SseRedisPool $pool,
+        private readonly SseRedisOutageGate $gate = new SseRedisOutageGate(),
+    ) {
     }
 
     public function isAvailable(): bool
@@ -102,7 +104,8 @@ final class SseRedisSessionQueue
     public function tryPush(string $sessionId, array $data): bool
     {
         $pool = $this->pool->get();
-        if ($pool === null) {
+        // A refused call reports false so the caller falls back to the table.
+        if ($pool === null || !$this->gate->allows()) {
             return false;
         }
 
@@ -119,14 +122,11 @@ final class SseRedisSessionQueue
                 $redis->expire($queueKey, self::TTL_SECONDS);
             });
         } catch (\Throwable $e) {
-            StaticLoggerBridge::error('ssr', 'Redis SSE enqueue failed', [
-                'session_id' => $sessionId,
-                'exception' => $e::class,
-                'message' => $e->getMessage(),
-            ]);
+            $this->gate->failed('Redis SSE enqueue failed', $e, ['session_id' => $sessionId]);
 
             return false;
         }
+        $this->gate->succeeded();
 
         return true;
     }
@@ -151,7 +151,7 @@ final class SseRedisSessionQueue
     public function pop(string $sessionId): array
     {
         $pool = $this->pool->get();
-        if ($pool === null) {
+        if ($pool === null || !$this->gate->allows()) {
             return ['ok' => false, 'raw' => null];
         }
 
@@ -163,14 +163,11 @@ final class SseRedisSessionQueue
                 return is_string($value) && $value !== '' ? $value : null;
             });
         } catch (\Throwable $e) {
-            StaticLoggerBridge::error('ssr', 'Redis SSE dequeue failed', [
-                'session_id' => $sessionId,
-                'exception' => $e::class,
-                'message' => $e->getMessage(),
-            ]);
+            $this->gate->failed('Redis SSE dequeue failed', $e, ['session_id' => $sessionId]);
 
             return ['ok' => false, 'raw' => null];
         }
+        $this->gate->succeeded();
 
         return ['ok' => true, 'raw' => is_string($raw) ? $raw : null];
     }
@@ -188,7 +185,7 @@ final class SseRedisSessionQueue
         }
 
         $pool = $this->pool->get();
-        if ($pool === null) {
+        if ($pool === null || !$this->gate->allows()) {
             return;
         }
 
@@ -198,12 +195,11 @@ final class SseRedisSessionQueue
                 $redis->publish($channel, '');
             });
         } catch (\Throwable $e) {
-            StaticLoggerBridge::error('ssr', 'Redis SSE scope-invalidation publish failed', [
-                'channel' => $channel,
-                'exception' => $e::class,
-                'message' => $e->getMessage(),
-            ]);
+            $this->gate->failed('Redis SSE scope-invalidation publish failed', $e, ['channel' => $channel]);
+
+            return;
         }
+        $this->gate->succeeded();
     }
 
     /**
@@ -213,7 +209,7 @@ final class SseRedisSessionQueue
     private function write(string $sessionId, array $encoded, string $errorMessage, array $logContext = []): void
     {
         $pool = $this->pool->get();
-        if ($pool === null) {
+        if ($pool === null || !$this->gate->allows()) {
             return;
         }
 
@@ -225,11 +221,10 @@ final class SseRedisSessionQueue
                 $redis->expire($queueKey, self::TTL_SECONDS);
             });
         } catch (\Throwable $e) {
-            StaticLoggerBridge::error('ssr', $errorMessage, $logContext + [
-                'session_id' => $sessionId,
-                'exception' => $e::class,
-                'message' => $e->getMessage(),
-            ]);
+            $this->gate->failed($errorMessage, $e, $logContext + ['session_id' => $sessionId]);
+
+            return;
         }
+        $this->gate->succeeded();
     }
 }

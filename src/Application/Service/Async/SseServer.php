@@ -290,6 +290,7 @@ final class SseServer implements FeedStreamSinkInterface
      */
     private function beginSseResponse(Response $response, string $sessionId): void
     {
+        \Semitexa\Core\Server\InFlightRequests::streaming(); // a stream from here: the exit drain cancels it at once
         $response->status(200);
         $response->header('Content-Type', 'text/event-stream');
         $response->header('Cache-Control', 'no-cache');

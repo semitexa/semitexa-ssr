@@ -6,6 +6,7 @@ namespace Semitexa\Ssr\Application\Service\Async;
 
 use Predis\Client;
 use Semitexa\Core\Log\StaticLoggerBridge;
+use Semitexa\Core\Redis\RedisUnavailableException;
 
 /**
  * The Redis-backed durability store for a session's undelivered SSE frames.
@@ -22,7 +23,9 @@ use Semitexa\Core\Log\StaticLoggerBridge;
  * would have made a queue depend on the control vocabulary and on the wire.
  *
  * Every operation is **fail-soft**: no pool, or a Redis error, is logged and
- * swallowed rather than propagated. Durability is a best-effort enhancement —
+ * swallowed rather than propagated. While Redis is down the core pool's
+ * circuit breaker fails these calls fast and logs the outage once; a call it
+ * refused is not logged again here (see reportFailure()). Durability is a best-effort enhancement —
  * losing it must never take a live stream down with it. The one asymmetry worth
  * knowing: a failed pop returns "stop draining" rather than "queue empty", so a
  * Redis outage mid-drain ends the drain instead of spinning on the error.
@@ -32,8 +35,9 @@ final class SseRedisSessionQueue
     private const KEY_PREFIX = 'semitexa_sse_queue:';
     private const TTL_SECONDS = 7200;
 
-    public function __construct(private readonly SseRedisPool $pool)
-    {
+    public function __construct(
+        private readonly SseRedisPool $pool,
+    ) {
     }
 
     public function isAvailable(): bool
@@ -102,6 +106,7 @@ final class SseRedisSessionQueue
     public function tryPush(string $sessionId, array $data): bool
     {
         $pool = $this->pool->get();
+        // A refused call reports false so the caller falls back to the table.
         if ($pool === null) {
             return false;
         }
@@ -119,11 +124,7 @@ final class SseRedisSessionQueue
                 $redis->expire($queueKey, self::TTL_SECONDS);
             });
         } catch (\Throwable $e) {
-            StaticLoggerBridge::error('ssr', 'Redis SSE enqueue failed', [
-                'session_id' => $sessionId,
-                'exception' => $e::class,
-                'message' => $e->getMessage(),
-            ]);
+            self::reportFailure('Redis SSE enqueue failed', $e, ['session_id' => $sessionId]);
 
             return false;
         }
@@ -163,11 +164,7 @@ final class SseRedisSessionQueue
                 return is_string($value) && $value !== '' ? $value : null;
             });
         } catch (\Throwable $e) {
-            StaticLoggerBridge::error('ssr', 'Redis SSE dequeue failed', [
-                'session_id' => $sessionId,
-                'exception' => $e::class,
-                'message' => $e->getMessage(),
-            ]);
+            self::reportFailure('Redis SSE dequeue failed', $e, ['session_id' => $sessionId]);
 
             return ['ok' => false, 'raw' => null];
         }
@@ -198,11 +195,9 @@ final class SseRedisSessionQueue
                 $redis->publish($channel, '');
             });
         } catch (\Throwable $e) {
-            StaticLoggerBridge::error('ssr', 'Redis SSE scope-invalidation publish failed', [
-                'channel' => $channel,
-                'exception' => $e::class,
-                'message' => $e->getMessage(),
-            ]);
+            self::reportFailure('Redis SSE scope-invalidation publish failed', $e, ['channel' => $channel]);
+
+            return;
         }
     }
 
@@ -225,11 +220,28 @@ final class SseRedisSessionQueue
                 $redis->expire($queueKey, self::TTL_SECONDS);
             });
         } catch (\Throwable $e) {
-            StaticLoggerBridge::error('ssr', $errorMessage, $logContext + [
-                'session_id' => $sessionId,
-                'exception' => $e::class,
-                'message' => $e->getMessage(),
-            ]);
+            self::reportFailure($errorMessage, $e, $logContext + ['session_id' => $sessionId]);
+
+            return;
         }
+    }
+
+    /**
+     * Log a Redis failure — unless the core pool's circuit breaker refused the
+     * call. It already logged the outage once when it opened and will log the
+     * recovery; repeating it here, from every open session every 0.2 s tick,
+     * is how one outage became 1174 lines (606 in one second, 2026-10-14).
+     *
+     * @param array<string, mixed> $context
+     */
+    public static function reportFailure(string $message, \Throwable $e, array $context = []): void
+    {
+        if ($e instanceof RedisUnavailableException) {
+            return;
+        }
+        StaticLoggerBridge::error('ssr', $message, $context + [
+            'exception' => $e::class,
+            'message' => $e->getMessage(),
+        ]);
     }
 }

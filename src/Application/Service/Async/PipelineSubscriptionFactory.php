@@ -326,7 +326,11 @@ final class PipelineSubscriptionFactory implements SubscriptionFactoryInterface
         $scopes = AbstractSseFeedHandler::watchScopesOf($declaredClass);
 
         if ($dto instanceof DynamicallyScopedFeedInterface) {
-            foreach ($dto->dynamicWatchScopes() as $scope) {
+            // Application code answers here: the interface asks for strings,
+            // nothing enforces it, so the answer is read as it may arrive.
+            /** @var array<mixed> $dynamic */
+            $dynamic = $dto->dynamicWatchScopes();
+            foreach ($dynamic as $scope) {
                 if (is_string($scope) && $scope !== '' && !in_array($scope, $scopes, true)) {
                     $scopes[] = $scope;
                 }

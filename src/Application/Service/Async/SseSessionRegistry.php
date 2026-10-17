@@ -94,6 +94,12 @@ final class SseSessionRegistry
         ];
     }
 
+    /** Whether the session's entry is still the one this connection opened (a same-worker reconnect replaces it). */
+    public function isOpenWith(string $sessionId, mixed $response): bool
+    {
+        return ($this->sessions[$sessionId]['response'] ?? null) === $response;
+    }
+
     public function isOpen(string $sessionId): bool
     {
         return isset($this->sessions[$sessionId]);

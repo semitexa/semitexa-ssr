@@ -42,6 +42,15 @@ final class SseWorkerTables
     private ?Table $deliver = null;
     private ?Table $pending = null;
 
+    /**
+     * The token each open connection on this worker wrote into the session
+     * table, keyed by its response, so its own teardown can tell whether the
+     * session still belongs to it. Weak: a closed response takes its entry.
+     *
+     * @var \WeakMap<object, string>|null
+     */
+    private ?\WeakMap $connections = null;
+
     public function setServer(Server $server): void
     {
         $this->server = $server;
@@ -96,15 +105,63 @@ final class SseWorkerTables
         return $this->pending !== null;
     }
 
-    /** Claim this session's socket for the current worker. */
-    public function recordOwnership(string $sessionId): void
+    /**
+     * Claim this session's socket for the current worker. With the connection
+     * (its response), the claim also names that connection and when it opened:
+     * a reconnect reuses the page's session id, so the previous connection's
+     * late teardown must be able to see the session is no longer its own.
+     */
+    public function recordOwnership(string $sessionId, ?object $connection = null): void
     {
-        $this->sessionWorker?->set(self::tableKey($sessionId), ['worker_id' => $this->currentWorkerId()]);
+        // Table::set merges columns, so a claim that names no connection clears the token.
+        $row = ['worker_id' => $this->currentWorkerId(), 'connection' => '', 'opened_at_ms' => 0];
+        if ($connection !== null) {
+            $token = bin2hex(random_bytes(8));
+            $this->connections ??= new \WeakMap();
+            $this->connections[$connection] = $token;
+            $row = ['connection' => $token, 'opened_at_ms' => SubscriptionTable::nowMs()] + $row;
+        }
+        $this->sessionWorker?->set(self::tableKey($sessionId), $row);
     }
 
-    public function releaseOwnership(string $sessionId): void
+    /**
+     * When a newer connection took this session over, the moment it opened
+     * (milliseconds); null while the session is still this connection's, or
+     * when nothing recorded who owns it. A superseded connection's teardown
+     * reaps only rows older than that moment and leaves the session's
+     * ownership, auth mapping and live state to the connection holding them.
+     */
+    public function supersededAt(string $sessionId, object $connection): ?int
     {
+        $mine = $this->connections[$connection] ?? null;
+        $row = $mine === null ? false : $this->sessionWorker?->get(self::tableKey($sessionId));
+        if (!is_array($row)) {
+            return null;
+        }
+        $owner = Row::of($row);
+        $current = $owner->string('connection');
+
+        return $current === '' || $current === $mine ? null : $owner->int('opened_at_ms');
+    }
+
+    /**
+     * Drop the claim — unless a named connection releases it and the session
+     * has meanwhile been claimed by another one, whose claim it would erase.
+     */
+    public function releaseOwnership(string $sessionId, ?object $connection = null): void
+    {
+        if ($connection !== null && $this->supersededAt($sessionId, $connection) !== null) {
+            return;
+        }
         $this->sessionWorker?->del(self::tableKey($sessionId));
+    }
+
+    /** Whether this worker holds the session's current connection, or nothing records who does. */
+    public function ownedHere(string $sessionId): bool
+    {
+        $owner = $this->ownerWorkerId($sessionId);
+
+        return $owner === null || $owner === $this->currentWorkerId();
     }
 
     public function isOwnedSomewhere(string $sessionId): bool

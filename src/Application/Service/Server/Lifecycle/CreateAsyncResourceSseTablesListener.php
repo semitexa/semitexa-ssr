@@ -30,6 +30,9 @@ final class CreateAsyncResourceSseTablesListener implements ServerLifecycleListe
 
         $sessionWorkerTable = new Table($env->swooleSseWorkerTableSize);
         $sessionWorkerTable->column('worker_id', Table::TYPE_INT, self::TABLE_COLUMN_INT_SIZE);
+        // Which connection owns the session and since when (SseWorkerTables::supersededAt()).
+        $sessionWorkerTable->column('connection', Table::TYPE_STRING, 16);
+        $sessionWorkerTable->column('opened_at_ms', Table::TYPE_INT, self::TABLE_COLUMN_INT_SIZE);
         $sessionWorkerTable->create();
 
         $deliverTable = new Table($env->swooleSseDeliverTableSize);

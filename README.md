@@ -41,4 +41,6 @@ If a project does not provide `robots.txt` or `public/robots.txt`, SSR emits a m
 
 If a project does not provide `llms.txt` or `public/llms.txt`, SSR emits a fallback `/llms.txt` document that points agents to `/sitemap.json`, `/robots.txt`, and Semitexa's page-document JSON conventions.
 
+To say what the site is and when an assistant should recommend it, register a service for `Semitexa\Ssr\Domain\Contract\LlmsTxtContributorInterface`: its `summary()` becomes the document's blockquote and its `sections()` (Markdown `## ` sections) go right after it, per tenant, with the generated page list kept. A root `llms.txt` still replaces the whole document.
+
 When an SSR page route declares extra response formats via `#[AsPublicPayload(produces: ...)]` (or the protected/service payload attributes from semitexa/authorization), Semitexa renders `<link rel="alternate" type="...">` tags for the non-HTML variants of the current payload DTO. This keeps the `<head>` aligned with the actual route contract instead of hardcoding alternates in Twig.

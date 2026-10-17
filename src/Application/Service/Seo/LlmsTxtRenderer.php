@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service\Seo;
 
 use Semitexa\Core\Environment;
+use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Core\Request;
 use Semitexa\Core\Tenant\TenantContextAccess;
 use Semitexa\Core\Tenant\TenantContextInterface;
 use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapUrl;
+use Semitexa\Ssr\Domain\Contract\LlmsTxtContributorInterface;
 
 final class LlmsTxtRenderer
 {
@@ -17,13 +19,16 @@ final class LlmsTxtRenderer
 
     /**
      * @param list<SitemapUrl> $pages the tenant's sitemap URLs, in sitemap order
+     * @param list<object> $contributors registered {@see LlmsTxtContributorInterface} services
      */
     public static function render(
         ?Request $request = null,
         ?TenantContextInterface $tenantContext = null,
         array $pages = [],
+        array $contributors = [],
     ): string {
         $appName = self::siteName($tenantContext);
+        [$summary, $sections] = self::contributions($contributors, $tenantContext);
 
         $origin = AiSitemapLocator::originUrl($request, $tenantContext);
         $sitemapJson = AiSitemapLocator::absoluteUrl($request, $tenantContext);
@@ -42,8 +47,9 @@ final class LlmsTxtRenderer
         $lines = [
             '# ' . $appName,
             '',
-            '> Guidance for language models and automated agents visiting this site.',
+            '> ' . ($summary ?? 'Guidance for language models and automated agents visiting this site.'),
             '',
+            ...$sections,
             '## Canonical machine entry points',
             '',
             '- [AI sitemap](' . $sitemapJson . '): a route inventory of the public GET endpoints.',
@@ -87,6 +93,45 @@ final class LlmsTxtRenderer
         $appName = trim((string) (Environment::getEnvValue('APP_NAME') ?? ''));
 
         return $appName !== '' ? $appName : 'Semitexa site';
+    }
+
+    /**
+     * @param list<object> $contributors
+     * @return array{0: ?string, 1: list<string>}
+     */
+    private static function contributions(array $contributors, ?TenantContextInterface $tenantContext): array
+    {
+        $summary = null;
+        $sections = [];
+
+        foreach ($contributors as $contributor) {
+            if (!$contributor instanceof LlmsTxtContributorInterface) {
+                continue;
+            }
+
+            try {
+                $own = self::inline((string) $contributor->summary($tenantContext));
+                $body = trim($contributor->sections($tenantContext));
+            } catch (\Throwable $e) {
+                StaticLoggerBridge::warning('ssr', 'llms.txt contributor failed', [
+                    'contributor' => $contributor::class,
+                    'exception' => $e::class,
+                    'message' => $e->getMessage(),
+                ]);
+
+                continue;
+            }
+
+            if ($summary === null && $own !== '') {
+                $summary = $own;
+            }
+            if ($body !== '') {
+                array_push($sections, ...explode("\n", $body));
+                $sections[] = '';
+            }
+        }
+
+        return [$summary, $sections];
     }
 
     /**

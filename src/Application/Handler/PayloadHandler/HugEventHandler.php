@@ -80,6 +80,13 @@ use Throwable;
 final class HugEventHandler implements TypedHandlerInterface
 {
     /**
+     * The `signedContext` error for an authentic context past its TTL. Part of
+     * the wire contract: the client runtime matches it to tell "this page has
+     * been open too long" from a rejected context.
+     */
+    public const SIGNED_CONTEXT_EXPIRED = 'Signed context expired.';
+
+    /**
      * Canonical envelope keys the endpoint always emits. A dispatcher's
      * `UiResponseDispatchResult::$body` MUST NOT overwrite these — the
      * endpoint silently drops collisions rather than letting a buggy
@@ -146,8 +153,13 @@ final class HugEventHandler implements TypedHandlerInterface
         // validation, so the only branch reaching here is a non-empty blob.
         $verifiedClaims = SignedContext::verify($envelope->signedContext);
         if ($verifiedClaims === null) {
+            // An authentic context whose TTL ran out (a page left open) is
+            // named apart from a forged one, so the runtime can redraw the
+            // component instead of the click failing silently.
             throw new ValidationException([
-                'signedContext' => ['Signed context verification failed.'],
+                'signedContext' => [SignedContext::expired($envelope->signedContext)
+                    ? self::SIGNED_CONTEXT_EXPIRED
+                    : 'Signed context verification failed.'],
             ]);
         }
 

@@ -84,6 +84,21 @@ final class SignedContextTest extends TestCase
     }
 
     #[Test]
+    public function expired_names_only_an_authentic_context_past_its_ttl(): void
+    {
+        $blob = SignedContext::sign(['x' => 1], 60);
+        $future = time() + 7200;
+
+        self::assertTrue(SignedContext::expired($blob, $future));
+        self::assertFalse(SignedContext::expired($blob), 'a live context is not expired');
+        // A forged or malformed blob stays "failed", never "expired": the
+        // distinction must not tell anyone more than verify() would.
+        self::assertFalse(SignedContext::expired($blob . 'TAMPER', $future));
+        self::assertFalse(SignedContext::expired('sc1.AAAA', $future));
+        self::assertFalse(SignedContext::expired('', $future));
+    }
+
+    #[Test]
     public function rejects_garbage_input(): void
     {
         self::assertNull(SignedContext::verify(''));

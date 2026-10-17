@@ -68,6 +68,36 @@ final class SignedContext
      */
     public static function verify(string $blob, ?int $now = null): ?array
     {
+        $claims = self::authentic($blob);
+        if ($claims === null || ($now ?? time()) > $claims['exp']) {
+            return null;
+        }
+
+        return $claims;
+    }
+
+    /**
+     * Whether a context failed ONLY because its TTL ran out: the signature
+     * holds, it belongs to this session and tenant, and `exp` has passed.
+     *
+     * Lets a caller tell a page left open too long from a forged or foreign
+     * blob, which stays plain "failed" — so this reveals nothing to anyone
+     * who could not already verify the context before it expired.
+     */
+    public static function expired(string $blob, ?int $now = null): bool
+    {
+        $claims = self::authentic($blob);
+
+        return $claims !== null && ($now ?? time()) > $claims['exp'];
+    }
+
+    /**
+     * Signature, format and binding checked; expiry NOT checked.
+     *
+     * @return (array<string, mixed>&array{exp: int})|null
+     */
+    private static function authentic(string $blob): ?array
+    {
         $parts = explode('.', $blob, 3);
         if (count($parts) !== 3) {
             return null;
@@ -109,12 +139,7 @@ final class SignedContext
             return null;
         }
 
-        $expiresAt = $claims['exp'] ?? null;
-        if (!is_int($expiresAt)) {
-            return null;
-        }
-
-        if (($now ?? time()) > $expiresAt) {
+        if (!is_int($claims['exp'] ?? null)) {
             return null;
         }
 
@@ -122,7 +147,7 @@ final class SignedContext
             return null;
         }
 
-        /** @var array<string, mixed> $claims */
+        /** @var array<string, mixed>&array{exp: int} $claims */
         return $claims;
     }
 

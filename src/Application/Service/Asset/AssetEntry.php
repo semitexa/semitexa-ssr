@@ -25,7 +25,7 @@ final readonly class AssetEntry
      * @param string   $scope        global | module | page
      * @param string   $position     head | body
      * @param int      $priority     Lower values emit earlier (default: 100)
-     * @param array    $attributes   Extra HTML attributes (e.g. ["type" => "module", "defer" => true])
+     * @param array<string, mixed> $attributes Extra HTML attributes (e.g. ["type" => "module", "defer" => true])
      * @param string[] $dependencies Canonical keys of assets that must load before this one
      * @param ?string  $specifier    Bare import-map specifier (e.g. "platform-ui/core") — when set,
      *                               the page's server-generated <script type="importmap"> maps it to
@@ -115,9 +115,9 @@ final readonly class AssetEntry
             scope: $definition['scope'] ?? 'page',
             position: $definition['position'] ?? $defaultPosition,
             priority: $definition['priority'] ?? 100,
-            attributes: $definition['attributes'] ?? [],
-            dependencies: $definition['dependencies'] ?? [],
-            specifier: $definition['specifier'] ?? null,
+            attributes: self::attributeMap($definition['attributes'] ?? null),
+            dependencies: self::stringList($definition['dependencies'] ?? null),
+            specifier: is_string($definition['specifier'] ?? null) ? $definition['specifier'] : null,
         );
     }
 
@@ -136,9 +136,9 @@ final readonly class AssetEntry
             scope: $overrides['scope'] ?? $this->scope,
             position: $overrides['position'] ?? $this->position,
             priority: $overrides['priority'] ?? $this->priority,
-            attributes: array_merge($this->attributes, $overrides['attributes'] ?? []),
-            dependencies: $overrides['dependencies'] ?? $this->dependencies,
-            specifier: $overrides['specifier'] ?? $this->specifier,
+            attributes: array_merge($this->attributes, self::attributeMap($overrides['attributes'] ?? null)),
+            dependencies: isset($overrides['dependencies']) ? self::stringList($overrides['dependencies']) : $this->dependencies,
+            specifier: is_string($overrides['specifier'] ?? null) ? $overrides['specifier'] : $this->specifier,
         );
     }
 
@@ -160,5 +160,27 @@ final readonly class AssetEntry
     public static function isValidKey(string $key): bool
     {
         return (bool) preg_match('/^[a-z0-9_-]+:[a-z0-9_-]+:[a-z0-9_.\/\-]+$/i', $key);
+    }
+
+    /**
+     * Manifest and override lists arrive as decoded JSON. Like the registry's
+     * own reading of overrides, a value of the wrong type falls back rather
+     * than reaching the constructor: here, non-string entries are dropped.
+     *
+     * @return list<string>
+     */
+    public static function stringList(mixed $value): array
+    {
+        return is_array($value) ? array_values(array_filter($value, 'is_string')) : [];
+    }
+
+    /**
+     * HTML attributes from decoded JSON: only string-named ones are attributes.
+     *
+     * @return array<string, mixed>
+     */
+    public static function attributeMap(mixed $value): array
+    {
+        return is_array($value) ? array_filter($value, 'is_string', ARRAY_FILTER_USE_KEY) : [];
     }
 }

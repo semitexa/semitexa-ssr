@@ -74,6 +74,7 @@ final class AsyncResourceSseServer
         self::instance()->serveResourceStream($request, $response, $sessionId, $initialFrameData, $record, $context, $serverStreamId);
     }
 
+    /** @param array<string, mixed> $data */
     public static function deliver(string $sessionId, array $data): void
     {
         self::instance()->deliver($sessionId, $data);

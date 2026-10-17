@@ -442,10 +442,13 @@ final class SseServer implements FeedStreamSinkInterface
     {
         return new SseDeferredDoor(
             fn (): DeferredBlockOrchestrator => $this->deferredBlockOrchestrator(),
+            /** @param array<string, mixed> $data */
             function (string $session, array $data): void {
                 $this->deliver($session, $data);
             },
+            /** @param array<string, mixed> $data the door is transport-agnostic; here a Swoole response */
             function (mixed $response, array $data): void {
+                assert($response instanceof Response);
                 $this->writeSse($response, $data);
             },
             function (callable $task, string $session): void {

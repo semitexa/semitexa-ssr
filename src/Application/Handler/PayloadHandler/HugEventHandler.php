@@ -216,7 +216,7 @@ final class HugEventHandler implements TypedHandlerInterface
     }
 
     /**
-     * @param array<string, mixed> $raw
+     * @param array<mixed> $raw the decoded body; only its `stream` key is read
      */
     private function controlStream(array $raw, ResourceResponse $resource): ResourceResponse
     {

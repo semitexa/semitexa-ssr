@@ -694,7 +694,7 @@ final class DeferredBlockOrchestrator
                 pageHandle: $pageHandle,
             );
 
-            return $provider->resolve($context, $pageContext);
+            return $provider->resolve($context, array_filter($pageContext, 'is_string', ARRAY_FILTER_USE_KEY));
         } finally {
             // In a finally because a slot resolving by throwing is the case
             // where the duration matters most.

@@ -359,11 +359,11 @@ final class SseServer implements FeedStreamSinkInterface
         // Claimed before the auth mapping, so a previous connection's teardown
         // in between already sees it is superseded and leaves that mapping alone.
         $this->workerTables()->recordOwnership($sessionId, $response);
+        $this->touchActiveSession($sessionId);
         $authenticatedUserId = $this->resolveAuthenticatedUserId($request);
         if ($authenticatedUserId !== '') {
-            $this->registerAuthenticatedSession($sessionId, $authenticatedUserId);
+            $this->registerAuthenticatedSession($sessionId, $authenticatedUserId, $response);
         }
-        $this->touchActiveSession($sessionId);
 
         $this->sessionRegistry()->ensureQueue($sessionId);
 
@@ -704,7 +704,7 @@ final class SseServer implements FeedStreamSinkInterface
                 break;
             }
 
-            $this->refreshAuthIfDue($sessionId, $request, $state);
+            $this->refreshAuthIfDue($sessionId, $request, $response, $state);
             $this->drainSameWorkerQueue($sessionId, $response, $state);
 
             if (!$state->isClosed()) {
@@ -735,14 +735,14 @@ final class SseServer implements FeedStreamSinkInterface
      * Re-authorize the session periodically so a revoked subject stops receiving
      * frames without waiting for the connection to end on its own.
      */
-    private function refreshAuthIfDue(string $sessionId, Request $request, SseHeldOpenState $state): void
+    private function refreshAuthIfDue(string $sessionId, Request $request, Response $response, SseHeldOpenState $state): void
     {
         if (!$state->isAuthTouchDue(time(), SseAuthSessionMap::TOUCH_INTERVAL_SECONDS)) {
             return;
         }
 
         $state->markAuthTouched(
-            $this->refreshAuthenticatedSessionMapping($request, $sessionId, $state->authenticatedUserId()),
+            $this->refreshAuthenticatedSessionMapping($request, $sessionId, $state->authenticatedUserId(), $response),
             time(),
         );
         $this->touchActiveSession($sessionId);
@@ -1850,7 +1850,7 @@ final class SseServer implements FeedStreamSinkInterface
         $this->cancelSessionCoroutines($sessionId, $nowSupersededAt);
         if ($nowSupersededAt === null && $supersededAt === null) {
             $this->removeSessionWorkerMapping($sessionId, $response);
-            $this->unregisterAuthenticatedSession($sessionId);
+            $this->unregisterAuthenticatedSession($sessionId, $response);
         }
         $this->releaseIpConnection($sessionId, $response);
         if ($ownsLocalState) {
@@ -1958,14 +1958,14 @@ final class SseServer implements FeedStreamSinkInterface
         $this->workerTables()->releaseOwnership($sessionId, $response);
     }
 
-    private function registerAuthenticatedSession(string $sessionId, string $userId): void
+    private function registerAuthenticatedSession(string $sessionId, string $userId, Response $response): void
     {
-        $this->authSessionMap()->register($sessionId, $userId);
+        $this->authSessionMap()->register($sessionId, $userId, $response);
     }
 
-    private function unregisterAuthenticatedSession(string $sessionId): void
+    private function unregisterAuthenticatedSession(string $sessionId, Response $response): void
     {
-        $this->authSessionMap()->unregister($sessionId);
+        $this->authSessionMap()->unregister($sessionId, $response);
     }
 
     private function touchActiveSession(string $sessionId): void
@@ -1977,8 +1977,9 @@ final class SseServer implements FeedStreamSinkInterface
         Request $request,
         string $sessionId,
         string $authenticatedUserId,
+        Response $response,
     ): string {
-        return $this->authSessionMap()->refresh($request, $sessionId, $authenticatedUserId);
+        return $this->authSessionMap()->refresh($request, $sessionId, $authenticatedUserId, $response);
     }
 
     private function canUsePersistentDeferredSse(Request $request): bool

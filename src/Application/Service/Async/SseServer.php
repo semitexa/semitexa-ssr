@@ -1834,20 +1834,20 @@ final class SseServer implements FeedStreamSinkInterface
         // newer connection already owns the session (on any worker), only rows
         // subscribed before it opened are this connection's to reap; its
         // ownership, auth mapping and — where they live on this worker — its
-        // registry entry and coroutines are left to the connection holding them.
+        // registry entry and the coroutines started since are left to the new one.
         $supersededAt = $this->workerTables()->supersededAt($sessionId, $response);
-        $ownsLocalState = $supersededAt === null || $this->sessionRegistry()->isOpenWith($sessionId, $response);
         $this->runtime()->connectCoordinator?->reapSession($sessionId, $supersededAt, fn (): ?int => $this->workerTables()->supersededAt($sessionId, $response));
-        if ($supersededAt !== null && $ownsLocalState) {
-            // The new connection is on another worker: this worker's live re-run
-            // contexts for the ids it renewed are stale here, the rows are its.
-            $this->runtime()->connectCoordinator?->releaseLocalContexts($sessionId, $supersededAt);
+        // Asked again: the reap can yield on Redis, and a reconnect may land meanwhile.
+        $nowSupersededAt = $this->workerTables()->supersededAt($sessionId, $response);
+        $ownsLocalState = $nowSupersededAt === null || $this->sessionRegistry()->isOpenWith($sessionId, $response);
+        if ($nowSupersededAt !== null && $ownsLocalState) {
+            // The new connection is on another worker: its renewed ids' re-run contexts here are stale.
+            $this->runtime()->connectCoordinator?->releaseLocalContexts($sessionId, $nowSupersededAt);
         }
         if ($ownsLocalState) {
-            $this->cancelSessionCoroutines($sessionId);
+            $this->cancelSessionCoroutines($sessionId, $nowSupersededAt);
         }
-        // Asked again: the reap can yield on Redis, and a reconnect may land meanwhile.
-        if ($this->workerTables()->supersededAt($sessionId, $response) === null && $supersededAt === null) {
+        if ($nowSupersededAt === null && $supersededAt === null) {
             $this->removeSessionWorkerMapping($sessionId, $response);
             $this->unregisterAuthenticatedSession($sessionId);
         }
@@ -1858,7 +1858,7 @@ final class SseServer implements FeedStreamSinkInterface
                 $this->requeueToRedis($sessionId, $this->sessionRegistry()->queued($sessionId));
             }
             $this->sessionRegistry()->close($sessionId);
-            $this->sessionCoroutines()->forget($sessionId);
+            $this->sessionCoroutines()->forget($sessionId, $nowSupersededAt);
         }
         @$response->end();
     }
@@ -1941,9 +1941,9 @@ final class SseServer implements FeedStreamSinkInterface
         );
     }
 
-    private function cancelSessionCoroutines(string $sessionId): void
+    private function cancelSessionCoroutines(string $sessionId, ?int $before = null): void
     {
-        $this->sessionCoroutines()->cancelFor($sessionId);
+        $this->sessionCoroutines()->cancelFor($sessionId, $before);
     }
 
     private function getSsrBindToken(Request $request): string

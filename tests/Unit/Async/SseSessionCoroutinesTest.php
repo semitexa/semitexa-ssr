@@ -5,12 +5,14 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Tests\Unit\Async;
 
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\RequiresPhpExtension;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Core\Auth\GuestAuthContext;
 use Semitexa\Core\Container\ExecutionContext;
 use Semitexa\Core\Container\SemitexaContainer;
 use Semitexa\Ssr\Application\Service\Async\SseSessionCoroutines;
+use Semitexa\Ssr\Application\Service\Async\SubscriptionTable;
 use Swoole\Coroutine;
 
 /**
@@ -188,6 +190,55 @@ final class SseSessionCoroutinesTest extends TestCase
             self::assertSame([], $tracker->idsFor('sess-a'));
             self::assertNotSame([], $tracker->idsFor('sess-b'), 'one session teardown must not touch another');
         });
+    }
+
+    #[Test]
+    #[RequiresPhpExtension('swoole')]
+    public function a_superseded_teardown_leaves_the_new_connections_coroutines_running(): void
+    {
+        // A reconnect reuses the session id, and a HUG request of the new
+        // connection can be served by the worker still tearing the old one
+        // down: its coroutine is tracked here under the same id. Cancelling
+        // "before the new connection opened" must stop only the old work.
+        $tracker = new SseSessionCoroutines();
+        $oldStopped = null;
+        $newAlive = null;
+
+        Coroutine\run(static function () use ($tracker, &$oldStopped, &$newAlive): void {
+            $oldStarted = new Coroutine\Channel(1);
+            $oldEnded = new Coroutine\Channel(1);
+            $tracker->create(static function () use ($oldStarted, $oldEnded): void {
+                $oldStarted->push(true);
+                try {
+                    while (true) {
+                        Coroutine::sleep(0.01);
+                    }
+                } finally {
+                    $oldEnded->push(true);
+                }
+            }, 'sess-1');
+            $oldStarted->pop(1.0);
+
+            Coroutine::sleep(0.005);
+            $openedAt = SubscriptionTable::nowMs();
+            Coroutine::sleep(0.005);
+
+            $newStarted = new Coroutine\Channel(1);
+            $newCid = $tracker->create(static function () use ($newStarted): void {
+                $newStarted->push(true);
+                Coroutine::sleep(0.3);
+            }, 'sess-1');
+            $newStarted->pop(1.0);
+
+            $tracker->cancelFor('sess-1', $openedAt);
+            $oldStopped = $oldEnded->pop(1.0);
+            $tracker->forget('sess-1', $openedAt);
+            $newAlive = $tracker->idsFor('sess-1') === [$newCid];
+            $tracker->cancelFor('sess-1');
+        });
+
+        self::assertTrue($oldStopped, 'the old connection\'s coroutine is cancelled');
+        self::assertTrue($newAlive, 'the new connection\'s coroutine keeps running and stays tracked');
     }
 
     #[Test]

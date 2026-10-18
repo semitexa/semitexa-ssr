@@ -1840,6 +1840,8 @@ final class SseServer implements FeedStreamSinkInterface
         // Asked again: the reap can yield on Redis, and a reconnect may land meanwhile.
         $nowSupersededAt = $this->workerTables()->supersededAt($sessionId, $response);
         $ownsLocalState = $nowSupersededAt === null || $this->sessionRegistry()->isOpenWith($sessionId, $response);
+        // Still-queued payloads go to the Redis queue a reconnect drains — taken now, before the next Redis yield, or a reconnect landing in it inherits them as well.
+        $handOff = $ownsLocalState ? $this->sessionRegistry()->takeQueued($sessionId) : [];
         if ($nowSupersededAt !== null && $ownsLocalState) {
             // The new connection is on another worker: its renewed ids' re-run contexts here are stale.
             $this->runtime()->connectCoordinator?->releaseLocalContexts($sessionId, $nowSupersededAt);
@@ -1852,13 +1854,11 @@ final class SseServer implements FeedStreamSinkInterface
         }
         $this->releaseIpConnection($sessionId, $response);
         if ($ownsLocalState) {
-            // Still-queued payloads go to the Redis session queue a reconnect drains.
-            if ($this->sessionRegistry()->hasQueued($sessionId)) {
-                $this->requeueToRedis($sessionId, $this->sessionRegistry()->queued($sessionId));
-            }
-            $this->sessionRegistry()->close($sessionId);
+            $this->requeueToRedis($sessionId, $handOff); // an empty hand-off never reaches Redis
+            // The requeue can yield on Redis: a same-worker reconnect landing meanwhile owns the entry and the coroutines it starts.
+            $this->sessionRegistry()->closeUnlessReplaced($sessionId, $response);
         }
-        $this->sessionCoroutines()->forget($sessionId, $nowSupersededAt);
+        $this->sessionCoroutines()->forget($sessionId, $this->workerTables()->supersededAt($sessionId, $response) ?? $nowSupersededAt);
         @$response->end();
     }
 

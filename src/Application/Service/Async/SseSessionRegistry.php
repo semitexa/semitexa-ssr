@@ -237,8 +237,8 @@ final class SseSessionRegistry
     }
 
     /**
-     * Read the queue without consuming it — for flushing to Redis on close,
-     * where the whole map entry is dropped immediately afterwards anyway.
+     * Read the queue without consuming it. A close hands it to Redis with
+     * {@see self::takeQueued()} instead, so a reconnect cannot inherit it too.
      *
      * @return list<array<string, mixed>>
      */
@@ -414,6 +414,18 @@ final class SseSessionRegistry
     public function stopDemoProducer(string $sessionId): void
     {
         unset($this->demoProducers[$sessionId]);
+    }
+
+    /**
+     * Close the session's entry unless a same-worker reconnect replaced it
+     * meanwhile: then the entry, its queue and its waker are the new
+     * connection's. A session with no entry at all still has its leftovers cleared.
+     */
+    public function closeUnlessReplaced(string $sessionId, mixed $response): void
+    {
+        if ($this->isOpenWith($sessionId, $response) || !$this->isOpen($sessionId)) {
+            $this->close($sessionId);
+        }
     }
 
     /**

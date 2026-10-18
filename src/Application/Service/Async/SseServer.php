@@ -1844,9 +1844,8 @@ final class SseServer implements FeedStreamSinkInterface
             // The new connection is on another worker: its renewed ids' re-run contexts here are stale.
             $this->runtime()->connectCoordinator?->releaseLocalContexts($sessionId, $nowSupersededAt);
         }
-        if ($ownsLocalState) {
-            $this->cancelSessionCoroutines($sessionId, $nowSupersededAt);
-        }
+        // Always: a same-worker reconnect replaced the registry entry, yet the old live loop runs on; the cutoff spares the new one's.
+        $this->cancelSessionCoroutines($sessionId, $nowSupersededAt);
         if ($nowSupersededAt === null && $supersededAt === null) {
             $this->removeSessionWorkerMapping($sessionId, $response);
             $this->unregisterAuthenticatedSession($sessionId);
@@ -1858,8 +1857,8 @@ final class SseServer implements FeedStreamSinkInterface
                 $this->requeueToRedis($sessionId, $this->sessionRegistry()->queued($sessionId));
             }
             $this->sessionRegistry()->close($sessionId);
-            $this->sessionCoroutines()->forget($sessionId, $nowSupersededAt);
         }
+        $this->sessionCoroutines()->forget($sessionId, $nowSupersededAt);
         @$response->end();
     }
 

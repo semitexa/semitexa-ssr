@@ -65,4 +65,31 @@ final class AssetEntryManifestTest extends TestCase
         self::assertSame(['ui:js:x'], $changed->dependencies);
         self::assertSame(['defer' => true, 'async' => true], $changed->attributes);
     }
+
+    #[Test]
+    public function wrongly_typed_scalar_fields_fall_back_to_their_defaults(): void
+    {
+        $entry = AssetEntry::fromManifest('ui:css:core', 'ui', [
+            'type' => ['css'],
+            'path' => 5,
+            'scope' => false,
+            'position' => 1,
+            'priority' => 'high',
+        ]);
+
+        self::assertSame('js', $entry->type);
+        self::assertSame('', $entry->path);
+        self::assertSame('page', $entry->scope);
+        self::assertSame('body', $entry->position);
+        self::assertSame(100, $entry->priority);
+
+        $same = AssetEntry::fromManifest('ui:css:core', 'ui', ['type' => 'css', 'path' => 'css/core.css', 'priority' => 5])
+            ->withOverrides(['module' => 1, 'type' => 2, 'path' => [], 'scope' => 3, 'position' => 4, 'priority' => '9']);
+        self::assertSame('ui', $same->module);
+        self::assertSame('css', $same->type);
+        self::assertSame('css/core.css', $same->path);
+        self::assertSame('page', $same->scope);
+        self::assertSame('head', $same->position);
+        self::assertSame(5, $same->priority);
+    }
 }

@@ -100,7 +100,9 @@ final readonly class AssetEntry
      */
     public static function fromManifest(string $key, string $module, array $definition): self
     {
-        $type = $definition['type'] ?? 'js';
+        // Manifests are hand-written JSON: a wrongly typed field falls back to
+        // its default instead of a TypeError during registry boot.
+        $type = is_string($definition['type'] ?? null) ? $definition['type'] : 'js';
 
         $defaultPosition = match ($type) {
             'css', 'inline-css', 'preload' => 'head',
@@ -111,10 +113,10 @@ final readonly class AssetEntry
             key: $key,
             module: $module,
             type: $type,
-            path: $definition['path'] ?? '',
-            scope: $definition['scope'] ?? 'page',
-            position: $definition['position'] ?? $defaultPosition,
-            priority: $definition['priority'] ?? 100,
+            path: is_string($definition['path'] ?? null) ? $definition['path'] : '',
+            scope: is_string($definition['scope'] ?? null) ? $definition['scope'] : 'page',
+            position: is_string($definition['position'] ?? null) ? $definition['position'] : $defaultPosition,
+            priority: is_int($definition['priority'] ?? null) ? $definition['priority'] : 100,
             attributes: self::attributeMap($definition['attributes'] ?? null),
             dependencies: self::stringList($definition['dependencies'] ?? null),
             specifier: is_string($definition['specifier'] ?? null) ? $definition['specifier'] : null,
@@ -130,12 +132,12 @@ final readonly class AssetEntry
     {
         return new self(
             key: $this->key,
-            module: $overrides['module'] ?? $this->module,
-            type: $overrides['type'] ?? $this->type,
-            path: $overrides['path'] ?? $this->path,
-            scope: $overrides['scope'] ?? $this->scope,
-            position: $overrides['position'] ?? $this->position,
-            priority: $overrides['priority'] ?? $this->priority,
+            module: is_string($overrides['module'] ?? null) ? $overrides['module'] : $this->module,
+            type: is_string($overrides['type'] ?? null) ? $overrides['type'] : $this->type,
+            path: is_string($overrides['path'] ?? null) ? $overrides['path'] : $this->path,
+            scope: is_string($overrides['scope'] ?? null) ? $overrides['scope'] : $this->scope,
+            position: is_string($overrides['position'] ?? null) ? $overrides['position'] : $this->position,
+            priority: is_int($overrides['priority'] ?? null) ? $overrides['priority'] : $this->priority,
             attributes: array_merge($this->attributes, self::attributeMap($overrides['attributes'] ?? null)),
             dependencies: isset($overrides['dependencies']) ? self::stringList($overrides['dependencies']) : $this->dependencies,
             specifier: is_string($overrides['specifier'] ?? null) ? $overrides['specifier'] : $this->specifier,

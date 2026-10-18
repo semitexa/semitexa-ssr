@@ -8,6 +8,7 @@ use PHPUnit\Framework\Attributes\RequiresPhpExtension;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Ssr\Application\Service\Async\SseWorkerTables;
+use Swoole\Http\Server;
 use Swoole\Table;
 
 /**
@@ -88,11 +89,22 @@ final class SseWorkerTablesOwnershipTest extends TestCase
     #[Test]
     public function only_the_owning_worker_counts_as_holding_the_session(): void
     {
-        [$a] = $this->twoWorkersOnOneTable();
+        [$a, $b] = $this->twoWorkersOnOneTable();
+        $a->setServer($this->serverWithWorkerId(0));
+        $b->setServer($this->serverWithWorkerId(1));
         self::assertTrue($a->ownedHere('sse_unclaimed'), 'nothing recorded: deliver locally as before');
 
         $a->recordOwnership('sse_s', new \stdClass());
         self::assertTrue($a->ownedHere('sse_s'));
+        self::assertFalse($b->ownedHere('sse_s'), 'another worker does not hold the session');
+    }
+
+    private function serverWithWorkerId(int $workerId): Server
+    {
+        $server = $this->createStub(Server::class);
+        $server->method('getWorkerId')->willReturn($workerId);
+
+        return $server;
     }
 
     /** @return array{SseWorkerTables, SseWorkerTables} two workers' views of one shared session table */

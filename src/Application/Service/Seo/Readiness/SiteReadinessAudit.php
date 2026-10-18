@@ -109,14 +109,24 @@ final class SiteReadinessAudit
         }
 
         // Only the `User-agent: *` group decides what an unnamed agent may read.
+        // Consecutive User-agent lines open ONE group (RFC 9309), so `*` named
+        // next to another agent still owns the rules that follow.
         $inStarGroup = false;
+        $previousWasAgent = false;
         $blocksRoot = false;
         $sitemaps = 0;
         foreach (preg_split('/\R/', $response->body) ?: [] as $line) {
             $line = trim((string) preg_replace('/#.*$/', '', $line));
             if (stripos($line, 'user-agent:') === 0) {
-                $inStarGroup = trim(substr($line, 11)) === '*';
-            } elseif ($inStarGroup && stripos($line, 'disallow:') === 0 && trim(substr($line, 9)) === '/') {
+                $isStar = trim(substr($line, 11)) === '*';
+                $inStarGroup = $previousWasAgent ? ($inStarGroup || $isStar) : $isStar;
+                $previousWasAgent = true;
+                continue;
+            }
+            if ($line !== '') {
+                $previousWasAgent = false;
+            }
+            if ($inStarGroup && stripos($line, 'disallow:') === 0 && trim(substr($line, 9)) === '/') {
                 $blocksRoot = true;
             } elseif (stripos($line, 'sitemap:') === 0) {
                 $sitemaps++;
@@ -146,6 +156,13 @@ final class SiteReadinessAudit
         }
 
         preg_match_all('#<loc>\s*([^<\s]+)\s*</loc>#i', $response->body, $m);
+        // An index lists child sitemaps, not pages: auditing those as pages
+        // would report XML as "not HTML" and never reach a real page.
+        if (preg_match('#<sitemapindex\b#i', $response->body) === 1) {
+            $detail = sprintf('sitemap index of %d child sitemap(s); child sitemaps not sampled', count(array_unique($m[1])));
+
+            return [new ReadinessSignal('site', 'sitemap', ReadinessSignal::STATE_PARTIAL, $detail, $by), []];
+        }
         $entries = array_values(array_unique(array_map(
             static fn (string $loc): string => html_entity_decode($loc, ENT_QUOTES | ENT_XML1),
             $m[1],
@@ -354,12 +371,13 @@ final class SiteReadinessAudit
         preg_match_all('#<' . $name . '\b([^>]*)>#i', $html, $m);
         $tags = [];
         foreach ($m[1] as $raw) {
-            preg_match_all('#([a-zA-Z:-]+)\s*=\s*("([^"]*)"|\'([^\']*)\')#', $raw, $a, PREG_SET_ORDER);
+            preg_match_all('#([^\s"\'>/=]+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s"\'=<>`]+))#', $raw, $a, PREG_SET_ORDER);
             $attributes = [];
             foreach ($a as $pair) {
-                // Group 4 exists only for a single-quoted value; PCRE drops
-                // trailing unmatched groups, so a double-quoted one is in 3.
-                $attributes[strtolower($pair[1])] = html_entity_decode($pair[4] ?? $pair[3] ?? '', ENT_QUOTES | ENT_HTML5);
+                // 2 = double-quoted, 3 = single-quoted, 4 = unquoted (minifiers
+                // drop quotes); PCRE drops trailing unmatched groups, so the
+                // highest group present is the one that matched.
+                $attributes[strtolower($pair[1])] = html_entity_decode($pair[4] ?? $pair[3] ?? $pair[2] ?? '', ENT_QUOTES | ENT_HTML5);
             }
             $tags[] = $attributes;
         }

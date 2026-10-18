@@ -60,14 +60,16 @@ final class SiteReadinessCommand extends Command
             $pages,
         );
 
-        $signals = (new SiteReadinessAudit(\Closure::fromCallable(new StreamProbe())))->run($origin, $pages, $sample);
+        $signals = (new SiteReadinessAudit(\Closure::fromCallable(new StreamProbe(siteOrigin: $origin))))->run($origin, $pages, $sample);
 
         if ($input->getOption('json')) {
-            $output->writeln((string) json_encode([
+            // Invalid UTF-8 (a windows-1252 title) is substituted, not a
+            // silent empty artifact; any other encoding failure throws.
+            $output->writeln(json_encode([
                 'artifact' => 'semitexa.site-readiness/v1',
                 'origin' => $origin,
                 'signals' => array_map(static fn (ReadinessSignal $s): array => $s->toArray(), $signals),
-            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT), OutputInterface::OUTPUT_RAW);
+            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR), OutputInterface::OUTPUT_RAW);
 
             return Command::SUCCESS;
         }

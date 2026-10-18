@@ -119,7 +119,55 @@ final class SiteReadinessAuditTest extends TestCase
         $this->assertSame(ReadinessSignal::STATE_ABSENT, $this->find($signals, 'site', 'llms.txt')->state);
         $this->assertSame('answered 404', $this->find($signals, 'site', 'robots.txt')->detail);
         $this->assertSame(ReadinessSignal::STATE_ABSENT, $this->find($signals, 'site', 'sitemap')->state);
-        $this->assertSame(array_values(array_unique($this->requested)), $this->requested);
+        $this->assertSame([
+            self::ORIGIN . '/llms.txt',
+            self::ORIGIN . '/robots.txt',
+            self::ORIGIN . '/sitemap.xml',
+            self::ORIGIN . '/',
+        ], $this->requested);
+    }
+
+    #[Test]
+    public function consecutive_user_agent_lines_share_one_group(): void
+    {
+        $signals = $this->audit([
+            '/robots.txt' => new ProbeResponse(200, 'text/plain', "User-agent: *\nUser-agent: Googlebot\nDisallow: /\n\nUser-agent: Bingbot\nDisallow:\n"),
+            '/' => new ProbeResponse(200, 'text/html', self::HOME),
+        ], ['/']);
+
+        $robots = $this->find($signals, 'site', 'robots.txt');
+        $this->assertSame(ReadinessSignal::STATE_PARTIAL, $robots->state);
+        $this->assertStringContainsString('User-agent * is disallowed from /', $robots->detail);
+    }
+
+    #[Test]
+    public function a_sitemap_index_is_partial_and_its_children_are_not_audited_as_pages(): void
+    {
+        $signals = $this->audit([
+            '/sitemap.xml' => new ProbeResponse(200, 'application/xml', '<sitemapindex><sitemap><loc>https://site.test/sitemap-pages.xml</loc></sitemap></sitemapindex>'),
+            '/sitemap-pages.xml' => new ProbeResponse(200, 'application/xml', '<urlset><url><loc>https://site.test/</loc></url></urlset>'),
+            '/' => new ProbeResponse(200, 'text/html', self::HOME),
+        ]);
+
+        $sitemap = $this->find($signals, 'site', 'sitemap');
+        $this->assertSame(ReadinessSignal::STATE_PARTIAL, $sitemap->state);
+        $this->assertSame('sitemap index of 1 child sitemap(s); child sitemaps not sampled', $sitemap->detail);
+        $this->assertNotContains(self::ORIGIN . '/sitemap-pages.xml', $this->requested);
+        $this->assertSame(['site', 'site', 'site', '/', '/', '/', '/', '/'], array_map(static fn (ReadinessSignal $s): string => $s->subject, $signals));
+    }
+
+    #[Test]
+    public function unquoted_attribute_values_are_read(): void
+    {
+        $signals = $this->audit([
+            '/' => new ProbeResponse(200, 'text/html', self::HOME),
+            '/docs' => new ProbeResponse(200, 'text/html', '<html><head><title>Docs</title><meta name=description content=Docs><link rel=canonical href=https://site.test/docs></head><body>Docs</body></html>'),
+        ], ['/docs']);
+
+        $canonical = $this->find($signals, '/docs', 'canonical');
+        $this->assertSame(ReadinessSignal::STATE_PRESENT, $canonical->state);
+        $this->assertSame('https://site.test/docs', $canonical->detail);
+        $this->assertSame('"Docs"', $this->find($signals, '/docs', 'description')->detail);
     }
 
     #[Test]
@@ -140,7 +188,14 @@ final class SiteReadinessAuditTest extends TestCase
         $signals = $this->audit($responses, [], 2);
 
         $this->assertSame('5 entries, 2 checked, 2 answer 200', $this->find($signals, 'site', 'sitemap')->detail);
-        $this->assertNotContains(self::ORIGIN . '/p3', $this->requested);
+        $this->assertSame([
+            self::ORIGIN . '/llms.txt',
+            self::ORIGIN . '/robots.txt',
+            self::ORIGIN . '/sitemap.xml',
+            self::ORIGIN . '/p1',
+            self::ORIGIN . '/p2',
+            self::ORIGIN . '/',
+        ], $this->requested);
     }
 
     /**

@@ -169,7 +169,7 @@ final class FeedStreamControlTest extends TestCase
     }
 
     /**
-     * @param array<string, scalar> $params
+     * @param array<string, scalar|null> $params
      * @return array<string, mixed>
      */
     private function fields(string $op, array $params = []): array

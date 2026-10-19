@@ -684,7 +684,7 @@ final class SseServer implements FeedStreamSinkInterface
      * copy. Kiss is byte-unchanged: {@see handleSse()} still computes the same
      * pre-loop state and calls this with it. The loop does NOT close the session;
      * the caller owns {@see closeSession()} (so a caller can run teardown hooks
-     * around it).
+     * around it). It ends when the worker drains: see HeldOpenLoopStandsDownOnDrainTest.
      */
     private function runHeldOpenLoop(
         string $sessionId,
@@ -697,7 +697,7 @@ final class SseServer implements FeedStreamSinkInterface
 
         // A reconnect takes the session over (on this worker it replaces the
         // registry entry): from then on its frames are the new connection's.
-        while (!$state->isClosed() && $this->sessionRegistry()->isOpenWith($sessionId, $response) && $this->workerTables()->supersededAt($sessionId, $response) === null) {
+        while (!$state->isClosed() && !\Semitexa\Core\Lifecycle\WorkerDrainSignal::isDraining() && $this->sessionRegistry()->isOpenWith($sessionId, $response) && $this->workerTables()->supersededAt($sessionId, $response) === null) {
             // Hard connection-age cap — bounds hanging-connection attacks.
             if ($state->hasOutlivedCap(time(), $maxAgeSeconds)) {
                 $this->writeSse($response, ['event' => 'close', 'reason' => 'max_age', 'close' => true]);
@@ -729,6 +729,7 @@ final class SseServer implements FeedStreamSinkInterface
 
             $this->sessionRegistry()->waitForWork($sessionId, self::HELD_OPEN_TICK_SECONDS);
         }
+        \Semitexa\Core\Server\InFlightRequests::tearDownAfterDrain(); // left for the drain: the teardown after this is spared, not cut
     }
 
     /**

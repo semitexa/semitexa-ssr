@@ -159,7 +159,7 @@ final class ComponentHtmlRenderer
                             request: $this->currentRequest(),
                             instanceId: $componentId,
                         ),
-                        $explicitProps,
+                        array_filter($explicitProps, 'is_string', ARRAY_FILTER_USE_KEY),
                     );
                 }
             }

@@ -29,6 +29,10 @@ namespace Semitexa\Ssr\Domain\Model;
  *    never interprets it; R2's re-establishment (`fromQueuePayload`) does. It is
  *    here, not in the worker-local registry, precisely because this row is read
  *    cross-worker.
+ *  - {@see $subscribedAtMs} — when the row was written, in milliseconds. A
+ *    connection that closes after its session was taken over by a newer one
+ *    reaps only the rows older than that connection (see
+ *    {@see \Semitexa\Ssr\Application\Service\Async\SseWorkerTables::supersededAt()}).
  *
  * A live identity-bearing object cannot be expressed in this shape, which is the
  * structural reason the cross-worker tier cannot leak identity (design §C.6).
@@ -44,6 +48,7 @@ final readonly class SubscriptionRecord
         public string $tenantId,
         public array $scopeKeys,
         public string $tenantBlob,
+        public int $subscribedAtMs = 0,
     ) {}
 
     public function watchesScope(string $scopeKey): bool

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Isomorphic;
 
+use Semitexa\Core\Support\Row;
 use Semitexa\Ssr\Application\Service\UiEvent\UiSseSessionState;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Semitexa\Ssr\Domain\Exception\DeferredRenderingException;
@@ -435,7 +436,7 @@ final class DeferredRequestRegistry
         $server = is_array($req->server ?? null) ? $req->server : [];
 
         return [
-            'query'  => $get,
+            'query'  => Row::keyedByName($get),
             'route'  => [],
             'method' => (string) ($server['request_method'] ?? 'GET'),
             'path'   => (string) ($server['request_uri'] ?? '/'),

@@ -40,7 +40,7 @@ use Swoole\Coroutine;
  */
 final class SseSessionCoroutines
 {
-    /** @var array<string, array<int, true>> session id → set of live coroutine ids. */
+    /** @var array<string, array<int, int>> session id → live coroutine id → when it started ({@see SubscriptionTable::nowMs()}). */
     private array $bySession = [];
 
     /**
@@ -78,7 +78,7 @@ final class SseSessionCoroutines
         $result = Coroutine::create(function () use ($callback, $sessionId, $container, $context, $binding): void {
             $cid = self::currentCid();
             if ($cid >= 0) {
-                $this->bySession[$sessionId][$cid] = true;
+                $this->bySession[$sessionId][$cid] = SubscriptionTable::nowMs();
             }
             SignedContextBinding::restore($binding);
 
@@ -112,8 +112,14 @@ final class SseSessionCoroutines
      * Cancel every coroutine registered to a session, except the caller's own.
      * Best-effort: a coroutine that has already finished, or refuses to die,
      * must not stop the rest of teardown.
+     *
+     * A reconnect reuses the session id, and the HUG requests of the new
+     * connection can land on the worker the old one is still being torn down
+     * on: their coroutines are tracked under the same id here. `$before` (the
+     * new connection's open time) limits the cancel to what started earlier —
+     * the old connection's work — and leaves the new connection's running.
      */
-    public function cancelFor(string $sessionId): void
+    public function cancelFor(string $sessionId, ?int $before = null): void
     {
         $sessionId = trim($sessionId);
         if ($sessionId === '' || !isset($this->bySession[$sessionId])) {
@@ -121,8 +127,8 @@ final class SseSessionCoroutines
         }
 
         $currentCid = self::currentCid();
-        foreach (array_keys($this->bySession[$sessionId]) as $cid) {
-            if ($cid < 0 || $cid === $currentCid) {
+        foreach ($this->bySession[$sessionId] as $cid => $startedAtMs) {
+            if ($cid < 0 || $cid === $currentCid || ($before !== null && $startedAtMs >= $before)) {
                 continue;
             }
 
@@ -136,11 +142,25 @@ final class SseSessionCoroutines
 
     /**
      * Forget a session's coroutine set without cancelling — for teardown that
-     * has already cancelled, or for a session being discarded wholesale.
+     * has already cancelled, or for a session being discarded wholesale. With
+     * `$before`, only what started earlier; see {@see self::cancelFor()}.
      */
-    public function forget(string $sessionId): void
+    public function forget(string $sessionId, ?int $before = null): void
     {
-        unset($this->bySession[trim($sessionId)]);
+        $sessionId = trim($sessionId);
+        if ($before === null) {
+            unset($this->bySession[$sessionId]);
+
+            return;
+        }
+        foreach ($this->bySession[$sessionId] ?? [] as $cid => $startedAtMs) {
+            if ($startedAtMs < $before) {
+                unset($this->bySession[$sessionId][$cid]);
+            }
+        }
+        if (($this->bySession[$sessionId] ?? null) === []) {
+            unset($this->bySession[$sessionId]);
+        }
     }
 
     /** @return list<int> live coroutine ids for a session. */

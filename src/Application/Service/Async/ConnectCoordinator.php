@@ -144,9 +144,18 @@ final class ConnectCoordinator
      * table is not mutated mid-iteration. Idempotent: a row already reaped (e.g. the
      * standalone path's explicit onDisconnect) is simply absent.
      *
+     * `$before` scopes the sweep to one connection's rows: a connection that
+     * closes after a newer one took its session over reaps only what was
+     * subscribed before that newer connection opened, never the newer one's
+     * own subscriptions. Null reaps every row of the session. `$currentCutoff`
+     * is asked again per row, so a connection that takes the session over
+     * while this sweep yields keeps what it renewed meanwhile.
+     *
+     * @param (\Closure(): ?int)|null $currentCutoff
+     *
      * @return list<string> the streaming ids reaped (for logging / tests)
      */
-    public function reapSession(string $sessionId): array
+    public function reapSession(string $sessionId, ?int $before = null, ?\Closure $currentCutoff = null): array
     {
         $sessionId = trim($sessionId);
         if ($sessionId === '') {
@@ -155,16 +164,46 @@ final class ConnectCoordinator
 
         $streamingIds = [];
         foreach ($this->subscriptions->all() as $record) {
-            if ($record->sessionId === $sessionId) {
+            if ($record->sessionId === $sessionId && ($before === null || $record->subscribedAtMs < $before)) {
                 $streamingIds[] = $record->streamingId;
             }
         }
 
+        $reaped = [];
         foreach ($streamingIds as $streamingId) {
+            // Read again: a row renewed by the new connection while this sweep
+            // yielded belongs to it now.
+            $limit = $before ?? ($currentCutoff !== null ? $currentCutoff() : null);
+            $current = $limit === null ? null : $this->subscriptions->get($streamingId);
+            if ($current !== null && $current->subscribedAtMs >= $limit) {
+                continue;
+            }
             $this->onDisconnect($streamingId);
+            $reaped[] = $streamingId;
         }
 
-        return $streamingIds;
+        return $reaped;
+    }
+
+    /**
+     * Forget this worker's live re-run contexts for a session's rows written at
+     * or after `$since` — the ones a newer connection on another worker
+     * renewed. The rows, and the shared coalescer state, are that connection's
+     * and stay; only the stale local copies go.
+     *
+     * @return list<string> the streaming ids whose local context was dropped
+     */
+    public function releaseLocalContexts(string $sessionId, int $since): array
+    {
+        $released = [];
+        foreach ($this->subscriptions->all() as $record) {
+            if ($record->sessionId === $sessionId && $record->subscribedAtMs >= $since && SubscriptionDtoRegistry::has($record->streamingId)) {
+                SubscriptionDtoRegistry::remove($record->streamingId);
+                $released[] = $record->streamingId;
+            }
+        }
+
+        return $released;
     }
 
     /**

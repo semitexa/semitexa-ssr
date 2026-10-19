@@ -13,6 +13,7 @@ use Semitexa\Ssr\Application\Handler\PayloadHandler\HugEventHandler;
 use Semitexa\Ssr\Application\Payload\Request\HugEventPayload;
 use Semitexa\Ssr\Application\Service\UiEvent\NotConfiguredUiResponseDispatcher;
 use Semitexa\Ssr\Application\Service\UiEvent\SignedContext;
+use Semitexa\Ssr\Application\Service\UiEvent\SignedContextSecret;
 use Semitexa\Ssr\Application\Service\UiEvent\UiEventEnvelope;
 use Semitexa\Ssr\Application\Service\UiEvent\UiResponseDispatcherInterface;
 use Semitexa\Ssr\Application\Service\UiEvent\UiResponseDispatchResult;
@@ -338,6 +339,50 @@ final class HugEventHandlerTest extends TestCase
         } catch (ValidationException $e) {
             self::assertArrayHasKey('signedContext', $e->getErrorContext()['errors']);
         }
+    }
+
+    #[Test]
+    public function an_authentic_context_past_its_ttl_is_named_expired(): void
+    {
+        try {
+            $this->handlerFor($this->postRequest($this->validBody(self::expiredContext())))
+                ->handle(new HugEventPayload(), new ResourceResponse());
+            self::fail('An expired signed context must be rejected.');
+        } catch (ValidationException $e) {
+            self::assertSame(
+                [HugEventHandler::SIGNED_CONTEXT_EXPIRED],
+                $e->getErrorContext()['errors']['signedContext'],
+            );
+        }
+    }
+
+    #[Test]
+    public function a_tampered_context_is_not_reported_as_expired(): void
+    {
+        try {
+            $this->handlerFor($this->postRequest($this->validBody(self::expiredContext() . 'TAMPER')))
+                ->handle(new HugEventPayload(), new ResourceResponse());
+            self::fail('A tampered signed context must be rejected.');
+        } catch (ValidationException $e) {
+            self::assertSame(
+                ['Signed context verification failed.'],
+                $e->getErrorContext()['errors']['signedContext'],
+            );
+        }
+    }
+
+    /**
+     * A context minted an hour ago with a one-minute TTL, in the sc1 layout
+     * SignedContext::sign() writes, so the test needs no sleep.
+     */
+    private static function expiredContext(): string
+    {
+        $issuedAt = time() - 3600;
+        $json = (string) json_encode(['ctx' => 'valid', 'exp' => $issuedAt + 60, 'iat' => $issuedAt]);
+        $payload = SignedContext::VERSION . '.' . rtrim(strtr(base64_encode($json), '+/', '-_'), '=');
+        $mac = hash_hmac('sha256', $payload, SignedContextSecret::resolve(), true);
+
+        return $payload . '.' . rtrim(strtr(base64_encode($mac), '+/', '-_'), '=');
     }
 
     #[Test]

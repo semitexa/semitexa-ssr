@@ -14,6 +14,7 @@ use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
 use Semitexa\Ssr\Application\Service\Async\SseServer;
 use Semitexa\Ssr\Application\Service\UiEvent\UiSseEventType;
 use Semitexa\Ssr\Domain\Contract\SseFeedPayloadInterface;
+use Semitexa\Core\Support\Row;
 
 /**
  * The serving choreography shared by every canonical feed on the
@@ -119,7 +120,7 @@ abstract class AbstractSseFeedHandler
             $built = $this->buildResponse($payload, $response);
             $decoded = json_decode($built->getContent(), true);
 
-            return [is_array($decoded) ? $decoded : [], true];
+            return [is_array($decoded) ? Row::keyedByName($decoded) : [], true];
         } catch (AuthenticationException|AccessDeniedException $e) {
             throw $e;
         } catch (DomainException $e) {

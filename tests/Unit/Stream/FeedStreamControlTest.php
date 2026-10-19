@@ -43,7 +43,9 @@ final class FeedStreamControlTest extends TestCase
         $request = $this->admitted[0];
         self::assertSame('GET', $request->method);
         self::assertSame('/leads/feed?q=acme&page=2', $request->uri);
-        self::assertSame(['q' => 'acme', 'page' => 2], $request->query);
+        // As the URI decodes: the owning worker re-runs the feed from that URI,
+        // so the first admission must hydrate the same strings it will.
+        self::assertSame(['q' => 'acme', 'page' => '2'], $request->query);
         // The identity the HUG request carried is the identity admitted.
         self::assertSame(['session' => 'cookie-value'], $request->cookies);
         self::assertArrayNotHasKey('Content-Type', $request->headers);
@@ -57,6 +59,16 @@ final class FeedStreamControlTest extends TestCase
 
         $this->control()->control(['patches' => true] + $this->fields('subscribe'), $this->hugRequest());
         self::assertTrue($this->sink->patches);
+    }
+
+    #[Test]
+    public function the_admitted_query_matches_its_uri_for_booleans_and_nulls(): void
+    {
+        $this->control()->control($this->fields('subscribe', ['open' => true, 'archived' => false, 'tag' => null]), $this->hugRequest());
+
+        $request = $this->admitted[0];
+        self::assertSame('/leads/feed?open=1&archived=0', $request->uri);
+        self::assertSame(['open' => '1', 'archived' => '0'], $request->query);
     }
 
     #[Test]
@@ -157,7 +169,7 @@ final class FeedStreamControlTest extends TestCase
     }
 
     /**
-     * @param array<string, scalar> $params
+     * @param array<string, scalar|null> $params
      * @return array<string, mixed>
      */
     private function fields(string $op, array $params = []): array

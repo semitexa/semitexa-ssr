@@ -36,6 +36,8 @@ final class SseAsyncResultDelivery implements AsyncResultDeliveryInterface
 
     /**
      * Deliver a raw array payload via SSE.
+     *
+     * @param array<string, mixed> $data
      */
     public static function deliverRaw(string $sessionId, array $data): void
     {

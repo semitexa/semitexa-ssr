@@ -171,6 +171,10 @@ final class FeedStreamControl
      * The GET the feed would have received directly: the HUG request's identity
      * (headers, cookies, server) and the control's params as its query.
      *
+     * The query holds the params as that GET's query string decodes them —
+     * strings, null dropped, booleans as "1"/"0", exactly what the URI below
+     * says — so a feed hydrates the same values over HUG as over a direct GET.
+     *
      * @param array<string, scalar|null> $params
      */
     private static function feedRequest(DiscoveredRoute $route, array $params, Request $hugRequest): Request
@@ -188,7 +192,10 @@ final class FeedStreamControl
             method: 'GET',
             uri: $path . $query,
             headers: $headers,
-            query: $params,
+            query: array_map(
+                static fn (bool|float|int|string $value): string => is_bool($value) ? ($value ? '1' : '0') : (string) $value,
+                array_filter($params, static fn (mixed $value): bool => $value !== null),
+            ),
             post: [],
             server: ['REQUEST_METHOD' => 'GET', 'REQUEST_URI' => $path . $query] + $hugRequest->server,
             cookies: $hugRequest->cookies,

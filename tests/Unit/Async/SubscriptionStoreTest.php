@@ -135,9 +135,11 @@ final class SubscriptionStoreTest extends TestCase
         // column, so an identity-bearing object cannot enter this tier at all.
         $columns = SubscriptionTable::schemaColumns();
         self::assertSame(
-            // `connected_at` is a bare epoch INT (the orphan-sweep staleness basis),
-            // not identity and not an object — the invariant is unaffected.
-            ['streaming_id', 'session_id', 'tenant_id', 'scope_keys', 'tenant_blob', 'connected_at'],
+            // `connected_at` is a bare epoch INT (the orphan-sweep staleness basis)
+            // and `subscribed_at_ms` a bare millisecond INT (which connection a row
+            // belongs to after a reconnect): neither is identity nor an object, so
+            // the invariant is unaffected.
+            ['streaming_id', 'session_id', 'tenant_id', 'scope_keys', 'tenant_blob', 'connected_at', 'subscribed_at_ms'],
             $columns,
         );
         foreach ($columns as $column) {
@@ -156,7 +158,7 @@ final class SubscriptionStoreTest extends TestCase
             self::assertInstanceOf(\ReflectionNamedType::class, $type);
             self::assertContains(
                 $type->getName(),
-                ['string', 'array'],
+                ['string', 'int', 'array'],
                 "SubscriptionRecord::\${$param->getName()} must be a serializable scalar/list, not an object",
             );
         }

@@ -148,6 +148,49 @@ final class ConnectCoordinatorTest extends TestCase
     }
 
     #[Test]
+    public function a_superseded_connection_reaps_only_what_it_subscribed_before_the_new_one_opened(): void
+    {
+        [$coordinator, $subs] = $this->coordinator();
+        // The old connection's two subscriptions.
+        $coordinator->onConnect($this->record('str_old', 'sse_session_a', 'default', ['lead_submission']), $this->reRunContext('sse_session_a'));
+        $coordinator->onConnect($this->record('str_kept', 'sse_session_a', 'default', ['lead_submission']), $this->reRunContext('sse_session_a'));
+        usleep(3000);
+        $newConnectionOpenedAt = SubscriptionTable::nowMs();
+        usleep(3000);
+        // After the reconnect the page subscribes again: one id is reused (the
+        // row is replaced and re-stamped), one is new.
+        $coordinator->onConnect($this->record('str_kept', 'sse_session_a', 'default', ['lead_submission']), $this->reRunContext('sse_session_a'));
+        $coordinator->onConnect($this->record('str_new', 'sse_session_a', 'default', ['lead_submission']), $this->reRunContext('sse_session_a'));
+        $coordinator->onConnect($this->record('str_other', 'sse_session_b', 'default', ['lead_submission']), $this->reRunContext('sse_session_b'));
+
+        // The old connection's late teardown.
+        $reaped = $coordinator->reapSession('sse_session_a', $newConnectionOpenedAt);
+
+        self::assertSame(['str_old'], $reaped);
+        self::assertFalse($subs->has('str_old'));
+        self::assertTrue($subs->has('str_kept'), 'a subscription the new connection renewed survives');
+        self::assertTrue($subs->has('str_new'), 'the new connection\'s own subscription survives');
+        self::assertTrue($subs->has('str_other'), 'another session is untouched');
+
+        // The old worker's live contexts for what the new connection renewed are
+        // stale copies; they go, the rows stay.
+        self::assertEqualsCanonicalizing(['str_kept', 'str_new'], $coordinator->releaseLocalContexts('sse_session_a', $newConnectionOpenedAt));
+        self::assertFalse(SubscriptionDtoRegistry::has('str_kept'));
+        self::assertTrue($subs->has('str_kept'));
+        self::assertTrue(SubscriptionDtoRegistry::has('str_other'), 'another session keeps its context');
+
+        // An ordinary close that learns mid-sweep of a takeover keeps what the
+        // new connection holds by then.
+        $coordinator->onConnect($this->record('str_late', 'sse_session_a', 'default', ['lead_submission']), $this->reRunContext('sse_session_a'));
+        self::assertSame([], $coordinator->reapSession('sse_session_a', null, static fn (): int => 0), 'a cutoff of 0 claims every row for the new owner');
+        self::assertTrue($subs->has('str_late'));
+
+        // Without a bound the whole session goes, as on an ordinary close.
+        self::assertEqualsCanonicalizing(['str_kept', 'str_new', 'str_late'], $coordinator->reapSession('sse_session_a'));
+        self::assertTrue($subs->has('str_other'));
+    }
+
+    #[Test]
     public function unsubscribe_fires_only_on_the_last_subscriber_for_a_scope(): void
     {
         [$coordinator, , , $channels] = $this->coordinator();

@@ -198,7 +198,7 @@ final class AssetManifestRegistry
                 continue;
             }
 
-            $files = self::scanStaticDirectory($typeDir, $type, $patterns);
+            $files = self::scanStaticDirectory($typeDir, $type, AssetEntry::stringList($patterns));
 
             foreach ($files as $fullRelative) {
                 // fullRelative is relative to staticDir (e.g. "css/demo.css", "js/modules/wm.js")
@@ -227,8 +227,8 @@ final class AssetManifestRegistry
                 $scope        = is_string($override['scope'] ?? null)    ? $override['scope']    : $scope;
                 $position     = is_string($override['position'] ?? null) ? $override['position'] : $position;
                 $priority     = is_int($override['priority'] ?? null)    ? $override['priority'] : $priority;
-                $attributes   = is_array($override['attributes'] ?? null)  ? $override['attributes']  : [];
-                $dependencies = is_array($override['dependencies'] ?? null) ? $override['dependencies'] : [];
+                $attributes   = AssetEntry::attributeMap($override['attributes'] ?? null);
+                $dependencies = AssetEntry::stringList($override['dependencies'] ?? null);
                 $specifier    = is_string($override['specifier'] ?? null) ? $override['specifier'] : null;
 
                 if (!AssetEntry::isValidKey($key)) {

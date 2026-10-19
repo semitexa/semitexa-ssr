@@ -321,7 +321,7 @@ class HtmlResponse extends ResourceResponse
     private function applyIsomorphicContext(array $context): array
     {
         $handle = $context['page_handle'] ?? $context['layout_handle'] ?? null;
-        if ($handle === null || $handle === '') {
+        if (!is_string($handle) || $handle === '') {
             return $context;
         }
 

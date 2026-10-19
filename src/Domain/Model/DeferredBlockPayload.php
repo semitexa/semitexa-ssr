@@ -25,6 +25,7 @@ final readonly class DeferredBlockPayload
         }
     }
 
+    /** @return array<string, mixed> */
     public function toArray(): array
     {
         return match ($this->mode) {

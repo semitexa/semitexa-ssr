@@ -96,6 +96,8 @@ final class HeldOpenLoopStandsDownOnDrainTest extends TestCase
                 $ended->push(true);
             });
 
+            // One frame before the drain proves the capture below sees what the loop writes.
+            $registry->enqueue('sse_drain', ['event' => 'probe', 'marker' => 'before-the-drain']);
             Coroutine::sleep(0.3);
             self::assertTrue($ended->isEmpty(), 'the loop ended before anything asked it to');
 
@@ -109,6 +111,7 @@ final class HeldOpenLoopStandsDownOnDrainTest extends TestCase
 
         self::assertTrue($endedAfterDrain, 'the live loop kept running after the worker began to drain');
         self::assertTrue($teardownSpared, 'the teardown after a drain-ended loop is cancelled on every pass instead of spared');
+        self::assertStringContainsString('before-the-drain', implode('', $written), 'the stub saw none of the loop\'s writes, so the check below would pass on anything');
         // A `close` event tells the client to stop; only a stream that just ends is reconnected.
         self::assertStringNotContainsString('event: close', implode('', $written), 'the drain sent a close the client would not reconnect from');
     }

@@ -98,11 +98,9 @@ final class SseAuthSessionMapOwnerTest extends TestCase
 
         self::assertSame([], $this->map->sessionIdsForUser($this->userId));
         self::assertSame(0, $this->redis->sismember('semitexa_sse_auth_sessions', $this->sessionId));
-        self::assertSame(0, $this->redis->exists(
-            SseAuthSessionMap::sessionUserKey($this->sessionId),
-            SseAuthSessionMap::activeSessionKey($this->sessionId),
-            SseAuthSessionMap::sessionConnectionKey($this->sessionId),
-        ));
+        self::assertSame(0, $this->redis->exists(SseAuthSessionMap::sessionUserKey($this->sessionId)));
+        self::assertSame(0, $this->redis->exists(SseAuthSessionMap::activeSessionKey($this->sessionId)));
+        self::assertSame('closed', $this->redis->get(SseAuthSessionMap::sessionConnectionKey($this->sessionId)), 'what is left is the tombstone that refuses a late refresh');
     }
 
     #[Test]
@@ -116,5 +114,74 @@ final class SseAuthSessionMapOwnerTest extends TestCase
 
         self::assertSame([], $this->map->sessionIdsForUser($this->userId));
         self::assertSame(0, $this->redis->exists(SseAuthSessionMap::sessionUserKey($this->sessionId)));
+    }
+
+    /**
+     * REGRESSION (review ssr#150). A stream whose session was claimed by a
+     * reconnect and then closed has no owner left. Its next refresh used to
+     * register again, because a non-claim write only refused ANOTHER owner, and
+     * fan-out then counted the dead stream as live.
+     */
+    #[Test]
+    public function a_refresh_after_the_session_was_superseded_and_closed_recreates_nothing(): void
+    {
+        $old = new \stdClass();
+        $new = new \stdClass();
+        $this->map->register($this->sessionId, $this->userId, $old);
+        $this->map->register($this->sessionId, $this->userId, $new);
+        $this->map->unregister($this->sessionId, $new);
+
+        self::assertFalse($this->map->register($this->sessionId, $this->userId, $old, claim: false));
+
+        self::assertSame(0, $this->redis->sismember('semitexa_sse_auth_sessions', $this->sessionId));
+        self::assertSame(0, $this->redis->sismember(SseAuthSessionMap::userSessionsKey($this->userId), $this->sessionId));
+        self::assertSame(0, $this->redis->exists(SseAuthSessionMap::sessionUserKey($this->sessionId)));
+        self::assertSame('closed', $this->redis->get(SseAuthSessionMap::sessionConnectionKey($this->sessionId)));
+    }
+
+    /**
+     * The other side of the tombstone: an owner key that is simply gone — Redis
+     * restarted without persistence, evicted it, or the register at open failed —
+     * is healed by the stream's next refresh, as before.
+     */
+    #[Test]
+    public function a_live_stream_whose_owner_key_was_lost_is_indexed_again_by_its_refresh(): void
+    {
+        $connection = new \stdClass();
+        $this->map->register($this->sessionId, $this->userId, $connection);
+        $this->redis->del([
+            SseAuthSessionMap::sessionConnectionKey($this->sessionId),
+            SseAuthSessionMap::sessionUserKey($this->sessionId),
+            SseAuthSessionMap::userSessionsKey($this->userId),
+        ]);
+        $this->redis->srem('semitexa_sse_auth_sessions', $this->sessionId);
+
+        self::assertTrue($this->map->register($this->sessionId, $this->userId, $connection, claim: false));
+
+        self::assertSame(1, $this->redis->sismember(SseAuthSessionMap::userSessionsKey($this->userId), $this->sessionId));
+        self::assertSame(1, $this->redis->sismember('semitexa_sse_auth_sessions', $this->sessionId));
+    }
+
+    /**
+     * A different user on the same connection moves the session in one script:
+     * there is no moment where it is unregistered, which is where a reconnect
+     * could claim and close it before the old stream wrote itself back.
+     */
+    #[Test]
+    public function a_new_user_on_the_connection_takes_the_session_from_the_old_one_in_one_write(): void
+    {
+        $connection = new \stdClass();
+        $other = 'user-owner-' . bin2hex(random_bytes(4));
+        try {
+            $this->map->register($this->sessionId, $this->userId, $connection);
+
+            self::assertTrue($this->map->register($this->sessionId, $other, $connection, claim: false));
+
+            self::assertSame(0, $this->redis->sismember(SseAuthSessionMap::userSessionsKey($this->userId), $this->sessionId), 'the previous user keeps no member pointing at this stream');
+            self::assertSame(1, $this->redis->sismember(SseAuthSessionMap::userSessionsKey($other), $this->sessionId));
+            self::assertSame($other, $this->redis->get(SseAuthSessionMap::sessionUserKey($this->sessionId)));
+        } finally {
+            $this->redis->del([SseAuthSessionMap::userSessionsKey($other)]);
+        }
     }
 }

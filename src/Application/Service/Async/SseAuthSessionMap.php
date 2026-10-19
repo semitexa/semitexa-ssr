@@ -53,6 +53,14 @@ final class SseAuthSessionMap
     private const SESSION_USER_PREFIX = 'semitexa_sse_auth_session:';
     private const ACTIVE_SESSION_PREFIX = 'semitexa_sse_active_session:';
     private const SESSION_CONNECTION_PREFIX = 'semitexa_sse_auth_connection:';
+    /**
+     * What an unregister leaves as the owner: a value no connection token equals,
+     * kept longer than a stream may live (max age 600 s), so a stream superseded
+     * and closed meanwhile is refused instead of re-registering. A claim — the
+     * next stream to open — overwrites it.
+     */
+    private const CLOSED_OWNER = 'closed';
+    private const CLOSED_OWNER_TTL_SECONDS = 900;
 
     /**
      * KEYS: connection, all sessions, the user's sessions, session→user. ARGV:
@@ -66,6 +74,10 @@ final class SseAuthSessionMap
                 return 0
             end
             redis.call('SETEX', KEYS[1], ARGV[5], ARGV[1])
+        end
+        local previous = redis.call('GET', KEYS[4])
+        if previous and previous ~= '' and previous ~= ARGV[4] then
+            redis.call('SREM', ARGV[6] .. previous, ARGV[3])
         end
         redis.call('SADD', KEYS[2], ARGV[3])
         redis.call('SADD', KEYS[3], ARGV[3])
@@ -89,7 +101,8 @@ final class SseAuthSessionMap
             redis.call('SREM', ARGV[2] .. user, ARGV[3])
         end
         redis.call('SREM', KEYS[3], ARGV[3])
-        redis.call('DEL', KEYS[2], KEYS[4], KEYS[1])
+        redis.call('DEL', KEYS[2], KEYS[4])
+        redis.call('SETEX', KEYS[1], ARGV[4], ARGV[5])
         return 1
         LUA;
 
@@ -199,6 +212,11 @@ final class SseAuthSessionMap
         $token = $this->tokenFor($connection);
         try {
             // One script, so an unregister cannot land between the owner check and the writes.
+            // A non-claim write is refused by any other owner — including the tombstone
+            // an unregister leaves, so a stream whose session a reconnect claimed and
+            // closed cannot write itself back. A missing owner key (Redis lost it, or the
+            // register at open failed) still heals on the next refresh.
+            // A session moving to another user leaves the previous user's set here too.
             return $pool->withConnection(static fn ($redis): bool => Row::asInt($redis->eval(
                 self::REGISTER_SCRIPT,
                 4,
@@ -211,6 +229,7 @@ final class SseAuthSessionMap
                 $sessionId,
                 $userId,
                 (string) self::AUTH_SESSION_TTL_SECONDS,
+                self::USER_SESSIONS_PREFIX,
             )) === 1);
         } catch (\Throwable $e) {
             $this->logFailure('Failed to register authenticated SSE session', $e, ['session_id' => $sessionId]);
@@ -250,6 +269,8 @@ final class SseAuthSessionMap
                 $token,
                 self::USER_SESSIONS_PREFIX,
                 $sessionId,
+                (string) self::CLOSED_OWNER_TTL_SECONDS,
+                self::CLOSED_OWNER,
             )) === 1);
         } catch (\Throwable $e) {
             $this->logFailure('Failed to unregister authenticated SSE session', $e, ['session_id' => $sessionId]);
@@ -288,9 +309,10 @@ final class SseAuthSessionMap
      *
      * Covers the two ways a long-lived stream can drift from its identity: the
      * user logged out (drop the mapping), or a different user is now on the same
-     * connection (drop the old mapping before claiming the new one — otherwise
-     * the previous user keeps a set member pointing at a stream that is now
-     * somebody else's, and a fan-out to them would deliver across accounts).
+     * connection (the register moves the session off the old user in the same
+     * script — otherwise the previous user keeps a set member pointing at a
+     * stream that is now somebody else's, and a fan-out to them would deliver
+     * across accounts).
      *
      * @return string the currently authenticated user id, or `''` if none.
      */
@@ -306,12 +328,10 @@ final class SseAuthSessionMap
             return '';
         }
 
-        // Another user on this connection: the old mapping goes first, and when
-        // it is no longer this connection's to remove, neither is the session.
-        if ($knownUserId !== '' && $currentUserId !== $knownUserId && !$this->unregister($sessionId, $connection)) {
-            return $currentUserId;
-        }
-
+        // Same user or another one on this connection: one write, which moves the
+        // session off the previous user and refuses when this connection no longer
+        // owns it. Unregistering first left a gap a reconnect could claim and close
+        // in, after which this stream wrote itself back as live.
         $this->register($sessionId, $currentUserId, $connection, claim: false);
 
         return $currentUserId;

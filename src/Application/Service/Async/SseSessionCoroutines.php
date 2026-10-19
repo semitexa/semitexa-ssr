@@ -40,7 +40,7 @@ use Swoole\Coroutine;
  */
 final class SseSessionCoroutines
 {
-    /** @var array<string, array<int, int>> session id → live coroutine id → when it started ({@see SubscriptionTable::nowMs()}). */
+    /** @var array<string, array<int, int>> session id → live coroutine id → when it started ({@see SseOrder::next()}). */
     private array $bySession = [];
 
     /**
@@ -78,7 +78,7 @@ final class SseSessionCoroutines
         $result = Coroutine::create(function () use ($callback, $sessionId, $container, $context, $binding): void {
             $cid = self::currentCid();
             if ($cid >= 0) {
-                $this->bySession[$sessionId][$cid] = SubscriptionTable::nowMs();
+                $this->bySession[$sessionId][$cid] = SseOrder::next();
             }
             SignedContextBinding::restore($binding);
 
@@ -116,8 +116,8 @@ final class SseSessionCoroutines
      * A reconnect reuses the session id, and the HUG requests of the new
      * connection can land on the worker the old one is still being torn down
      * on: their coroutines are tracked under the same id here. `$before` (the
-     * new connection's open time) limits the cancel to what started earlier —
-     * the old connection's work — and leaves the new connection's running.
+     * new connection's {@see SseOrder} number) limits the cancel to what started
+     * earlier — the old connection's work — and leaves the new connection's running.
      */
     public function cancelFor(string $sessionId, ?int $before = null): void
     {
@@ -127,8 +127,8 @@ final class SseSessionCoroutines
         }
 
         $currentCid = self::currentCid();
-        foreach ($this->bySession[$sessionId] as $cid => $startedAtMs) {
-            if ($cid < 0 || $cid === $currentCid || ($before !== null && $startedAtMs >= $before)) {
+        foreach ($this->bySession[$sessionId] as $cid => $startedAt) {
+            if ($cid < 0 || $cid === $currentCid || ($before !== null && $startedAt >= $before)) {
                 continue;
             }
 
@@ -153,8 +153,8 @@ final class SseSessionCoroutines
 
             return;
         }
-        foreach ($this->bySession[$sessionId] ?? [] as $cid => $startedAtMs) {
-            if ($startedAtMs < $before) {
+        foreach ($this->bySession[$sessionId] ?? [] as $cid => $startedAt) {
+            if ($startedAt < $before) {
                 unset($this->bySession[$sessionId][$cid]);
             }
         }

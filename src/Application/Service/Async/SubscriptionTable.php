@@ -50,11 +50,11 @@ final class SubscriptionTable
     private const CONNECTED_AT_COLUMN = 'connected_at';
 
     /**
-     * When the row was written, in milliseconds — what tells a superseded
-     * connection's late teardown which rows are its own (older than the
-     * connection that took the session over) and which belong to the new one.
+     * When the row was written, as a number from {@see SseOrder} — what tells a
+     * superseded connection's late teardown which rows are its own (older than
+     * the connection that took the session over) and which belong to the new one.
      */
-    private const SUBSCRIBED_AT_MS_COLUMN = 'subscribed_at_ms';
+    private const SUBSCRIBED_SEQ_COLUMN = 'subscribed_seq';
 
     /**
      * The string schema: column name => byte size. Every column here is
@@ -93,7 +93,7 @@ final class SubscriptionTable
         }
         // The lone INT column — connect epoch, the staleness basis for the sweep.
         $table->column(self::CONNECTED_AT_COLUMN, Table::TYPE_INT);
-        $table->column(self::SUBSCRIBED_AT_MS_COLUMN, Table::TYPE_INT);
+        $table->column(self::SUBSCRIBED_SEQ_COLUMN, Table::TYPE_INT);
         $table->create();
 
         return new self($table);
@@ -107,7 +107,7 @@ final class SubscriptionTable
      */
     public static function schemaColumns(): array
     {
-        return [...array_keys(self::COLUMNS), self::CONNECTED_AT_COLUMN, self::SUBSCRIBED_AT_MS_COLUMN];
+        return [...array_keys(self::COLUMNS), self::CONNECTED_AT_COLUMN, self::SUBSCRIBED_SEQ_COLUMN];
     }
 
     /**
@@ -126,7 +126,7 @@ final class SubscriptionTable
             // Connect epoch — re-stamped on a same-id reconnect (a fresh connection),
             // which is correct: the staleness clock restarts with the new stream.
             self::CONNECTED_AT_COLUMN => time(),
-            self::SUBSCRIBED_AT_MS_COLUMN => self::nowMs(),
+            self::SUBSCRIBED_SEQ_COLUMN => SseOrder::next(),
         ]);
     }
 
@@ -250,7 +250,7 @@ final class SubscriptionTable
             tenantId: $values->string('tenant_id'),
             scopeKeys: $this->decodeScopeKeys($values->string('scope_keys')),
             tenantBlob: $values->string('tenant_blob'),
-            subscribedAtMs: $values->int(self::SUBSCRIBED_AT_MS_COLUMN),
+            subscribedSeq: $values->int(self::SUBSCRIBED_SEQ_COLUMN),
         );
     }
 
@@ -303,15 +303,5 @@ final class SubscriptionTable
     private function key(string $streamingId): string
     {
         return strlen($streamingId) > 63 ? md5($streamingId) : $streamingId;
-    }
-
-    /**
-     * The clock both a subscription row and a session's owning connection are
-     * stamped with: monotonic (an NTP step cannot reorder them) and shared by
-     * every worker of the host, which is the only place the table lives.
-     */
-    public static function nowMs(): int
-    {
-        return intdiv(hrtime(true), 1_000_000);
     }
 }

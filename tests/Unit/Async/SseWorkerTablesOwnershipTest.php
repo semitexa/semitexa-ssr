@@ -113,7 +113,8 @@ final class SseWorkerTablesOwnershipTest extends TestCase
         $sessions = new Table(64);
         $sessions->column('worker_id', Table::TYPE_INT, 8);
         $sessions->column('connection', Table::TYPE_STRING, 16);
-        $sessions->column('opened_at_ms', Table::TYPE_INT, 8);
+        // verify:accept-test-change connection order is an SseOrder number now, not milliseconds (tk-sse-teardown-ownership-sequence)
+        $sessions->column('opened_seq', Table::TYPE_INT, 8);
         $sessions->create();
         $deliver = new Table(8);
         $deliver->column('payload', Table::TYPE_STRING, 64);

@@ -8,6 +8,8 @@ use Semitexa\Core\Attribute\AsServerLifecycleListener;
 use Semitexa\Core\Server\Lifecycle\ServerLifecycleContext;
 use Semitexa\Core\Server\Lifecycle\ServerLifecycleListenerInterface;
 use Semitexa\Core\Server\Lifecycle\ServerLifecyclePhase;
+use Semitexa\Ssr\Application\Service\Async\SseOrder;
+use Swoole\Atomic\Long;
 use Swoole\Table;
 
 #[AsServerLifecycleListener(
@@ -32,7 +34,10 @@ final class CreateAsyncResourceSseTablesListener implements ServerLifecycleListe
         $sessionWorkerTable->column('worker_id', Table::TYPE_INT, self::TABLE_COLUMN_INT_SIZE);
         // Which connection owns the session and since when (SseWorkerTables::supersededAt()).
         $sessionWorkerTable->column('connection', Table::TYPE_STRING, 16);
-        $sessionWorkerTable->column('opened_at_ms', Table::TYPE_INT, self::TABLE_COLUMN_INT_SIZE);
+        $sessionWorkerTable->column('opened_seq', Table::TYPE_INT, self::TABLE_COLUMN_INT_SIZE);
+        // "Since when" is a number from SseOrder, counted in shared memory
+        // created here, before the workers fork, so all of them count on it.
+        SseOrder::share(new Long(0));
         $sessionWorkerTable->create();
 
         $deliverTable = new Table($env->swooleSseDeliverTableSize);

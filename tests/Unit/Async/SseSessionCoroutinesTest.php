@@ -11,8 +11,8 @@ use PHPUnit\Framework\TestCase;
 use Semitexa\Core\Auth\GuestAuthContext;
 use Semitexa\Core\Container\ExecutionContext;
 use Semitexa\Core\Container\SemitexaContainer;
+use Semitexa\Ssr\Application\Service\Async\SseOrder;
 use Semitexa\Ssr\Application\Service\Async\SseSessionCoroutines;
-use Semitexa\Ssr\Application\Service\Async\SubscriptionTable;
 use Swoole\Coroutine;
 
 /**
@@ -220,7 +220,8 @@ final class SseSessionCoroutinesTest extends TestCase
             $oldStarted->pop(1.0);
 
             Coroutine::sleep(0.005);
-            $openedAt = SubscriptionTable::nowMs();
+            // verify:accept-test-change connection order is an SseOrder number now, not milliseconds (tk-sse-teardown-ownership-sequence)
+            $openedAt = SseOrder::next();
             Coroutine::sleep(0.005);
 
             $newStarted = new Coroutine\Channel(1);
@@ -238,6 +239,56 @@ final class SseSessionCoroutinesTest extends TestCase
         });
 
         self::assertTrue($oldStopped, 'the old connection\'s coroutine is cancelled');
+        self::assertTrue($newAlive, 'the new connection\'s coroutine keeps running and stays tracked');
+    }
+
+    /**
+     * THE TIE. The test above keeps 5 ms between the old work, the claim and
+     * the new work. Without that gap all three land in one millisecond: a
+     * millisecond stamp ties the old coroutine with the claim, cancelFor() then
+     * skips it and forget() keeps it (CodeRabbit on ssr#149). The order has to
+     * come from a sequence, which cannot tie.
+     */
+    #[Test]
+    #[RequiresPhpExtension('swoole')]
+    public function work_started_just_before_the_claim_is_still_the_old_connections(): void
+    {
+        $tracker = new SseSessionCoroutines();
+        $oldStopped = null;
+        $newAlive = null;
+
+        Coroutine\run(static function () use ($tracker, &$oldStopped, &$newAlive): void {
+            $oldStarted = new Coroutine\Channel(1);
+            $oldEnded = new Coroutine\Channel(1);
+            $tracker->create(static function () use ($oldStarted, $oldEnded): void {
+                $oldStarted->push(true);
+                try {
+                    while (true) {
+                        Coroutine::sleep(0.01);
+                    }
+                } finally {
+                    $oldEnded->push(true);
+                }
+            }, 'sess-1');
+            $oldStarted->pop(1.0);
+
+            $openedAt = SseOrder::next();
+
+            $newStarted = new Coroutine\Channel(1);
+            $newCid = $tracker->create(static function () use ($newStarted): void {
+                $newStarted->push(true);
+                Coroutine::sleep(0.3);
+            }, 'sess-1');
+            $newStarted->pop(1.0);
+
+            $tracker->cancelFor('sess-1', $openedAt);
+            $oldStopped = $oldEnded->pop(0.2);
+            $tracker->forget('sess-1', $openedAt);
+            $newAlive = $tracker->idsFor('sess-1') === [$newCid];
+            $tracker->cancelFor('sess-1');
+        });
+
+        self::assertTrue($oldStopped, 'work the old connection started just before the claim was not cancelled');
         self::assertTrue($newAlive, 'the new connection\'s coroutine keeps running and stays tracked');
     }
 

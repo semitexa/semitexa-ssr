@@ -10,6 +10,7 @@ use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Core\Session\RedisSessionHandler;
 use Semitexa\Core\Session\SessionHandlerInterface;
 use Semitexa\Core\Session\SwooleTableSessionHandler;
+use Semitexa\Core\Support\Row;
 use Swoole\Http\Request;
 
 /**
@@ -198,7 +199,7 @@ final class SseAuthSessionMap
         $token = $this->tokenFor($connection);
         try {
             // One script, so an unregister cannot land between the owner check and the writes.
-            return $pool->withConnection(static fn ($redis): bool => (int) $redis->eval(
+            return $pool->withConnection(static fn ($redis): bool => Row::asInt($redis->eval(
                 self::REGISTER_SCRIPT,
                 4,
                 self::sessionConnectionKey($sessionId),
@@ -210,7 +211,7 @@ final class SseAuthSessionMap
                 $sessionId,
                 $userId,
                 (string) self::AUTH_SESSION_TTL_SECONDS,
-            ) === 1);
+            )) === 1);
         } catch (\Throwable $e) {
             $this->logFailure('Failed to register authenticated SSE session', $e, ['session_id' => $sessionId]);
 
@@ -239,7 +240,7 @@ final class SseAuthSessionMap
             // One script: the owner check and the deletes cannot be split by a
             // reconnect's register. The user is resolved inside it, so the
             // per-user set does not keep a member for a session that is gone.
-            return $pool->withConnection(static fn ($redis): bool => (int) $redis->eval(
+            return $pool->withConnection(static fn ($redis): bool => Row::asInt($redis->eval(
                 self::UNREGISTER_SCRIPT,
                 4,
                 self::sessionConnectionKey($sessionId),
@@ -249,7 +250,7 @@ final class SseAuthSessionMap
                 $token,
                 self::USER_SESSIONS_PREFIX,
                 $sessionId,
-            ) === 1);
+            )) === 1);
         } catch (\Throwable $e) {
             $this->logFailure('Failed to unregister authenticated SSE session', $e, ['session_id' => $sessionId]);
 

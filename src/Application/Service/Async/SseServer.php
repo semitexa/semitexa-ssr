@@ -359,9 +359,10 @@ final class SseServer implements FeedStreamSinkInterface
         // Claimed before the auth mapping, so a previous connection's teardown
         // in between already sees it is superseded and leaves that mapping alone.
         $this->workerTables()->recordOwnership($sessionId, $response);
-        $this->touchActiveSession($sessionId);
         $authenticatedUserId = $this->resolveAuthenticatedUserId($request);
         $this->authSessionMap()->opened($sessionId, $authenticatedUserId, $response);
+        // After: a guest open clears the previous mapping, liveness key included.
+        $this->touchActiveSession($sessionId);
 
         $this->sessionRegistry()->ensureQueue($sessionId);
 

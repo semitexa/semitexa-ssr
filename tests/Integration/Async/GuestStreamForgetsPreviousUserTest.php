@@ -105,5 +105,6 @@ final class GuestStreamForgetsPreviousUserTest extends TestCase
 
         self::assertSame('', $opened, 'the stream opened as a guest');
         self::assertSame([], $map->sessionIdsForUser($this->userId), 'the previous user no longer reaches this stream');
+        self::assertSame(1, $this->redis->exists(SseAuthSessionMap::activeSessionKey($this->sessionId)), 'the guest stream is still known to be live');
     }
 }

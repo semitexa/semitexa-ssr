@@ -361,9 +361,7 @@ final class SseServer implements FeedStreamSinkInterface
         $this->workerTables()->recordOwnership($sessionId, $response);
         $this->touchActiveSession($sessionId);
         $authenticatedUserId = $this->resolveAuthenticatedUserId($request);
-        if ($authenticatedUserId !== '') {
-            $this->registerAuthenticatedSession($sessionId, $authenticatedUserId, $response);
-        }
+        $this->authSessionMap()->opened($sessionId, $authenticatedUserId, $response);
 
         $this->sessionRegistry()->ensureQueue($sessionId);
 
@@ -1957,11 +1955,6 @@ final class SseServer implements FeedStreamSinkInterface
     private function removeSessionWorkerMapping(string $sessionId, Response $response): void
     {
         $this->workerTables()->releaseOwnership($sessionId, $response);
-    }
-
-    private function registerAuthenticatedSession(string $sessionId, string $userId, Response $response): void
-    {
-        $this->authSessionMap()->register($sessionId, $userId, $response);
     }
 
     private function unregisterAuthenticatedSession(string $sessionId, Response $response): void

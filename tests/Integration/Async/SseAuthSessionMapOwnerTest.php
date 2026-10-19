@@ -184,4 +184,45 @@ final class SseAuthSessionMapOwnerTest extends TestCase
             $this->redis->del([SseAuthSessionMap::userSessionsKey($other)]);
         }
     }
+
+    /**
+     * REGRESSION (release review). A tab whose user logged out reconnects as a
+     * guest on the same SSE session id. The previous connection's teardown
+     * leaves the mapping (it was superseded), and the guest's own teardown may
+     * not remove it (the owner token is not its own) — so the old user's
+     * fan-out kept reaching a stream that is no longer theirs, for the mapping's
+     * whole 2-hour TTL. A guest opening on the id now drops it.
+     */
+    #[Test]
+    public function a_guest_reconnect_on_the_session_takes_it_out_of_the_previous_users_fan_out(): void
+    {
+        $this->map->register($this->sessionId, $this->userId, new \stdClass());
+        $this->map->touch($this->sessionId);
+        self::assertSame([$this->sessionId], $this->map->sessionIdsForUser($this->userId));
+
+        $this->map->forgetForGuest($this->sessionId);
+
+        self::assertSame([], $this->map->sessionIdsForUser($this->userId));
+        self::assertSame(0, $this->redis->sismember('semitexa_sse_auth_sessions', $this->sessionId));
+    }
+
+    /**
+     * A session read that fails (Redis timed out) says nothing about who is
+     * signed in. It used to read as a logout: the stream was unregistered,
+     * tombstoned, and left out of its user's fan-out for the rest of its life.
+     */
+    #[Test]
+    public function a_failed_session_read_keeps_the_stream_in_its_users_fan_out(): void
+    {
+        $map = new SseAuthSessionMap(new SseRedisPool(), static fn () => throw new \RuntimeException('read timed out'));
+        $connection = new \stdClass();
+        $map->register($this->sessionId, $this->userId, $connection);
+        $map->touch($this->sessionId);
+        $request = new \Swoole\Http\Request();
+        $request->cookie = ['semitexa_session' => str_repeat('a', 32)];
+
+        self::assertSame($this->userId, $map->refresh($request, $this->sessionId, $this->userId, $connection));
+
+        self::assertSame([$this->sessionId], $map->sessionIdsForUser($this->userId));
+    }
 }

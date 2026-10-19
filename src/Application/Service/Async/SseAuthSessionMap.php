@@ -116,7 +116,14 @@ final class SseAuthSessionMap
      */
     public const TOUCH_INTERVAL_SECONDS = 30;
 
-    public function __construct(private readonly SseRedisPool $pool)
+    /**
+     * @param null|\Closure(): SessionHandlerInterface $sessionHandlerFactory how session data is
+     *        read; null = Redis, or the Swoole table when Redis is absent
+     */
+    public function __construct(
+        private readonly SseRedisPool $pool,
+        private readonly ?\Closure $sessionHandlerFactory = null,
+    )
     {
     }
 
@@ -159,6 +166,12 @@ final class SseAuthSessionMap
      */
     public function resolveUserId(Request $request): string
     {
+        return $this->readUserId($request) ?? '';
+    }
+
+    /** @return string|null the user id, '' for a guest, null when the session could not be read */
+    private function readUserId(Request $request): ?string
+    {
         $cookieName = Environment::getEnvValue('SESSION_COOKIE_NAME') ?? 'semitexa_session';
         $cookie = is_array($request->cookie) ? $request->cookie : [];
         $sessionValue = $cookie[$cookieName] ?? null;
@@ -170,7 +183,7 @@ final class SseAuthSessionMap
         try {
             $data = $this->createSessionHandler()->read($sessionId);
         } catch (\Throwable) {
-            return '';
+            return null;
         }
 
         $userId = $data[self::AUTH_SESSION_USER_KEY] ?? null;
@@ -185,6 +198,9 @@ final class SseAuthSessionMap
 
     public function createSessionHandler(): SessionHandlerInterface
     {
+        if ($this->sessionHandlerFactory !== null) {
+            return ($this->sessionHandlerFactory)();
+        }
         $pool = $this->pool->get();
 
         return $pool !== null ? new RedisSessionHandler($pool) : new SwooleTableSessionHandler();
@@ -280,6 +296,28 @@ final class SseAuthSessionMap
     }
 
     /**
+     * A stream opened on this session id: a signed-in one claims the session, a
+     * guest one drops whatever mapping an earlier connection of the tab left.
+     */
+    public function opened(string $sessionId, string $userId, ?object $connection): void
+    {
+        $userId === '' ? $this->forgetForGuest($sessionId) : $this->register($sessionId, $userId, $connection);
+    }
+
+    /**
+     * A guest stream opened on this session id: whatever auth mapping it still
+     * has belongs to an earlier connection of the same tab, whose user is no
+     * longer signed in here. Removed whoever registered it — that connection's
+     * teardown leaves it once it is superseded, and the guest's own teardown is
+     * not the owner — or the old user's fan-out reaches this stream until the
+     * mapping expires.
+     */
+    public function forgetForGuest(string $sessionId): void
+    {
+        $this->unregister($sessionId);
+    }
+
+    /**
      * Refresh the liveness key for a stream that is still connected.
      */
     public function touch(string $sessionId): void
@@ -318,7 +356,13 @@ final class SseAuthSessionMap
      */
     public function refresh(Request $request, string $sessionId, string $knownUserId, ?object $connection = null): string
     {
-        $currentUserId = $this->resolveUserId($request);
+        $currentUserId = $this->readUserId($request);
+        // A read that failed says nothing about who is signed in: leave the
+        // mapping as it is. Read as a logout, it tombstoned a signed-in stream
+        // out of its user's fan-out for the rest of its life.
+        if ($currentUserId === null) {
+            return $knownUserId;
+        }
 
         if ($currentUserId === '') {
             if ($knownUserId !== '') {

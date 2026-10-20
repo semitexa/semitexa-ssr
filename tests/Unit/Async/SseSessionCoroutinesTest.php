@@ -11,6 +11,8 @@ use PHPUnit\Framework\TestCase;
 use Semitexa\Core\Auth\GuestAuthContext;
 use Semitexa\Core\Container\ExecutionContext;
 use Semitexa\Core\Container\SemitexaContainer;
+use Semitexa\Core\Lifecycle\CarriedContext;
+use Semitexa\Core\Support\CoroutineLocal;
 use Semitexa\Ssr\Application\Service\Async\SseOrder;
 use Semitexa\Ssr\Application\Service\Async\SseSessionCoroutines;
 use Swoole\Coroutine;
@@ -350,6 +352,33 @@ final class SseSessionCoroutinesTest extends TestCase
         });
 
         self::assertSame($auth, $seen);
+    }
+
+    /**
+     * The container's context is half of it: the tenant, the signed-in user,
+     * the locale and theme live in their own coroutine-local stores, and a
+     * deferred slot rendered without them in the default locale and theme
+     * (tk-held-open-first-run-and-listener-context).
+     */
+    #[Test]
+    public function a_spawned_coroutine_sees_what_the_stores_keep_beside_the_container(): void
+    {
+        $this->requireSwoole();
+        $tracker = new SseSessionCoroutines(new SemitexaContainer());
+        $seen = 'unset';
+        CarriedContext::carry('test.locale');
+
+        Coroutine\run(static function () use ($tracker, &$seen): void {
+            CoroutineLocal::set('test.locale', 'uk');
+            $done = new Coroutine\Channel(1);
+            $tracker->create(static function () use ($done, &$seen): void {
+                $seen = CoroutineLocal::get('test.locale');
+                $done->push(true);
+            }, 'sess-carried');
+            $done->pop(1.0);
+        });
+
+        self::assertSame('uk', $seen);
     }
 
     #[Test]

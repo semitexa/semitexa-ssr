@@ -7,6 +7,7 @@ namespace Semitexa\Ssr\Application\Service\Async;
 use Semitexa\Ssr\Application\Service\UiEvent\SignedContextBinding;
 
 use Semitexa\Core\Container\SemitexaContainer;
+use Semitexa\Core\Lifecycle\RequestContextSnapshot;
 use Swoole\Coroutine;
 
 /**
@@ -67,15 +68,16 @@ final class SseSessionCoroutines
         // Execution context (auth, tenant, locale, session) is coroutine-local, so a
         // spawned coroutine starts without it. Measured: a deferred slot whose handler
         // injects AuthContextInterface was refused ("No execution context value") and
-        // its region rendered empty. Carry the parent's context into the child.
-        $container = $this->container;
-        $context = $container?->captureExecutionContext();
+        // its region rendered empty. Carry the parent's context into the child: the
+        // container's, and what the stores keep beside it (the tenant, the signed-in
+        // user, the locale and theme a slot renders in).
+        $context = RequestContextSnapshot::capture($this->container);
         // The signed-context binding is coroutine-local too: a deferred render
         // must mint contexts bound to the same session and tenant as its page.
         $binding = SignedContextBinding::snapshot();
 
         /** @var int|false $result */
-        $result = Coroutine::create(function () use ($callback, $sessionId, $container, $context, $binding): void {
+        $result = Coroutine::create(function () use ($callback, $sessionId, $context, $binding): void {
             $cid = self::currentCid();
             if ($cid >= 0) {
                 $this->bySession[$sessionId][$cid] = SseOrder::next();
@@ -83,11 +85,7 @@ final class SseSessionCoroutines
             SignedContextBinding::restore($binding);
 
             try {
-                if ($container !== null && $context !== null) {
-                    $container->runWithExecutionContext($context, $callback);
-                } else {
-                    $callback();
-                }
+                $context->run(\Closure::fromCallable($callback));
             } catch (\Throwable $e) {
                 if (!self::isCancellation($e)) {
                     throw $e;

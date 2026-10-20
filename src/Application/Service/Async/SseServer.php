@@ -691,6 +691,9 @@ final class SseServer implements FeedStreamSinkInterface
         Response $response,
         string $authenticatedUserId,
     ): void {
+        // The response is out (headers, first frame), the coroutine stays until
+        // the connection closes: deferred work stops waiting for that.
+        \Semitexa\Core\Server\AfterResponse::holdOpen();
         $state = new SseHeldOpenState($authenticatedUserId, time());
         $maxAgeSeconds = $this->maxConnectionAgeSeconds();
 

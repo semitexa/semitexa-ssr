@@ -8,7 +8,9 @@ use PHPUnit\Framework\Attributes\RequiresPhpExtension;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Core\Lifecycle\WorkerDrainSignal;
+use Semitexa\Core\Server\AfterResponse;
 use Semitexa\Core\Server\InFlightRequests;
+use Semitexa\Core\Server\SwooleBootstrap;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
 use Semitexa\Ssr\Application\Service\Async\SseServer;
 use Semitexa\Ssr\Application\Service\Async\SseSessionRegistry;
@@ -59,21 +61,7 @@ final class HeldOpenLoopStandsDownOnDrainTest extends TestCase
     #[Test]
     public function a_live_stream_loop_ends_once_the_worker_drains(): void
     {
-        $server = AsyncResourceSseServer::instance();
-        $sessions = new Table(64);
-        $sessions->column('worker_id', Table::TYPE_INT, 8);
-        $sessions->column('connection', Table::TYPE_STRING, 16);
-        $sessions->column('opened_seq', Table::TYPE_INT, 8);
-        $sessions->create();
-        $deliver = new Table(8);
-        $deliver->column('payload', Table::TYPE_STRING, 64);
-        $deliver->create();
-        $tables = new SseWorkerTables();
-        $tables->setTables($sessions, $deliver);
-        $registry = new SseSessionRegistry();
-        (new \ReflectionProperty(SseServer::class, 'workerTables'))->setValue($server, $tables);
-        (new \ReflectionProperty(SseServer::class, 'sessionRegistry'))->setValue($server, $registry);
-        $loop = new \ReflectionMethod(SseServer::class, 'runHeldOpenLoop');
+        [$server, $registry, $loop] = $this->wiredServer();
 
         $response = $this->createStub(Response::class);
         $written = [];
@@ -114,5 +102,65 @@ final class HeldOpenLoopStandsDownOnDrainTest extends TestCase
         self::assertStringContainsString('before-the-drain', implode('', $written), 'the stub saw none of the loop\'s writes, so the check below would pass on anything');
         // A `close` event tells the client to stop; only a stream that just ends is reconnected.
         self::assertStringNotContainsString('event: close', implode('', $written), 'the drain sent a close the client would not reconnect from');
+    }
+
+    /**
+     * tk-held-open-first-run-and-listener-context. The connection's request
+     * coroutine stays in this loop until it closes, and work the request had
+     * deferred (an async handler declared before the stream's, a listener of
+     * an event the first frame dispatched) ran only then. It runs once the
+     * loop is entered: the response is out.
+     */
+    #[Test]
+    public function what_the_request_deferred_runs_while_the_stream_is_open(): void
+    {
+        [$server, $registry, $loop] = $this->wiredServer();
+        $response = $this->createStub(Response::class);
+        $response->method('write')->willReturn(true);
+        $request = $this->createStub(Request::class);
+        $log = [];
+
+        Coroutine\run(function () use ($server, $registry, $loop, $response, $request, &$log): void {
+            $registry->open('sse_held', $response, '', '');
+            $ended = new Channel(1);
+            Coroutine::create(static function () use ($server, $loop, $response, $request, $ended, &$log): void {
+                $key = (new \ReflectionClassConstant(SwooleBootstrap::class, 'COROUTINE_CONTEXT_KEY'))->getValue();
+                Coroutine::getContext()[$key] = true;
+                AfterResponse::schedule(static function () use (&$log): void {
+                    $log[] = 'deferred work';
+                });
+                $loop->invoke($server, 'sse_held', $request, $response, '');
+                $log[] = 'connection closed';
+                $ended->push(true);
+            });
+
+            Coroutine::sleep(0.1);
+            $log[] = 'stream still open';
+            $registry->close('sse_held');
+            $ended->pop(2.0);
+        });
+
+        self::assertSame(['deferred work', 'stream still open', 'connection closed'], $log);
+    }
+
+    /** @return array{SseServer, SseSessionRegistry, \ReflectionMethod} */
+    private function wiredServer(): array
+    {
+        $server = AsyncResourceSseServer::instance();
+        $sessions = new Table(64);
+        $sessions->column('worker_id', Table::TYPE_INT, 8);
+        $sessions->column('connection', Table::TYPE_STRING, 16);
+        $sessions->column('opened_seq', Table::TYPE_INT, 8);
+        $sessions->create();
+        $deliver = new Table(8);
+        $deliver->column('payload', Table::TYPE_STRING, 64);
+        $deliver->create();
+        $tables = new SseWorkerTables();
+        $tables->setTables($sessions, $deliver);
+        $registry = new SseSessionRegistry();
+        (new \ReflectionProperty(SseServer::class, 'workerTables'))->setValue($server, $tables);
+        (new \ReflectionProperty(SseServer::class, 'sessionRegistry'))->setValue($server, $registry);
+
+        return [$server, $registry, new \ReflectionMethod(SseServer::class, 'runHeldOpenLoop')];
     }
 }

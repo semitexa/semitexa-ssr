@@ -20,6 +20,8 @@ use Semitexa\Core\Session\SessionInterface;
 use Semitexa\Core\Tenant\TenantContextInterface;
 use Semitexa\Ssr\Application\Service\UiEvent\SignedContextBinding;
 use Semitexa\Ssr\Application\Service\Async\SseSessionCoroutines;
+use Semitexa\Core\Feature\CurrentFeatureFlags;
+use Semitexa\Core\Feature\FeatureFlagsInterface;
 
 /**
  * Who work done on a page's KISS stream is done as (tk-ls-kiss-visitor).
@@ -59,6 +61,12 @@ final class KissVisitor
             $scope = RequestScopedContainer::forCurrentExecution($this->container);
             (new RouteExecutor($scope, $this->container, $this->bootstrapper($scope)))->establishVisitor($visitor);
             $this->bindSignedContexts($scope);
+            // The pipeline's CurrentFeatureFlagsListener never runs on the
+            // stream: without this, feature() in a deferred region was off.
+            $flags = $scope->has(FeatureFlagsInterface::class) ? $scope->get(FeatureFlagsInterface::class) : null;
+            if ($flags instanceof FeatureFlagsInterface) {
+                CurrentFeatureFlags::set($flags);
+            }
         } catch (\Throwable $e) {
             SseSessionCoroutines::rethrowIfCancellation($e);
             $this->logger->error('Deferred render could not establish the visitor', [

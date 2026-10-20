@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\UiEvent;
 
-use Semitexa\Core\Environment;
+use Semitexa\Core\Security\AppSecret;
 
 /**
  * Shared APP_SECRET resolution for the signed-context substrate.
@@ -20,23 +20,7 @@ final class SignedContextSecret
 {
     public static function resolve(): string
     {
-        $explicit = Environment::getEnvValue('APP_SECRET');
-        if (is_string($explicit) && $explicit !== '') {
-            return $explicit;
-        }
-
-        $appEnv = strtolower((string) Environment::getEnvValue('APP_ENV', 'prod'));
-        if (!in_array($appEnv, ['dev', 'test'], true)) {
-            throw new \LogicException('APP_SECRET must be configured for signed UI event context outside dev/test environments.');
-        }
-
-        return hash(
-            'sha256',
-            implode('|', [
-                (string) Environment::getEnvValue('APP_NAME', 'Semitexa'),
-                (string) Environment::getEnvValue('APP_HOST', 'localhost'),
-                (string) Environment::getEnvValue('APP_PORT', '8000'),
-            ]),
-        );
+        // The rule lives in core now, shared with encryption and signed URLs.
+        return AppSecret::current();
     }
 }

@@ -164,7 +164,7 @@ final class ConnectCoordinator
 
         $streamingIds = [];
         foreach ($this->subscriptions->all() as $record) {
-            if ($record->sessionId === $sessionId && ($before === null || $record->subscribedAtMs < $before)) {
+            if ($record->sessionId === $sessionId && ($before === null || $record->subscribedSeq < $before)) {
                 $streamingIds[] = $record->streamingId;
             }
         }
@@ -175,7 +175,7 @@ final class ConnectCoordinator
             // yielded belongs to it now.
             $limit = $before ?? ($currentCutoff !== null ? $currentCutoff() : null);
             $current = $limit === null ? null : $this->subscriptions->get($streamingId);
-            if ($current !== null && $current->subscribedAtMs >= $limit) {
+            if ($current !== null && $current->subscribedSeq >= $limit) {
                 continue;
             }
             $this->onDisconnect($streamingId);
@@ -197,7 +197,7 @@ final class ConnectCoordinator
     {
         $released = [];
         foreach ($this->subscriptions->all() as $record) {
-            if ($record->sessionId === $sessionId && $record->subscribedAtMs >= $since && SubscriptionDtoRegistry::has($record->streamingId)) {
+            if ($record->sessionId === $sessionId && $record->subscribedSeq >= $since && SubscriptionDtoRegistry::has($record->streamingId)) {
                 SubscriptionDtoRegistry::remove($record->streamingId);
                 $released[] = $record->streamingId;
             }

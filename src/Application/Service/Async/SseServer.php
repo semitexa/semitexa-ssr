@@ -360,9 +360,8 @@ final class SseServer implements FeedStreamSinkInterface
         // in between already sees it is superseded and leaves that mapping alone.
         $this->workerTables()->recordOwnership($sessionId, $response);
         $authenticatedUserId = $this->resolveAuthenticatedUserId($request);
-        if ($authenticatedUserId !== '') {
-            $this->registerAuthenticatedSession($sessionId, $authenticatedUserId);
-        }
+        $this->authSessionMap()->opened($sessionId, $authenticatedUserId, $response);
+        // After: a guest open clears the previous mapping, liveness key included.
         $this->touchActiveSession($sessionId);
 
         $this->sessionRegistry()->ensureQueue($sessionId);
@@ -684,7 +683,7 @@ final class SseServer implements FeedStreamSinkInterface
      * copy. Kiss is byte-unchanged: {@see handleSse()} still computes the same
      * pre-loop state and calls this with it. The loop does NOT close the session;
      * the caller owns {@see closeSession()} (so a caller can run teardown hooks
-     * around it).
+     * around it). It ends when the worker drains: see HeldOpenLoopStandsDownOnDrainTest.
      */
     private function runHeldOpenLoop(
         string $sessionId,
@@ -697,14 +696,14 @@ final class SseServer implements FeedStreamSinkInterface
 
         // A reconnect takes the session over (on this worker it replaces the
         // registry entry): from then on its frames are the new connection's.
-        while (!$state->isClosed() && $this->sessionRegistry()->isOpenWith($sessionId, $response) && $this->workerTables()->supersededAt($sessionId, $response) === null) {
+        while (!$state->isClosed() && !\Semitexa\Core\Lifecycle\WorkerDrainSignal::isDraining() && $this->sessionRegistry()->isOpenWith($sessionId, $response) && $this->workerTables()->supersededAt($sessionId, $response) === null) {
             // Hard connection-age cap — bounds hanging-connection attacks.
             if ($state->hasOutlivedCap(time(), $maxAgeSeconds)) {
                 $this->writeSse($response, ['event' => 'close', 'reason' => 'max_age', 'close' => true]);
                 break;
             }
 
-            $this->refreshAuthIfDue($sessionId, $request, $state);
+            $this->refreshAuthIfDue($sessionId, $request, $response, $state);
             $this->drainSameWorkerQueue($sessionId, $response, $state);
 
             if (!$state->isClosed()) {
@@ -729,20 +728,21 @@ final class SseServer implements FeedStreamSinkInterface
 
             $this->sessionRegistry()->waitForWork($sessionId, self::HELD_OPEN_TICK_SECONDS);
         }
+        \Semitexa\Core\Server\InFlightRequests::tearDownAfterDrain(); // left for the drain: the teardown after this is spared, not cut
     }
 
     /**
      * Re-authorize the session periodically so a revoked subject stops receiving
      * frames without waiting for the connection to end on its own.
      */
-    private function refreshAuthIfDue(string $sessionId, Request $request, SseHeldOpenState $state): void
+    private function refreshAuthIfDue(string $sessionId, Request $request, Response $response, SseHeldOpenState $state): void
     {
         if (!$state->isAuthTouchDue(time(), SseAuthSessionMap::TOUCH_INTERVAL_SECONDS)) {
             return;
         }
 
         $state->markAuthTouched(
-            $this->refreshAuthenticatedSessionMapping($request, $sessionId, $state->authenticatedUserId()),
+            $this->refreshAuthenticatedSessionMapping($request, $sessionId, $state->authenticatedUserId(), $response),
             time(),
         );
         $this->touchActiveSession($sessionId);
@@ -1840,6 +1840,8 @@ final class SseServer implements FeedStreamSinkInterface
         // Asked again: the reap can yield on Redis, and a reconnect may land meanwhile.
         $nowSupersededAt = $this->workerTables()->supersededAt($sessionId, $response);
         $ownsLocalState = $nowSupersededAt === null || $this->sessionRegistry()->isOpenWith($sessionId, $response);
+        // Still-queued payloads go to the Redis queue a reconnect drains — taken now, before the next Redis yield, or a reconnect landing in it inherits them as well.
+        $handOff = $ownsLocalState ? $this->sessionRegistry()->takeQueued($sessionId) : [];
         if ($nowSupersededAt !== null && $ownsLocalState) {
             // The new connection is on another worker: its renewed ids' re-run contexts here are stale.
             $this->runtime()->connectCoordinator?->releaseLocalContexts($sessionId, $nowSupersededAt);
@@ -1848,17 +1850,15 @@ final class SseServer implements FeedStreamSinkInterface
         $this->cancelSessionCoroutines($sessionId, $nowSupersededAt);
         if ($nowSupersededAt === null && $supersededAt === null) {
             $this->removeSessionWorkerMapping($sessionId, $response);
-            $this->unregisterAuthenticatedSession($sessionId);
+            $this->unregisterAuthenticatedSession($sessionId, $response);
         }
         $this->releaseIpConnection($sessionId, $response);
         if ($ownsLocalState) {
-            // Still-queued payloads go to the Redis session queue a reconnect drains.
-            if ($this->sessionRegistry()->hasQueued($sessionId)) {
-                $this->requeueToRedis($sessionId, $this->sessionRegistry()->queued($sessionId));
-            }
-            $this->sessionRegistry()->close($sessionId);
+            $this->requeueToRedis($sessionId, $handOff); // an empty hand-off never reaches Redis
+            // The requeue can yield on Redis: a same-worker reconnect landing meanwhile owns the entry and the coroutines it starts.
+            $this->sessionRegistry()->closeUnlessReplaced($sessionId, $response);
         }
-        $this->sessionCoroutines()->forget($sessionId, $nowSupersededAt);
+        $this->sessionCoroutines()->forget($sessionId, $this->workerTables()->supersededAt($sessionId, $response) ?? $nowSupersededAt);
         @$response->end();
     }
 
@@ -1958,14 +1958,9 @@ final class SseServer implements FeedStreamSinkInterface
         $this->workerTables()->releaseOwnership($sessionId, $response);
     }
 
-    private function registerAuthenticatedSession(string $sessionId, string $userId): void
+    private function unregisterAuthenticatedSession(string $sessionId, Response $response): void
     {
-        $this->authSessionMap()->register($sessionId, $userId);
-    }
-
-    private function unregisterAuthenticatedSession(string $sessionId): void
-    {
-        $this->authSessionMap()->unregister($sessionId);
+        $this->authSessionMap()->unregister($sessionId, $response);
     }
 
     private function touchActiveSession(string $sessionId): void
@@ -1977,8 +1972,9 @@ final class SseServer implements FeedStreamSinkInterface
         Request $request,
         string $sessionId,
         string $authenticatedUserId,
+        Response $response,
     ): string {
-        return $this->authSessionMap()->refresh($request, $sessionId, $authenticatedUserId);
+        return $this->authSessionMap()->refresh($request, $sessionId, $authenticatedUserId, $response);
     }
 
     private function canUsePersistentDeferredSse(Request $request): bool

@@ -10,6 +10,7 @@ use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Core\Session\RedisSessionHandler;
 use Semitexa\Core\Session\SessionHandlerInterface;
 use Semitexa\Core\Session\SwooleTableSessionHandler;
+use Semitexa\Core\Support\Row;
 use Swoole\Http\Request;
 
 /**
@@ -21,7 +22,12 @@ use Swoole\Http\Request;
  * claiming connections that no longer exist:
  *  - a set of every authenticated session id;
  *  - a set of session ids per user;
- *  - `session → user`, plus a short-lived `session is alive` heartbeat key.
+ *  - `session → user`, plus a short-lived `session is alive` heartbeat key;
+ *  - `session → connection`: which connection holds it. A reconnect reuses the
+ *    session id, and the previous connection — on another node its loop can
+ *    still be refreshing — must not erase or take back the new one's
+ *    registration: opening a stream claims the session, while a refresh and an
+ *    unregister write only while the token is still their own, atomically.
  *
  * The heartbeat is what makes the index self-healing. Membership in the sets is
  * never trusted on its own: {@see filterActive()} treats a session as real only
@@ -46,6 +52,62 @@ final class SseAuthSessionMap
     private const USER_SESSIONS_PREFIX = 'semitexa_sse_auth_user:';
     private const SESSION_USER_PREFIX = 'semitexa_sse_auth_session:';
     private const ACTIVE_SESSION_PREFIX = 'semitexa_sse_active_session:';
+    private const SESSION_CONNECTION_PREFIX = 'semitexa_sse_auth_connection:';
+    /**
+     * What an unregister leaves as the owner: a value no connection token equals,
+     * kept longer than a stream may live (max age 600 s), so a stream superseded
+     * and closed meanwhile is refused instead of re-registering. A claim — the
+     * next stream to open — overwrites it.
+     */
+    private const CLOSED_OWNER = 'closed';
+    private const CLOSED_OWNER_TTL_SECONDS = 900;
+
+    /**
+     * KEYS: connection, all sessions, the user's sessions, session→user. ARGV:
+     * the caller's token ('' = no owner), '1' to claim the session whoever held
+     * it, the session id, the user id, the TTL.
+     */
+    private const REGISTER_SCRIPT = <<<'LUA'
+        if ARGV[1] ~= '' then
+            local owner = redis.call('GET', KEYS[1])
+            if ARGV[2] ~= '1' and owner and owner ~= ARGV[1] then
+                return 0
+            end
+            redis.call('SETEX', KEYS[1], ARGV[5], ARGV[1])
+        end
+        local previous = redis.call('GET', KEYS[4])
+        if previous and previous ~= '' and previous ~= ARGV[4] then
+            redis.call('SREM', ARGV[6] .. previous, ARGV[3])
+        end
+        redis.call('SADD', KEYS[2], ARGV[3])
+        redis.call('SADD', KEYS[3], ARGV[3])
+        redis.call('SETEX', KEYS[4], ARGV[5], ARGV[4])
+        redis.call('EXPIRE', KEYS[2], ARGV[5])
+        redis.call('EXPIRE', KEYS[3], ARGV[5])
+        return 1
+        LUA;
+
+    /**
+     * KEYS: connection, session→user, all sessions, alive. ARGV: the caller's
+     * token ('' = no comparison), the per-user set prefix, the session id.
+     */
+    private const UNREGISTER_SCRIPT = <<<'LUA'
+        local owner = redis.call('GET', KEYS[1])
+        if ARGV[1] ~= '' and owner and owner ~= ARGV[1] then
+            return 0
+        end
+        local user = redis.call('GET', KEYS[2])
+        if user and user ~= '' then
+            redis.call('SREM', ARGV[2] .. user, ARGV[3])
+        end
+        redis.call('SREM', KEYS[3], ARGV[3])
+        redis.call('DEL', KEYS[2], KEYS[4])
+        redis.call('SETEX', KEYS[1], ARGV[4], ARGV[5])
+        return 1
+        LUA;
+
+    /** @var \WeakMap<object, string>|null each connection's token */
+    private ?\WeakMap $tokens = null;
 
     /**
      * How often a live stream refreshes its liveness key. Must stay comfortably
@@ -54,7 +116,14 @@ final class SseAuthSessionMap
      */
     public const TOUCH_INTERVAL_SECONDS = 30;
 
-    public function __construct(private readonly SseRedisPool $pool)
+    /**
+     * @param null|\Closure(): SessionHandlerInterface $sessionHandlerFactory how session data is
+     *        read; null = Redis, or the Swoole table when Redis is absent
+     */
+    public function __construct(
+        private readonly SseRedisPool $pool,
+        private readonly ?\Closure $sessionHandlerFactory = null,
+    )
     {
     }
 
@@ -73,6 +142,21 @@ final class SseAuthSessionMap
         return self::ACTIVE_SESSION_PREFIX . trim($sessionId);
     }
 
+    public static function sessionConnectionKey(string $sessionId): string
+    {
+        return self::SESSION_CONNECTION_PREFIX . trim($sessionId);
+    }
+
+    private function tokenFor(?object $connection): string
+    {
+        if ($connection === null) {
+            return '';
+        }
+        $this->tokens ??= new \WeakMap();
+
+        return $this->tokens[$connection] ??= bin2hex(random_bytes(8));
+    }
+
     /**
      * Read the authenticated user id off the request's session cookie.
      *
@@ -81,6 +165,12 @@ final class SseAuthSessionMap
      * Any failure to read the session is treated as "not authenticated".
      */
     public function resolveUserId(Request $request): string
+    {
+        return $this->readUserId($request) ?? '';
+    }
+
+    /** @return string|null the user id, '' for a guest, null when the session could not be read */
+    private function readUserId(Request $request): ?string
     {
         $cookieName = Environment::getEnvValue('SESSION_COOKIE_NAME') ?? 'semitexa_session';
         $cookie = is_array($request->cookie) ? $request->cookie : [];
@@ -93,7 +183,7 @@ final class SseAuthSessionMap
         try {
             $data = $this->createSessionHandler()->read($sessionId);
         } catch (\Throwable) {
-            return '';
+            return null;
         }
 
         $userId = $data[self::AUTH_SESSION_USER_KEY] ?? null;
@@ -108,66 +198,123 @@ final class SseAuthSessionMap
 
     public function createSessionHandler(): SessionHandlerInterface
     {
+        if ($this->sessionHandlerFactory !== null) {
+            return ($this->sessionHandlerFactory)();
+        }
         $pool = $this->pool->get();
 
         return $pool !== null ? new RedisSessionHandler($pool) : new SwooleTableSessionHandler();
     }
 
-    public function register(string $sessionId, string $userId): void
+    /**
+     * @param object|null $connection the stream's response; null registers without an owner
+     * @param bool $claim true when the stream opens (it takes the session over); false
+     *                    on a refresh, which writes only while the session is still its own
+     * @return bool whether the registration was written
+     */
+    public function register(string $sessionId, string $userId, ?object $connection = null, bool $claim = true): bool
     {
         $pool = $this->pool->get();
         if ($pool === null) {
-            return;
+            return false;
         }
 
         $sessionId = trim($sessionId);
         $userId = trim($userId);
         if ($sessionId === '' || $userId === '') {
-            return;
+            return false;
         }
 
+        $token = $this->tokenFor($connection);
         try {
-            $pool->withConnection(static function ($redis) use ($sessionId, $userId): void {
-                /** @var Client $redis */
-                $redis->sadd(self::ALL_SESSIONS_KEY, [$sessionId]);
-                $redis->sadd(self::userSessionsKey($userId), [$sessionId]);
-                $redis->setex(self::sessionUserKey($sessionId), self::AUTH_SESSION_TTL_SECONDS, $userId);
-                $redis->expire(self::ALL_SESSIONS_KEY, self::AUTH_SESSION_TTL_SECONDS);
-                $redis->expire(self::userSessionsKey($userId), self::AUTH_SESSION_TTL_SECONDS);
-            });
+            // One script, so an unregister cannot land between the owner check and the writes.
+            // A non-claim write is refused by any other owner — including the tombstone
+            // an unregister leaves, so a stream whose session a reconnect claimed and
+            // closed cannot write itself back. A missing owner key (Redis lost it, or the
+            // register at open failed) still heals on the next refresh.
+            // A session moving to another user leaves the previous user's set here too.
+            return $pool->withConnection(static fn ($redis): bool => Row::asInt($redis->eval(
+                self::REGISTER_SCRIPT,
+                4,
+                self::sessionConnectionKey($sessionId),
+                self::ALL_SESSIONS_KEY,
+                self::userSessionsKey($userId),
+                self::sessionUserKey($sessionId),
+                $token,
+                $claim ? '1' : '0',
+                $sessionId,
+                $userId,
+                (string) self::AUTH_SESSION_TTL_SECONDS,
+                self::USER_SESSIONS_PREFIX,
+            )) === 1);
         } catch (\Throwable $e) {
             $this->logFailure('Failed to register authenticated SSE session', $e, ['session_id' => $sessionId]);
+
+            return false;
         }
     }
 
-    public function unregister(string $sessionId): void
+    /**
+     * @param object|null $connection the stream's response; null removes the session whoever registered it
+     * @return bool whether the session was removed (false: another connection holds it, or Redis failed)
+     */
+    public function unregister(string $sessionId, ?object $connection = null): bool
     {
         $pool = $this->pool->get();
         if ($pool === null) {
-            return;
+            return false;
         }
 
         $sessionId = trim($sessionId);
         if ($sessionId === '') {
-            return;
+            return false;
         }
 
+        $token = $this->tokenFor($connection);
         try {
-            $pool->withConnection(static function ($redis) use ($sessionId): void {
-                /** @var Client $redis */
-                // Resolve the owner first: without it the per-user set would keep
-                // a member pointing at a session that no longer exists.
-                $userId = trim((string) ($redis->get(self::sessionUserKey($sessionId)) ?? ''));
-                if ($userId !== '') {
-                    $redis->srem(self::userSessionsKey($userId), $sessionId);
-                }
-                $redis->srem(self::ALL_SESSIONS_KEY, $sessionId);
-                $redis->del(self::sessionUserKey($sessionId));
-                $redis->del(self::activeSessionKey($sessionId));
-            });
+            // One script: the owner check and the deletes cannot be split by a
+            // reconnect's register. The user is resolved inside it, so the
+            // per-user set does not keep a member for a session that is gone.
+            return $pool->withConnection(static fn ($redis): bool => Row::asInt($redis->eval(
+                self::UNREGISTER_SCRIPT,
+                4,
+                self::sessionConnectionKey($sessionId),
+                self::sessionUserKey($sessionId),
+                self::ALL_SESSIONS_KEY,
+                self::activeSessionKey($sessionId),
+                $token,
+                self::USER_SESSIONS_PREFIX,
+                $sessionId,
+                (string) self::CLOSED_OWNER_TTL_SECONDS,
+                self::CLOSED_OWNER,
+            )) === 1);
         } catch (\Throwable $e) {
             $this->logFailure('Failed to unregister authenticated SSE session', $e, ['session_id' => $sessionId]);
+
+            return false;
         }
+    }
+
+    /**
+     * A stream opened on this session id: a signed-in one claims the session, a
+     * guest one drops whatever mapping an earlier connection of the tab left.
+     */
+    public function opened(string $sessionId, string $userId, ?object $connection): void
+    {
+        $userId === '' ? $this->forgetForGuest($sessionId) : $this->register($sessionId, $userId, $connection);
+    }
+
+    /**
+     * A guest stream opened on this session id: whatever auth mapping it still
+     * has belongs to an earlier connection of the same tab, whose user is no
+     * longer signed in here. Removed whoever registered it — that connection's
+     * teardown leaves it once it is superseded, and the guest's own teardown is
+     * not the owner — or the old user's fan-out reaches this stream until the
+     * mapping expires.
+     */
+    public function forgetForGuest(string $sessionId): void
+    {
+        $this->unregister($sessionId);
     }
 
     /**
@@ -200,29 +347,36 @@ final class SseAuthSessionMap
      *
      * Covers the two ways a long-lived stream can drift from its identity: the
      * user logged out (drop the mapping), or a different user is now on the same
-     * connection (drop the old mapping before claiming the new one — otherwise
-     * the previous user keeps a set member pointing at a stream that is now
-     * somebody else's, and a fan-out to them would deliver across accounts).
+     * connection (the register moves the session off the old user in the same
+     * script — otherwise the previous user keeps a set member pointing at a
+     * stream that is now somebody else's, and a fan-out to them would deliver
+     * across accounts).
      *
      * @return string the currently authenticated user id, or `''` if none.
      */
-    public function refresh(Request $request, string $sessionId, string $knownUserId): string
+    public function refresh(Request $request, string $sessionId, string $knownUserId, ?object $connection = null): string
     {
-        $currentUserId = $this->resolveUserId($request);
+        $currentUserId = $this->readUserId($request);
+        // A read that failed says nothing about who is signed in: leave the
+        // mapping as it is. Read as a logout, it tombstoned a signed-in stream
+        // out of its user's fan-out for the rest of its life.
+        if ($currentUserId === null) {
+            return $knownUserId;
+        }
 
         if ($currentUserId === '') {
             if ($knownUserId !== '') {
-                $this->unregister($sessionId);
+                $this->unregister($sessionId, $connection);
             }
 
             return '';
         }
 
-        if ($knownUserId !== '' && $currentUserId !== $knownUserId) {
-            $this->unregister($sessionId);
-        }
-
-        $this->register($sessionId, $currentUserId);
+        // Same user or another one on this connection: one write, which moves the
+        // session off the previous user and refuses when this connection no longer
+        // owns it. Unregistering first left a gap a reconnect could claim and close
+        // in, after which this stream wrote itself back as live.
+        $this->register($sessionId, $currentUserId, $connection, claim: false);
 
         return $currentUserId;
     }

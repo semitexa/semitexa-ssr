@@ -114,21 +114,21 @@ final class SseWorkerTables
     public function recordOwnership(string $sessionId, ?object $connection = null): void
     {
         // Table::set merges columns, so a claim that names no connection clears the token.
-        $row = ['worker_id' => $this->currentWorkerId(), 'connection' => '', 'opened_at_ms' => 0];
+        $row = ['worker_id' => $this->currentWorkerId(), 'connection' => '', 'opened_seq' => 0];
         if ($connection !== null) {
             $token = bin2hex(random_bytes(8));
             $this->connections ??= new \WeakMap();
             $this->connections[$connection] = $token;
-            $row = ['connection' => $token, 'opened_at_ms' => SubscriptionTable::nowMs()] + $row;
+            $row = ['connection' => $token, 'opened_seq' => SseOrder::next()] + $row;
         }
         $this->sessionWorker?->set(self::tableKey($sessionId), $row);
     }
 
     /**
-     * When a newer connection took this session over, the moment it opened
-     * (milliseconds); null while the session is still this connection's, or
-     * when nothing recorded who owns it. A superseded connection's teardown
-     * reaps only rows older than that moment and leaves the session's
+     * When a newer connection took this session over, its {@see SseOrder}
+     * number; null while the session is still this connection's, or when
+     * nothing recorded who owns it. A superseded connection's teardown reaps
+     * only rows numbered before it and leaves the session's
      * ownership, auth mapping and live state to the connection holding them.
      */
     public function supersededAt(string $sessionId, object $connection): ?int
@@ -141,7 +141,7 @@ final class SseWorkerTables
         $owner = Row::of($row);
         $current = $owner->string('connection');
 
-        return $current === '' || $current === $mine ? null : $owner->int('opened_at_ms');
+        return $current === '' || $current === $mine ? null : $owner->int('opened_seq');
     }
 
     /**

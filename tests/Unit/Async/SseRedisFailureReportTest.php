@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Tests\Unit\Async;
 
+use PHPUnit\Framework\Attributes\RequiresPhpExtension;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Predis\Connection\ConnectionException;
 use Predis\Connection\NodeConnectionInterface;
+use Semitexa\Core\Lifecycle\WorkerDrainSignal;
 use Semitexa\Core\Log\LoggerInterface;
 use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Core\Redis\RedisUnavailableException;
@@ -81,6 +83,36 @@ final class SseRedisFailureReportTest extends TestCase
         }
 
         self::assertSame([], $this->lines);
+    }
+
+    /**
+     * A leaving worker's drain cancels the SSE loops parked on Redis, and each
+     * read fails with "Coroutine canceled". Logged as errors, those lines were
+     * the burst the leaving worker's logger was still writing when Swoole killed
+     * it at max_wait_time, with the requests it was answering (the 72h soak,
+     * 2026-10-19: 40 such lines in five minutes of recycles). A real failure in
+     * a request the drain spares is still logged.
+     */
+    #[Test]
+    #[RequiresPhpExtension('swoole')]
+    public function a_call_the_drain_cancelled_is_not_logged_but_a_real_failure_is(): void
+    {
+        $failure = fn (string $why) => new ConnectionException($this->createMock(NodeConnectionInterface::class), $why);
+        WorkerDrainSignal::begin();
+        try {
+            \Swoole\Coroutine\run(function () use ($failure): void {
+                $cid = \Swoole\Coroutine::create(static function () use ($failure): void {
+                    \Swoole\Coroutine::sleep(5);
+                    SseRedisSessionQueue::reportFailure('Redis SSE dequeue failed', $failure('Coroutine canceled [tcp://redis:6379]'));
+                });
+                \Swoole\Coroutine::cancel($cid);
+            });
+            SseRedisSessionQueue::reportFailure('Redis SSE enqueue failed', $failure('Connection refused'));
+        } finally {
+            WorkerDrainSignal::reset();
+        }
+
+        self::assertSame(['Redis SSE enqueue failed: Connection refused'], $this->lines);
     }
 
     #[Test]

@@ -136,10 +136,11 @@ final class SubscriptionStoreTest extends TestCase
         $columns = SubscriptionTable::schemaColumns();
         self::assertSame(
             // `connected_at` is a bare epoch INT (the orphan-sweep staleness basis)
-            // and `subscribed_at_ms` a bare millisecond INT (which connection a row
+            // and `subscribed_seq` a bare SseOrder INT (which connection a row
             // belongs to after a reconnect): neither is identity nor an object, so
             // the invariant is unaffected.
-            ['streaming_id', 'session_id', 'tenant_id', 'scope_keys', 'tenant_blob', 'connected_at', 'subscribed_at_ms'],
+            // verify:accept-test-change connection order is an SseOrder number now, not milliseconds (tk-sse-teardown-ownership-sequence)
+            ['streaming_id', 'session_id', 'tenant_id', 'scope_keys', 'tenant_blob', 'connected_at', 'subscribed_seq'],
             $columns,
         );
         foreach ($columns as $column) {

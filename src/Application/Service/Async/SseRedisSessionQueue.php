@@ -6,6 +6,7 @@ namespace Semitexa\Ssr\Application\Service\Async;
 
 use Predis\Client;
 use Semitexa\Core\Log\StaticLoggerBridge;
+use Semitexa\Core\Redis\RedisCircuitBreaker;
 use Semitexa\Core\Redis\RedisUnavailableException;
 
 /**
@@ -231,12 +232,21 @@ final class SseRedisSessionQueue
      * call. It already logged the outage once when it opened and will log the
      * recovery; repeating it here, from every open session every 0.2 s tick,
      * is how one outage became 1174 lines (606 in one second, 2026-10-14).
+     * Nor a call the exit drain cancelled: that failure is the drain's own.
      *
      * @param array<string, mixed> $context
      */
     public static function reportFailure(string $message, \Throwable $e, array $context = []): void
     {
         if ($e instanceof RedisUnavailableException) {
+            return;
+        }
+        // A leaving worker cancels the SSE loops parked on Redis, and each read
+        // then fails as if the connection were lost. Not a failure to report
+        // (a real one, in a request the drain spares, still is):
+        // logged as errors, they were the burst the leaving worker's logger was
+        // still writing when it was killed at max_wait_time (the 72h soak, 2026-10-19).
+        if (RedisCircuitBreaker::cancelledByDrain($e)) {
             return;
         }
         StaticLoggerBridge::error('ssr', $message, $context + [

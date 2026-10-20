@@ -29,7 +29,8 @@ namespace Semitexa\Ssr\Domain\Model;
  *    never interprets it; R2's re-establishment (`fromQueuePayload`) does. It is
  *    here, not in the worker-local registry, precisely because this row is read
  *    cross-worker.
- *  - {@see $subscribedAtMs} — when the row was written, in milliseconds. A
+ *  - {@see $subscribedSeq} — when the row was written, as a number from
+ *    {@see \Semitexa\Ssr\Application\Service\Async\SseOrder}. A
  *    connection that closes after its session was taken over by a newer one
  *    reaps only the rows older than that connection (see
  *    {@see \Semitexa\Ssr\Application\Service\Async\SseWorkerTables::supersededAt()}).
@@ -48,7 +49,7 @@ final readonly class SubscriptionRecord
         public string $tenantId,
         public array $scopeKeys,
         public string $tenantBlob,
-        public int $subscribedAtMs = 0,
+        public int $subscribedSeq = 0,
     ) {}
 
     public function watchesScope(string $scopeKey): bool

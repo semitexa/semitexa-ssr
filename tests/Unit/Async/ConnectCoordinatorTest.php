@@ -15,6 +15,7 @@ use Semitexa\Ssr\Application\Service\Async\ResourceInvalidationPublisher;
 use Semitexa\Ssr\Application\Service\Async\ResourceInvalidationSubscriber;
 use Semitexa\Ssr\Application\Service\Async\ScanningSubscriberIndex;
 use Semitexa\Ssr\Application\Service\Async\SubscriptionDtoRegistry;
+use Semitexa\Ssr\Application\Service\Async\SseOrder;
 use Semitexa\Ssr\Application\Service\Async\SubscriptionTable;
 use Semitexa\Ssr\Application\Service\Server\Lifecycle\CreateTrackRTablesListener;
 use Semitexa\Ssr\Application\Service\Server\Lifecycle\TrackRSharedTables;
@@ -154,9 +155,10 @@ final class ConnectCoordinatorTest extends TestCase
         // The old connection's two subscriptions.
         $coordinator->onConnect($this->record('str_old', 'sse_session_a', 'default', ['lead_submission']), $this->reRunContext('sse_session_a'));
         $coordinator->onConnect($this->record('str_kept', 'sse_session_a', 'default', ['lead_submission']), $this->reRunContext('sse_session_a'));
-        usleep(3000);
-        $newConnectionOpenedAt = SubscriptionTable::nowMs();
-        usleep(3000);
+        // verify:accept-test-change connection order is an SseOrder number now, not milliseconds (tk-sse-teardown-ownership-sequence)
+        // and with no pause around the claim: a millisecond stamp tied the old
+        // rows with it in this very sequence, and the teardown kept them.
+        $newConnectionOpenedAt = SseOrder::next();
         // After the reconnect the page subscribes again: one id is reused (the
         // row is replaced and re-stamped), one is new.
         $coordinator->onConnect($this->record('str_kept', 'sse_session_a', 'default', ['lead_submission']), $this->reRunContext('sse_session_a'));

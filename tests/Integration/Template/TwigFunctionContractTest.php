@@ -181,6 +181,11 @@ final class TwigFunctionContractTest extends TestCase
                 'cms_seo',
                 'cms_seo_head',
             ],
+            // A page written as blocks, printed: decodes the stored field and
+            // requires the default block stylesheet when a block has a layout.
+            'Semitexa\\Cms\\Application\\Service\\Twig\\ContentBlocksTwigExtension' => [
+                'cms_blocks',
+            ],
         ];
     }
 

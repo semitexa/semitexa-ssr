@@ -241,7 +241,11 @@ final class ModuleTemplateCatalog
             'cache' => $cacheDir ?? false,
             'auto_reload' => true,
             'strict_variables' => false,
-            'autoescape' => 'html',
+            // By extension: .txt templates (mail subjects and text bodies)
+            // were HTML-escaped, so "O'Brien" arrived as "O&#039;Brien".
+            // .js/.json get 'js', .css 'css', everything else 'html'. The
+            // compiled cache keeps the old escaping until cache:clear.
+            'autoescape' => 'name',
         ]);
 
         $this->registerFunctions();

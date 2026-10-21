@@ -90,6 +90,15 @@ final class LocaleTwigExtension
             return $path;
         }
 
+        // A path that already carries a locale has it replaced, not stacked:
+        // locale_url('/uk/a', 'uk') returned /uk/uk/a. The prefix ends at a
+        // slash, a query or a fragment ('/uk?x=1').
+        if (preg_match('~^/?([^/?#]+)(.*)$~s', $path, $m) === 1
+            && in_array($m[1], self::supportedLocales(), true)
+        ) {
+            $path = '/' . ltrim($m[2], '/');
+        }
+
         if ($locale === LocaleContextStore::getDefaultLocale()) {
             return $path;
         }

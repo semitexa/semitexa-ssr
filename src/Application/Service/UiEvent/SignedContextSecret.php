@@ -18,9 +18,38 @@ use Semitexa\Core\Security\AppSecret;
  */
 final class SignedContextSecret
 {
+    private const PURPOSE = 'ssr.signed-context';
+
+    /** The raw APP_SECRET. Component state keys (platform-ui) still use it. */
     public static function resolve(): string
     {
         // The rule lives in core now, shared with encryption and signed URLs.
         return AppSecret::current();
+    }
+
+    /** The key a new context is signed with: APP_SECRET's own for this purpose. */
+    public static function signingKey(): string
+    {
+        return AppSecret::derive(AppSecret::current(), self::PURPOSE);
+    }
+
+    /**
+     * Every key a context may carry, the signing key first. Contexts were
+     * signed with the raw APP_SECRET and APP_SECRET_PREVIOUS was never read:
+     * rotating the secret failed every click on every open page (refresh
+     * contexts live a day). The previous secrets verify now, and so does the
+     * raw-secret signature of a page opened before this release — drop those
+     * once no such page can be open.
+     *
+     * @return non-empty-list<string>
+     */
+    public static function verifyingKeys(): array
+    {
+        $secrets = [AppSecret::current(), ...AppSecret::previous()];
+
+        return [
+            ...array_map(static fn (string $secret): string => AppSecret::derive($secret, self::PURPOSE), $secrets),
+            ...$secrets,
+        ];
     }
 }

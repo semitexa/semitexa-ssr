@@ -54,4 +54,23 @@ final class LocaleUrlTest extends TestCase
         $this->assertSame('/uk/?x=1', $extension->localeUrl('/uk?x=1', 'uk'));
         $this->assertSame('/?x=1', $extension->localeUrl('/uk?x=1', 'en'));
     }
+
+    /** `/uk/\evil.com` became `/\evil.com`, which a browser reads as `//evil.com`. */
+    #[Test]
+    public function stripping_a_prefix_never_leaves_a_path_to_another_host(): void
+    {
+        $extension = new LocaleTwigExtension();
+
+        $this->assertSame('/evil.com', $extension->localeUrl('/uk/\\evil.com', 'en'));
+        $this->assertSame('/evil.com', $extension->localeUrl("/uk/\t/evil.com", 'en'));
+        $this->assertSame('/de/evil.com', $extension->localeUrl('/uk/\\evil.com', 'de'));
+        // The switcher strips the prefix of the request's own path: on
+        // `/uk//evil.com` it linked to `//evil.com`.
+        $this->assertSame('/evil.com', $extension->localeUrl('/uk//evil.com', 'en'));
+        $this->assertSame('/evil.com', $extension->localeUrl('//evil.com', 'en'));
+        $this->assertSame('https://example.com/a', $extension->localeUrl('https://example.com/a', 'en'), 'a full URL is left alone');
+        $this->assertSame('/evil.com', $extension->localeUrl("\t//evil.com", 'en'), 'a browser drops leading whitespace');
+        $this->assertSame('/uk/x', $extension->localeUrl('//uk/x', 'uk'), 'cleaned before the prefix is read: not stacked');
+        $this->assertSame('/x', $extension->localeUrl('//uk/x', 'en'));
+    }
 }

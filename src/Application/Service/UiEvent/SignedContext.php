@@ -40,9 +40,10 @@ final class SignedContext
 
         // Bound to the session and tenant it was minted for (when a request is
         // running): replaying it from another session or tenant is refused.
+        $key = SignedContextSecret::signingKey();
         $binding = SignedContextBinding::current();
         if ($binding !== null) {
-            $claims['sb'] = self::sessionDigest($binding['s']);
+            $claims['sb'] = self::sessionDigest($binding['s'], $key);
             $claims['tn'] = $binding['t'];
         }
 
@@ -52,7 +53,7 @@ final class SignedContext
         );
 
         $payload = self::VERSION . '.' . self::base64UrlEncode($json);
-        $mac = hash_hmac('sha256', $payload, SignedContextSecret::resolve(), true);
+        $mac = hash_hmac('sha256', $payload, $key, true);
 
         return $payload . '.' . self::base64UrlEncode($mac);
     }
@@ -111,15 +112,23 @@ final class SignedContext
         $payload = $version . '.' . $claimsB64;
 
         try {
-            $secret = SignedContextSecret::resolve();
+            $keys = SignedContextSecret::verifyingKeys();
         } catch (\LogicException) {
             return null;
         }
 
-        $expectedMac = hash_hmac('sha256', $payload, $secret, true);
-
         $providedMac = self::base64UrlDecode($macB64);
-        if ($providedMac === null || !hash_equals($expectedMac, $providedMac)) {
+        if ($providedMac === null) {
+            return null;
+        }
+        $key = null;
+        foreach ($keys as $candidate) {
+            if (hash_equals(hash_hmac('sha256', $payload, $candidate, true), $providedMac)) {
+                $key = $candidate;
+                break;
+            }
+        }
+        if ($key === null) {
             return null;
         }
 
@@ -143,7 +152,7 @@ final class SignedContext
             return null;
         }
 
-        if (!self::belongsToCurrentRequest($claims)) {
+        if (!self::belongsToCurrentRequest($claims, $key)) {
             return null;
         }
 
@@ -158,7 +167,7 @@ final class SignedContext
      *
      * @param array<array-key, mixed> $claims
      */
-    private static function belongsToCurrentRequest(array $claims): bool
+    private static function belongsToCurrentRequest(array $claims, string $key): bool
     {
         if (!array_key_exists('sb', $claims) && !array_key_exists('tn', $claims)) {
             return true;
@@ -169,14 +178,17 @@ final class SignedContext
         }
 
         return is_string($claims['sb'] ?? null)
-            && hash_equals(self::sessionDigest($binding['s']), $claims['sb'])
+            && hash_equals(self::sessionDigest($binding['s'], $key), $claims['sb'])
             && ($claims['tn'] ?? null) === $binding['t'];
     }
 
-    /** The session id never travels in the clear: a keyed digest of it does. */
-    private static function sessionDigest(string $sessionId): string
+    /**
+     * The session id never travels in the clear: a digest of it, keyed like
+     * the signature that covers it.
+     */
+    private static function sessionDigest(string $sessionId, string $key): string
     {
-        return substr(hash_hmac('sha256', 'session:' . $sessionId, SignedContextSecret::resolve()), 0, 32);
+        return substr(hash_hmac('sha256', 'session:' . $sessionId, $key), 0, 32);
     }
 
     private static function base64UrlEncode(string $value): string

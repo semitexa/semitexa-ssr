@@ -21,8 +21,9 @@ use Semitexa\Ssr\Attribute\AsTwigExtension;
  * canonical URL of a page in the site's own language is the bare path, and
  * emitting `/en/about` alongside `/about` would split every page in two for
  * search engines. And URL prefixing can be off entirely, in which case these
- * functions must return the path untouched rather than invent a scheme the
- * router does not serve.
+ * functions must return the path without a prefix rather than invent a scheme
+ * the router does not serve — cleaned only of what would point a browser at
+ * another site (see onThisSite()).
  *
  * Supported locales are read from {@see LocaleContextStore} first because they
  * are per-tenant and resolved for THIS request; the boot-frozen
@@ -86,6 +87,8 @@ final class LocaleTwigExtension
 
     private static function withLocalePrefix(string $path, string $locale): string
     {
+        // Cleaned first: `//uk/x` kept another locale's prefix, and stacked one.
+        $path = self::onThisSite($path);
         if (!LocaleContextStore::isUrlPrefixEnabled()) {
             return $path;
         }
@@ -96,14 +99,34 @@ final class LocaleTwigExtension
         if (preg_match('~^/?([^/?#]+)(.*)$~s', $path, $m) === 1
             && in_array($m[1], self::supportedLocales(), true)
         ) {
-            $path = '/' . ltrim($m[2], '/');
+            $path = '/' . $m[2];
         }
 
         if ($locale === LocaleContextStore::getDefaultLocale()) {
+            return self::onThisSite($path);
+        }
+
+        return '/' . $locale . self::onThisSite('/' . $path);
+    }
+
+    /**
+     * A path that starts at the root keeps one leading slash. A browser reads
+     * `//host`, `/\host` and `/<tab>/host` as another site: the language
+     * switcher on `/uk//evil.com` linked to `//evil.com`, and stripping a
+     * prefix turned `/uk/\evil.com` into `/\evil.com`. Leading spaces,
+     * which a browser drops too, go first. So a protocol-relative URL
+     * (`//cdn.example.com/a.js`) becomes a path on this site: pass a full
+     * URL instead. A full URL (`https://…`) or a relative path is left as it
+     * is when no prefix is added.
+     */
+    private static function onThisSite(string $path): string
+    {
+        $trimmed = ltrim($path, " \t\r\n");
+        if ($trimmed === '' || !in_array($trimmed[0], ['/', '\\'], true)) {
             return $path;
         }
 
-        return '/' . $locale . '/' . ltrim($path, '/');
+        return '/' . ltrim($trimmed, "/\\\t\r\n");
     }
 
     /**

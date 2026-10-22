@@ -21,6 +21,7 @@ final class SignedContextTest extends TestCase
             'APP_NAME' => getenv('APP_NAME'),
             'APP_HOST' => getenv('APP_HOST'),
             'APP_PORT' => getenv('APP_PORT'),
+            'APP_SECRET_PREVIOUS' => getenv('APP_SECRET_PREVIOUS'),
         ];
 
         $_ENV['APP_SECRET'] = 'test-secret-' . bin2hex(random_bytes(8));
@@ -123,5 +124,54 @@ final class SignedContextTest extends TestCase
         // strip iat/exp which depend on time
         unset($aClaims['iat'], $aClaims['exp'], $bClaims['iat'], $bClaims['exp']);
         self::assertSame($aClaims, $bClaims);
+    }
+
+    /**
+     * APP_SECRET_PREVIOUS was never read: rotating the secret, as the doctor
+     * advises, failed every click on every page already open.
+     */
+    #[Test]
+    public function a_context_signed_before_a_rotation_still_verifies(): void
+    {
+        $old = $_ENV['APP_SECRET'];
+        $blob = SignedContext::sign(['c' => 'demo']);
+
+        $this->setSecret('rotated-' . bin2hex(random_bytes(8)));
+        self::assertNull(SignedContext::verify($blob), 'without the old secret listed it is refused');
+
+        $this->setEnv('APP_SECRET_PREVIOUS', $old);
+        self::assertSame('demo', SignedContext::verify($blob)['c'] ?? null);
+    }
+
+    /** New contexts are signed with the purpose's own key, not the raw secret. */
+    #[Test]
+    public function a_new_context_is_signed_with_the_derived_key(): void
+    {
+        [$version, $claims, $mac] = explode('.', SignedContext::sign(['c' => 'demo']));
+        $expected = hash_hmac('sha256', $version . '.' . $claims, \Semitexa\Core\Security\AppSecret::derive((string) $_ENV['APP_SECRET'], 'ssr.signed-context'), true);
+
+        self::assertSame(rtrim(strtr(base64_encode($expected), '+/', '-_'), '='), $mac);
+    }
+
+    /** A page opened before this release carries a context signed with the raw secret. */
+    #[Test]
+    public function a_context_signed_with_the_raw_secret_still_verifies(): void
+    {
+        $payload = SignedContext::VERSION . '.' . rtrim(strtr(base64_encode((string) json_encode(['c' => 'demo', 'exp' => time() + 60, 'iat' => time()])), '+/', '-_'), '=');
+        $blob = $payload . '.' . rtrim(strtr(base64_encode(hash_hmac('sha256', $payload, (string) $_ENV['APP_SECRET'], true)), '+/', '-_'), '=');
+
+        self::assertSame('demo', SignedContext::verify($blob)['c'] ?? null);
+    }
+
+    private function setSecret(string $secret): void
+    {
+        $this->setEnv('APP_SECRET', $secret);
+    }
+
+    private function setEnv(string $key, string $value): void
+    {
+        $_ENV[$key] = $value;
+        $_SERVER[$key] = $value;
+        putenv($key . '=' . $value);
     }
 }

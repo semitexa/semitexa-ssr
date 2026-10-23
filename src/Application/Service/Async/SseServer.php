@@ -526,6 +526,7 @@ final class SseServer implements FeedStreamSinkInterface
         $this->flushBacklog($sessionId, $response);
 
         if ($this->drainRedisQueueForSession($sessionId, $response)) {
+            \Semitexa\Core\Server\InFlightRequests::tearDownAfterDrain(); // a re-run on a draining worker ends here: spare the teardown
             $close();
             return;
         }
@@ -1742,12 +1743,11 @@ final class SseServer implements FeedStreamSinkInterface
      * marker this:
      *   1. resolves the worker-local {@see ReRunContext} by `streaming_id`
      *      (R1 tier-2, {@see SubscriptionDtoRegistry});
-     *   2. re-runs the full handler chain auth-first via R2's {@see ReRunnerInterface};
+     *   2. clears the coalescer mark BEFORE the re-run reads (a write while it
+     *      runs arms another), then re-runs the chain auth-first (R2);
      *   3. on a fresh frame → writes it to this stream; on TERMINATE → returns
      *      HANDLED_CLOSE after emitting a close frame and NO data frame (the
-     *      lost-access path, §B.3);
-     *   4. clears the coalescer mark (R3's {@see RerunCoalescer::clearPending()})
-     *      after EITHER outcome, so the next mutation's signal re-arms.
+     *      lost-access path, §B.3); on a worker drain → HANDLED_CLOSE too.
      *
      * CROSS-WORKER CORRECTNESS (§C3, the decisive edge): the control rides the
      * session-addressed queue, so the OWNING worker drains it and finds its

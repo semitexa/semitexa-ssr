@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Semitexa\Core\Lifecycle\WorkerDrainSignal;
 use Semitexa\Core\Server\PageTimeline;
 use Semitexa\Core\Support\Row;
 use Semitexa\Core\HttpResponse;
@@ -149,10 +150,20 @@ final class SseControlRouter
             return SseControlFrame::HANDLED_CONTINUE;
         }
 
-        $outcome = $this->dispatchReRun($streamingId, $sessionId, $response, $context, [], true);
+        // Cleared BEFORE the re-run reads anything: cleared after, a mutation
+        // committed while it ran was coalesced into it, and nothing ran again.
+        // Its frame (read before that write) was the last one sent: a live
+        // grid showed again a row deleted meanwhile, and kept it.
         $this->clearPending($streamingId);
+        $outcome = $this->dispatchReRun($streamingId, $sessionId, $response, $context, [], true);
 
-        return $outcome;
+        // Writes faster than one per re-run keep a fresh control queued, so the
+        // loop draining the queue never empties it and never gets back to its
+        // own checks: a worker drain went unseen (the 19.10 forced kill). The
+        // stream ends here as the held-open loop would end it.
+        return $outcome === SseControlFrame::HANDLED_CONTINUE && WorkerDrainSignal::isDraining()
+            ? SseControlFrame::HANDLED_CLOSE
+            : $outcome;
     }
 
     /**

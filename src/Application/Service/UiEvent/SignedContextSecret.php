@@ -20,7 +20,7 @@ final class SignedContextSecret
 {
     private const PURPOSE = 'ssr.signed-context';
 
-    /** The raw APP_SECRET. Component state keys (platform-ui) still use it. */
+    /** The raw APP_SECRET. */
     public static function resolve(): string
     {
         // The rule lives in core now, shared with encryption and signed URLs.

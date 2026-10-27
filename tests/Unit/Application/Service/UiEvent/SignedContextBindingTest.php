@@ -6,6 +6,7 @@ namespace Semitexa\Ssr\Tests\Unit\Application\Service\UiEvent;
 
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+use Semitexa\Core\Queue\QueuedOrigin;
 use Semitexa\Core\Session\Session;
 use Semitexa\Core\Session\SessionHandlerInterface;
 use Semitexa\Ssr\Application\Service\UiEvent\SignedContext;
@@ -55,6 +56,53 @@ final class SignedContextBindingTest extends TestCase
         self::assertNotNull($claims);
         self::assertSame('acme', $claims['tn']);
         self::assertStringNotContainsString(self::SESSION_A, (string) json_encode($claims), 'the session id never travels in the clear');
+    }
+
+    /**
+     * A Queued handler's reply renders in the worker, where nothing is bound:
+     * the contexts in it verified for any session. The queuing request's
+     * binding now travels in the message, as a digest.
+     */
+    #[Test]
+    public function a_context_minted_in_a_queued_job_belongs_to_the_visitor_who_queued_it(): void
+    {
+        SignedContextBinding::bind(self::SESSION_A, 'acme');
+        $origin = QueuedOrigin::capture();
+        self::assertStringNotContainsString(self::SESSION_A, (string) json_encode($origin), 'the session id never travels in the message');
+
+        SignedContextBinding::clear();
+        $ctx = QueuedOrigin::run($origin, static fn (): string => SignedContext::sign(['c' => 'demo', 'i' => 'uci_1']));
+        $outside = (array) json_decode((string) base64_decode(strtr(explode('.', SignedContext::sign(['c' => 'demo']))[1], '-_', '+/')), true);
+        self::assertArrayNotHasKey('sb', $outside, 'outside the job nothing is bound');
+        self::assertArrayNotHasKey('tn', $outside);
+
+        SignedContextBinding::bind(self::SESSION_A, 'acme');
+        self::assertNotNull(SignedContext::verify($ctx));
+        SignedContextBinding::bind(self::SESSION_B, 'acme');
+        self::assertNull(SignedContext::verify($ctx));
+        SignedContextBinding::bind(self::SESSION_A, 'globex');
+        self::assertNull(SignedContext::verify($ctx));
+    }
+
+    /** A job queued under the old secret, its reply signed under the new one. */
+    #[Test]
+    public function a_queued_job_s_context_survives_a_secret_rotation(): void
+    {
+        SignedContextBinding::bind(self::SESSION_A, 'acme');
+        $origin = QueuedOrigin::capture();
+        SignedContextBinding::clear();
+
+        putenv('APP_SECRET=signed-context-binding-test-rotated');
+        putenv('APP_SECRET_PREVIOUS=signed-context-binding-test');
+        try {
+            $ctx = QueuedOrigin::run($origin, static fn (): string => SignedContext::sign(['c' => 'demo', 'i' => 'uci_1']));
+            SignedContextBinding::bind(self::SESSION_A, 'acme');
+            self::assertNotNull(SignedContext::verify($ctx));
+            SignedContextBinding::bind(self::SESSION_B, 'acme');
+            self::assertNull(SignedContext::verify($ctx));
+        } finally {
+            putenv('APP_SECRET_PREVIOUS');
+        }
     }
 
     #[Test]

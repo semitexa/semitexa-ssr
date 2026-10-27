@@ -216,7 +216,11 @@ final class SignedContext
     {
         try {
             return self::boundTo(SignedContextSecret::signingKey());
-        } catch (\Throwable) {
+        } catch (\LogicException) {
+            // No APP_SECRET: nothing is signed either, so there is nothing to
+            // bind. Anything else goes up to QueuedOrigin::capture(), which
+            // logs it: answered with null, the job's reply minted contexts
+            // any session could present, and nobody heard of it.
             return null;
         }
     }

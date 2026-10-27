@@ -30,7 +30,7 @@ final class SignedContextBindingTest extends TestCase
 
     protected function setUp(): void
     {
-        foreach (['APP_SECRET', 'APP_ENV'] as $name) {
+        foreach (['APP_SECRET', 'APP_SECRET_PREVIOUS', 'APP_ENV'] as $name) {
             $this->previousEnv[$name] = getenv($name);
         }
         $this->previousBinding = SignedContextBinding::snapshot();
@@ -68,11 +68,14 @@ final class SignedContextBindingTest extends TestCase
     {
         SignedContextBinding::bind(self::SESSION_A, 'acme');
         $origin = QueuedOrigin::capture();
+        self::assertSame(['sb', 'tn'], array_keys($origin[SignedContext::QUEUED_ORIGIN] ?? []), 'the binding is exported into the message');
+        self::assertSame('acme', $origin[SignedContext::QUEUED_ORIGIN]['tn']);
         self::assertStringNotContainsString(self::SESSION_A, (string) json_encode($origin), 'the session id never travels in the message');
 
         SignedContextBinding::clear();
         $ctx = QueuedOrigin::run($origin, static fn (): string => SignedContext::sign(['c' => 'demo', 'i' => 'uci_1']));
         $outside = (array) json_decode((string) base64_decode(strtr(explode('.', SignedContext::sign(['c' => 'demo']))[1], '-_', '+/')), true);
+        self::assertSame('demo', $outside['c'] ?? null, 'the claims decoded, so the absent keys below mean something');
         self::assertArrayNotHasKey('sb', $outside, 'outside the job nothing is bound');
         self::assertArrayNotHasKey('tn', $outside);
 
@@ -94,15 +97,26 @@ final class SignedContextBindingTest extends TestCase
 
         putenv('APP_SECRET=signed-context-binding-test-rotated');
         putenv('APP_SECRET_PREVIOUS=signed-context-binding-test');
-        try {
-            $ctx = QueuedOrigin::run($origin, static fn (): string => SignedContext::sign(['c' => 'demo', 'i' => 'uci_1']));
-            SignedContextBinding::bind(self::SESSION_A, 'acme');
-            self::assertNotNull(SignedContext::verify($ctx));
-            SignedContextBinding::bind(self::SESSION_B, 'acme');
-            self::assertNull(SignedContext::verify($ctx));
-        } finally {
-            putenv('APP_SECRET_PREVIOUS');
-        }
+        $ctx = QueuedOrigin::run($origin, static fn (): string => SignedContext::sign(['c' => 'demo', 'i' => 'uci_1']));
+        SignedContextBinding::bind(self::SESSION_A, 'acme');
+        self::assertNotNull(SignedContext::verify($ctx));
+        SignedContextBinding::bind(self::SESSION_B, 'acme');
+        self::assertNull(SignedContext::verify($ctx));
+    }
+
+    /**
+     * Only a missing secret means "nothing to bind". Any other failure was
+     * answered the same way, and the job's reply went out bound to nobody.
+     */
+    #[Test]
+    public function a_binding_that_fails_to_read_is_not_taken_for_none(): void
+    {
+        $session = $this->createMock(\Semitexa\Core\Session\SessionInterface::class);
+        $session->method('getId')->willThrowException(new \RuntimeException('session store is down'));
+        SignedContextBinding::bind($session, 'acme');
+
+        $this->expectExceptionObject(new \RuntimeException('session store is down'));
+        SignedContext::queuedBinding();
     }
 
     #[Test]

@@ -113,15 +113,16 @@ final class LocaleTwigExtension
      * A path that starts at the root keeps one leading slash. A browser reads
      * `//host`, `/\host` and `/<tab>/host` as another site: the language
      * switcher on `/uk//evil.com` linked to `//evil.com`, and stripping a
-     * prefix turned `/uk/\evil.com` into `/\evil.com`. Leading spaces,
-     * which a browser drops too, go first. So a protocol-relative URL
+     * prefix turned `/uk/\evil.com` into `/\evil.com`. Leading spaces and
+     * C0 controls, which a browser drops too (`\v//evil.com` is `//evil.com`
+     * to it), go first. So a protocol-relative URL
      * (`//cdn.example.com/a.js`) becomes a path on this site: pass a full
      * URL instead. A full URL (`https://…`) or a relative path is left as it
      * is when no prefix is added.
      */
     private static function onThisSite(string $path): string
     {
-        $trimmed = ltrim($path, " \t\r\n");
+        $trimmed = ltrim($path, "\x00..\x20");
         if ($trimmed === '' || !in_array($trimmed[0], ['/', '\\'], true)) {
             return $path;
         }

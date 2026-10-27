@@ -15,9 +15,24 @@ use Semitexa\Ssr\Application\Service\Extension\FeatureFlagTwigExtension;
 
 final class FeatureFlagTwigExtensionTest extends TestCase
 {
+    /** @var array<string, mixed> the CLI store as other tests left it, put back afterwards */
+    private array $previous = [];
+
+    protected function setUp(): void
+    {
+        $this->previous = self::cliStore()->getValue();
+        CoroutineLocal::resetCliStore();
+    }
+
     protected function tearDown(): void
     {
-        CoroutineLocal::resetCliStore();
+        self::cliStore()->setValue(null, $this->previous);
+    }
+
+    /** CoroutineLocal has no snapshot API; resetCliStore() alone wiped keys other tests had set. */
+    private static function cliStore(): \ReflectionProperty
+    {
+        return new \ReflectionProperty(CoroutineLocal::class, 'cliStore');
     }
 
     /** A mail a worker renders: every flag was off there, one declared on by default too. */

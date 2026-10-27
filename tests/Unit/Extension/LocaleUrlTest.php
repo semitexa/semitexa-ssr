@@ -11,8 +11,16 @@ use Semitexa\Ssr\Application\Service\Extension\LocaleTwigExtension;
 
 final class LocaleUrlTest extends TestCase
 {
+    private const STATE = ['staticLocale', 'staticFallbackLocale', 'staticUrlPrefix', 'staticDefaultLocale', 'staticSupportedLocales'];
+
+    /** @var array<string, mixed> the store as it was before this test */
+    private array $previous = [];
+
     protected function setUp(): void
     {
+        foreach (self::STATE as $name) {
+            $this->previous[$name] = (new \ReflectionProperty(LocaleContextStore::class, $name))->getValue();
+        }
         LocaleContextStore::clearFallback();
         LocaleContextStore::setUrlPrefixEnabled(true);
         LocaleContextStore::setDefaultLocale('en');
@@ -21,7 +29,9 @@ final class LocaleUrlTest extends TestCase
 
     protected function tearDown(): void
     {
-        LocaleContextStore::clearFallback();
+        foreach ($this->previous as $name => $value) {
+            (new \ReflectionProperty(LocaleContextStore::class, $name))->setValue(null, $value);
+        }
     }
 
     #[Test]
@@ -70,7 +80,11 @@ final class LocaleUrlTest extends TestCase
         $this->assertSame('/evil.com', $extension->localeUrl('//evil.com', 'en'));
         $this->assertSame('https://example.com/a', $extension->localeUrl('https://example.com/a', 'en'), 'a full URL is left alone');
         $this->assertSame('/evil.com', $extension->localeUrl("\t//evil.com", 'en'), 'a browser drops leading whitespace');
+        $this->assertSame('/evil.com', $extension->localeUrl("\v//evil.com", 'en'), 'and leading C0 controls');
+        $this->assertSame('/evil.com', $extension->localeUrl("\x00\x1f//evil.com", 'en'));
         $this->assertSame('/uk/x', $extension->localeUrl('//uk/x', 'uk'), 'cleaned before the prefix is read: not stacked');
         $this->assertSame('/x', $extension->localeUrl('//uk/x', 'en'));
+        LocaleContextStore::setUrlPrefixEnabled(false);
+        $this->assertSame('/evil.com', $extension->localeUrl("\v//evil.com", 'uk'), 'with no prefix added too');
     }
 }

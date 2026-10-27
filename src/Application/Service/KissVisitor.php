@@ -61,18 +61,39 @@ final class KissVisitor
             $scope = RequestScopedContainer::forCurrentExecution($this->container);
             (new RouteExecutor($scope, $this->container, $this->bootstrapper($scope)))->establishVisitor($visitor);
             $this->bindSignedContexts($scope);
-            // The pipeline's CurrentFeatureFlagsListener never runs on the
-            // stream: without this, feature() in a deferred region was off.
-            $flags = $scope->has(FeatureFlagsInterface::class) ? $scope->get(FeatureFlagsInterface::class) : null;
-            if ($flags instanceof FeatureFlagsInterface) {
-                CurrentFeatureFlags::set($flags);
-            }
         } catch (\Throwable $e) {
             SseSessionCoroutines::rethrowIfCancellation($e);
             $this->logger->error('Deferred render could not establish the visitor', [
                 'exception' => $e::class,
                 'message' => $e->getMessage(),
             ]);
+
+            return;
+        }
+        $this->useFeatureFlags($scope);
+    }
+
+    /**
+     * The pipeline's CurrentFeatureFlagsListener never runs on the stream:
+     * without this, feature() in a deferred region was off. Its own failure,
+     * logged as its own: under the visitor's message it read as a visitor
+     * problem while the visitor was in place and only the flags were missing.
+     */
+    private function useFeatureFlags(RequestScopedContainer $scope): void
+    {
+        try {
+            $flags = $scope->has(FeatureFlagsInterface::class) ? $scope->get(FeatureFlagsInterface::class) : null;
+        } catch (\Throwable $e) {
+            SseSessionCoroutines::rethrowIfCancellation($e);
+            $this->logger->error('Deferred render could not resolve the feature flags: feature() reads every flag as off', [
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+            ]);
+
+            return;
+        }
+        if ($flags instanceof FeatureFlagsInterface) {
+            CurrentFeatureFlags::set($flags);
         }
     }
 

@@ -90,6 +90,8 @@ final class TwigFunctionContractTest extends TestCase
                 'ui_form_fields',
                 'ui_chart',
                 'ui_dashboard', 'ui_dashboard_entries', 'ui_dashboard_widget',
+                // feature flags (FeatureFlagTwigExtension): is a flag on for this visitor
+                'feature',
                 // platform-ui: the visitor's permissions, as the Authorizer answers them
                 'can',
                 'signed_in',
@@ -178,6 +180,11 @@ final class TwigFunctionContractTest extends TestCase
             'Semitexa\\Cms\\Application\\Service\\Twig\\ContentSeoTwigExtension' => [
                 'cms_seo',
                 'cms_seo_head',
+            ],
+            // A page written as blocks, printed: decodes the stored field and
+            // requires the default block stylesheet when a block has a layout.
+            'Semitexa\\Cms\\Application\\Service\\Twig\\ContentBlocksTwigExtension' => [
+                'cms_blocks',
             ],
         ];
     }
@@ -308,6 +315,19 @@ final class TwigFunctionContractTest extends TestCase
         };
 
         return is_string($class) && str_starts_with($class, 'Semitexa\\Modules\\');
+    }
+
+    #[Test]
+    public function a_text_template_is_not_html_escaped_and_every_other_one_is(): void
+    {
+        // Mail subjects and text bodies (.txt.twig) were HTML-escaped:
+        // "O'Brien" arrived as "O&#039;Brien".
+        $escaper = self::bootedTwig()->getExtension(\Twig\Extension\EscaperExtension::class);
+
+        self::assertFalse($escaper->getDefaultStrategy('@project-layouts-Shop/mail/welcome.subject.txt.twig'));
+        self::assertSame('html', $escaper->getDefaultStrategy('@project-layouts-Shop/pages/home.html.twig'));
+        self::assertSame('html', $escaper->getDefaultStrategy('@project-layouts-Shop/layouts/base.skeleton.html.twig'));
+        self::assertSame('html', $escaper->getDefaultStrategy('__string_template__0f3a'));
     }
 
     private static function bootedTwig(): \Twig\Environment

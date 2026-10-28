@@ -177,6 +177,62 @@ final class ControlFrameReRunTest extends TestCase
         self::assertTrue($coalescer->requestRerun('str_a'), 'the next mutation re-arms the signal');
     }
 
+    /**
+     * A mutation committed while the re-run reads: cleared after the re-run,
+     * its signal was coalesced into the one already running, nothing ran
+     * again, and the grid kept the frame read before the write (a deleted row
+     * came back; the live-keyed-grid E2E flake).
+     */
+    #[Test]
+    public function a_mutation_during_the_rerun_arms_another_one(): void
+    {
+        [, , $coalescer] = $this->connect('str_a', 'sess_a', ['lead_submission']);
+        $reRunner = new class ($coalescer) implements ReRunnerInterface {
+            public ?bool $signalDuringRun = null;
+
+            public function __construct(private readonly RerunCoalescer $coalescer) {}
+
+            public function reRun(ReRunContext $context, array $filterOverride = []): ReRunResult
+            {
+                // The write lands while this re-run is reading.
+                $this->signalDuringRun ??= $this->coalescer->requestRerun('str_a');
+
+                return ReRunResult::frame(HttpResponse::json(['rows' => []]));
+            }
+        };
+        AsyncResourceSseServer::setReRunner($reRunner);
+        AsyncResourceSseServer::setRerunCoalescer($coalescer);
+        $this->setTransport($this->captureTransport());
+
+        self::assertTrue($coalescer->requestRerun('str_a'));
+        $this->drain('sess_a', ['__ctrl' => 'rerun', 'streaming_id' => 'str_a']);
+
+        self::assertTrue($reRunner->signalDuringRun, 'the write during the re-run enqueues a fresh one');
+        self::assertTrue($coalescer->isPending('str_a'), 'and that one is still to run');
+    }
+
+    /** Writes faster than one per re-run keep a control queued: the drain loop never got back to see the worker drain. */
+    #[Test]
+    public function a_rerun_on_a_draining_worker_ends_the_stream(): void
+    {
+        [, , $coalescer] = $this->connect('str_a', 'sess_a', ['lead_submission']);
+        AsyncResourceSseServer::setReRunner($this->freshFrameReRunner());
+        AsyncResourceSseServer::setRerunCoalescer($coalescer);
+        $this->setTransport($this->captureTransport());
+        $coalescer->requestRerun('str_a');
+        \Semitexa\Core\Lifecycle\WorkerDrainSignal::begin();
+        try {
+            self::assertSame(self::HANDLED_CLOSE, $this->drain('sess_a', ['__ctrl' => 'rerun', 'streaming_id' => 'str_a']));
+        } finally {
+            \Semitexa\Core\Lifecycle\WorkerDrainSignal::reset();
+        }
+        self::assertSame(self::HANDLED_CONTINUE, (function () use ($coalescer): int {
+            $coalescer->requestRerun('str_a');
+
+            return $this->drain('sess_a', ['__ctrl' => 'rerun', 'streaming_id' => 'str_a']);
+        })(), 'not draining: the stream goes on');
+    }
+
     // -----------------------------------------------------------------------
     // VERIFICATION 4 — cross-worker correctness (MANDATORY)
     // -----------------------------------------------------------------------

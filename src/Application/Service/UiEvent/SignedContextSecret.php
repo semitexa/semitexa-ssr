@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\UiEvent;
 
-use Semitexa\Core\Environment;
+use Semitexa\Core\Security\AppSecret;
 
 /**
  * Shared APP_SECRET resolution for the signed-context substrate.
@@ -18,25 +18,38 @@ use Semitexa\Core\Environment;
  */
 final class SignedContextSecret
 {
+    private const PURPOSE = 'ssr.signed-context';
+
+    /** The raw APP_SECRET. */
     public static function resolve(): string
     {
-        $explicit = Environment::getEnvValue('APP_SECRET');
-        if (is_string($explicit) && $explicit !== '') {
-            return $explicit;
-        }
+        // The rule lives in core now, shared with encryption and signed URLs.
+        return AppSecret::current();
+    }
 
-        $appEnv = strtolower((string) Environment::getEnvValue('APP_ENV', 'prod'));
-        if (!in_array($appEnv, ['dev', 'test'], true)) {
-            throw new \LogicException('APP_SECRET must be configured for signed UI event context outside dev/test environments.');
-        }
+    /** The key a new context is signed with: APP_SECRET's own for this purpose. */
+    public static function signingKey(): string
+    {
+        return AppSecret::derive(AppSecret::current(), self::PURPOSE);
+    }
 
-        return hash(
-            'sha256',
-            implode('|', [
-                (string) Environment::getEnvValue('APP_NAME', 'Semitexa'),
-                (string) Environment::getEnvValue('APP_HOST', 'localhost'),
-                (string) Environment::getEnvValue('APP_PORT', '8000'),
-            ]),
-        );
+    /**
+     * Every key a context may carry, the signing key first. Contexts were
+     * signed with the raw APP_SECRET and APP_SECRET_PREVIOUS was never read:
+     * rotating the secret failed every click on every open page (refresh
+     * contexts live a day). The previous secrets verify now, and so does the
+     * raw-secret signature of a page opened before this release — drop those
+     * once no such page can be open.
+     *
+     * @return non-empty-list<string>
+     */
+    public static function verifyingKeys(): array
+    {
+        $secrets = [AppSecret::current(), ...AppSecret::previous()];
+
+        return [
+            ...array_map(static fn (string $secret): string => AppSecret::derive($secret, self::PURPOSE), $secrets),
+            ...$secrets,
+        ];
     }
 }

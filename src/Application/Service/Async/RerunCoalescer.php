@@ -30,8 +30,9 @@ use Swoole\Table;
  *    {@see \Swoole\Lock} needed.
  *
  * The pending mark is cleared by the loop branch (R4) when it DRAINS the
- * `{__ctrl:rerun}` control off the stream's queue and runs the re-run — at which
- * point the next mutation's signal is free to enqueue a fresh re-run.
+ * `{__ctrl:rerun}` control off the stream's queue, BEFORE it runs the re-run: a
+ * mutation committed while the re-run reads then enqueues a fresh one, instead
+ * of being coalesced into a re-run that may have read before it.
  * {@see self::clearPending()} is that R4 seam; R3 never calls it (R3 only sets the
  * mark). Until R4 lands, a test simulates the drain by calling it directly.
  *
@@ -90,8 +91,9 @@ final class RerunCoalescer
 
     /**
      * Clear the pending mark for `$streamingId` — the R4 seam. Called by the loop
-     * branch once it has drained and run the `{__ctrl:rerun}` control, so a later
-     * mutation's signal can enqueue a fresh re-run. R3 itself never calls this.
+     * branch when it has drained the `{__ctrl:rerun}` control, before the re-run,
+     * so a later mutation's signal can enqueue a fresh re-run. R3 itself never
+     * calls this.
      */
     public function clearPending(string $streamingId): void
     {

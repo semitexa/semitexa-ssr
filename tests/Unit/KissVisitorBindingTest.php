@@ -8,6 +8,8 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Psr\Container\ContainerInterface;
 use Semitexa\Core\Container\RequestScopedContainer;
+use Semitexa\Core\Feature\FeatureFlagsInterface;
+use Semitexa\Core\Log\LoggerInterface;
 use Semitexa\Core\Session\SessionInterface;
 use Semitexa\Core\Tenant\TenantContextInterface;
 use Semitexa\Core\Tenant\Layer\TenantLayerInterface;
@@ -53,5 +55,30 @@ final class KissVisitorBindingTest extends TestCase
         (new \ReflectionMethod(KissVisitor::class, 'bindSignedContexts'))->invoke(new KissVisitor(), $scope);
 
         self::assertSame(['s' => 'sess-visitor', 't' => 'acme'], SignedContextBinding::current());
+    }
+
+    /** A flag store that fails to build is named as such, not as a visitor that could not be established. */
+    #[Test]
+    public function a_feature_flag_failure_is_logged_as_its_own(): void
+    {
+        $parent = $this->createMock(ContainerInterface::class);
+        $parent->method('has')->willReturnCallback(static fn (string $id): bool => $id === FeatureFlagsInterface::class);
+        $parent->method('get')->willThrowException(new \RuntimeException('flag store is down'));
+        $logger = new class implements LoggerInterface {
+            /** @var list<string> */
+            public array $errors = [];
+            public function error(string $message, array $context = []): void { $this->errors[] = $message . ' (' . ($context['message'] ?? '') . ')'; }
+            public function critical(string $message, array $context = []): void {}
+            public function warning(string $message, array $context = []): void {}
+            public function info(string $message, array $context = []): void {}
+            public function notice(string $message, array $context = []): void {}
+            public function debug(string $message, array $context = []): void {}
+        };
+        $visitor = new KissVisitor();
+        (new \ReflectionProperty(KissVisitor::class, 'logger'))->setValue($visitor, $logger);
+
+        (new \ReflectionMethod(KissVisitor::class, 'useFeatureFlags'))->invoke($visitor, new RequestScopedContainer($parent));
+
+        self::assertSame(['Deferred render could not resolve the feature flags: feature() reads every flag as off (flag store is down)'], $logger->errors);
     }
 }

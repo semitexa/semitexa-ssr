@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service\UiEvent;
 
 use Semitexa\Core\Lifecycle\CarriedContext;
+use Semitexa\Core\Queue\QueuedOrigin;
 use Semitexa\Core\Session\SessionInterface;
 use Semitexa\Core\Support\CoroutineLocal;
 
@@ -20,7 +21,8 @@ use Semitexa\Core\Support\CoroutineLocal;
  * the session and tenant injected), coroutine-local, and carried into the
  * coroutines a request spawns (SseSessionCoroutines) and into the work it runs
  * after the response ({@see CarriedContext}: an Async handler's resource is
- * rendered there).
+ * rendered there), and as a digest into a job it queues ({@see QueuedOrigin}:
+ * a Queued handler's reply renders in the worker).
  */
 final class SignedContextBinding
 {
@@ -34,6 +36,8 @@ final class SignedContextBinding
     public static function bind(SessionInterface|string|null $session, string $tenantId): void
     {
         CarriedContext::carry(self::CTX_KEY);
+        // And into a job this request queues, as a digest (QueuedOrigin).
+        QueuedOrigin::exporter(SignedContext::QUEUED_ORIGIN, SignedContext::queuedBinding(...));
         CoroutineLocal::set(self::CTX_KEY, ['session' => $session, 't' => trim($tenantId)]);
     }
 

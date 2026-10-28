@@ -241,7 +241,10 @@ final class ModuleTemplateCatalog
             'cache' => $cacheDir ?? false,
             'auto_reload' => true,
             'strict_variables' => false,
-            'autoescape' => 'html',
+            // By extension: .txt templates (mail subjects and text bodies)
+            // were HTML-escaped, so "O'Brien" arrived as "O&#039;Brien".
+            // .js/.json get 'js', .css 'css', everything else 'html'.
+            'autoescape' => 'name',
         ]);
 
         $this->registerFunctions();
@@ -327,9 +330,17 @@ final class ModuleTemplateCatalog
         return array_values(array_unique($normalized));
     }
 
+    /**
+     * Compiled templates in a directory of the settings they were compiled
+     * with: the escaping is not part of Twig's cache key, and after an
+     * upgrade that changed it the old compiled templates kept the old one
+     * until someone ran cache:clear. Rename it when such a setting changes.
+     */
+    private const COMPILE_PROFILE = 'autoescape-name';
+
     private function getWritableCacheDir(): ?string
     {
-        $cacheDir = ProjectRoot::get() . '/var/cache/twig';
+        $cacheDir = ProjectRoot::get() . '/var/cache/twig/' . self::COMPILE_PROFILE;
 
         if (!is_dir($cacheDir) && !@mkdir($cacheDir, 0755, true) && !is_dir($cacheDir)) {
             $cacheDir = null;
@@ -339,7 +350,7 @@ final class ModuleTemplateCatalog
             return $cacheDir;
         }
 
-        $fallback = sys_get_temp_dir() . '/semitexa-twig-cache';
+        $fallback = sys_get_temp_dir() . '/semitexa-twig-cache/' . self::COMPILE_PROFILE;
         if (!is_dir($fallback) && !@mkdir($fallback, 0755, true) && !is_dir($fallback)) {
             return null;
         }

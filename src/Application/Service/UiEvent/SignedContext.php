@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\UiEvent;
 
+use Semitexa\Core\Queue\QueuedOrigin;
+
 /**
  * Server-side, opaque-to-client signed context substrate.
  *
@@ -24,6 +26,9 @@ final class SignedContext
     public const VERSION = 'sc1';
     public const DEFAULT_TTL_SECONDS = 300;
 
+    /** Its name in {@see QueuedOrigin}. */
+    public const QUEUED_ORIGIN = 'ssr.signed_context';
+
     /**
      * @param array<string, mixed> $claims
      */
@@ -39,11 +44,13 @@ final class SignedContext
         $claims['exp'] = $issuedAt + $ttl;
 
         // Bound to the session and tenant it was minted for (when a request is
-        // running): replaying it from another session or tenant is refused.
-        $binding = SignedContextBinding::current();
-        if ($binding !== null) {
-            $claims['sb'] = self::sessionDigest($binding['s']);
-            $claims['tn'] = $binding['t'];
+        // running, or a job queued by one): replaying it from another session
+        // or tenant is refused.
+        $key = SignedContextSecret::signingKey();
+        $bound = self::boundTo($key);
+        if ($bound !== null) {
+            $claims['sb'] = $bound['sb'];
+            $claims['tn'] = $bound['tn'];
         }
 
         $json = json_encode(
@@ -52,7 +59,7 @@ final class SignedContext
         );
 
         $payload = self::VERSION . '.' . self::base64UrlEncode($json);
-        $mac = hash_hmac('sha256', $payload, SignedContextSecret::resolve(), true);
+        $mac = hash_hmac('sha256', $payload, $key, true);
 
         return $payload . '.' . self::base64UrlEncode($mac);
     }
@@ -111,15 +118,23 @@ final class SignedContext
         $payload = $version . '.' . $claimsB64;
 
         try {
-            $secret = SignedContextSecret::resolve();
+            $keys = SignedContextSecret::verifyingKeys();
         } catch (\LogicException) {
             return null;
         }
 
-        $expectedMac = hash_hmac('sha256', $payload, $secret, true);
-
         $providedMac = self::base64UrlDecode($macB64);
-        if ($providedMac === null || !hash_equals($expectedMac, $providedMac)) {
+        if ($providedMac === null) {
+            return null;
+        }
+        $key = null;
+        foreach ($keys as $candidate) {
+            if (hash_equals(hash_hmac('sha256', $payload, $candidate, true), $providedMac)) {
+                $key = $candidate;
+                break;
+            }
+        }
+        if ($key === null) {
             return null;
         }
 
@@ -143,7 +158,7 @@ final class SignedContext
             return null;
         }
 
-        if (!self::belongsToCurrentRequest($claims)) {
+        if (!self::belongsToCurrentRequest($claims, $keys)) {
             return null;
         }
 
@@ -156,9 +171,15 @@ final class SignedContext
      * nothing is bound (CLI, a bare test) a bound context cannot be checked
      * and is refused; an unbound one (minted outside a request) passes.
      *
+     * The session digest may be under any verifying key, not only the one
+     * that signed: a queued job's digest is made where it was queued
+     * (QueuedOrigin), and across a secret rotation the worker signs with
+     * the new key while the digest was made with the old one.
+     *
      * @param array<array-key, mixed> $claims
+     * @param iterable<string> $keys
      */
-    private static function belongsToCurrentRequest(array $claims): bool
+    private static function belongsToCurrentRequest(array $claims, iterable $keys): bool
     {
         if (!array_key_exists('sb', $claims) && !array_key_exists('tn', $claims)) {
             return true;
@@ -168,15 +189,64 @@ final class SignedContext
             return false;
         }
 
-        return is_string($claims['sb'] ?? null)
-            && hash_equals(self::sessionDigest($binding['s']), $claims['sb'])
-            && ($claims['tn'] ?? null) === $binding['t'];
+        if (!is_string($claims['sb'] ?? null) || ($claims['tn'] ?? null) !== $binding['t']) {
+            return false;
+        }
+        foreach ($keys as $key) {
+            if (hash_equals(self::sessionDigest($binding['s'], $key), $claims['sb'])) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
-    /** The session id never travels in the clear: a keyed digest of it does. */
-    private static function sessionDigest(string $sessionId): string
+    /**
+     * What a context minted now is bound to, for {@see QueuedOrigin}: a
+     * Queued handler's reply renders in the worker, where nothing is bound,
+     * and the contexts in it were valid for any session. The digest, not the
+     * session id, travels in the message. It is the session as it is when
+     * the job is queued: a sign-in later in the same request renews the id,
+     * and the reply's contexts are then refused until a reload. Null when
+     * nothing is bound or no secret is set (then nothing is signed either).
+     *
+     * @return array{sb: string, tn: string}|null
+     */
+    public static function queuedBinding(): ?array
     {
-        return substr(hash_hmac('sha256', 'session:' . $sessionId, SignedContextSecret::resolve()), 0, 32);
+        try {
+            return self::boundTo(SignedContextSecret::signingKey());
+        } catch (\LogicException) {
+            // No APP_SECRET: nothing is signed either, so there is nothing to
+            // bind. Anything else goes up to QueuedOrigin::capture(), which
+            // logs it: answered with null, the job's reply minted contexts
+            // any session could present, and nobody heard of it.
+            return null;
+        }
+    }
+
+    /** @return array{sb: string, tn: string}|null */
+    private static function boundTo(string $key): ?array
+    {
+        $binding = SignedContextBinding::current();
+        if ($binding !== null) {
+            return ['sb' => self::sessionDigest($binding['s'], $key), 'tn' => $binding['t']];
+        }
+        // A job's reply, for the visitor of the request that queued it.
+        $origin = QueuedOrigin::get(self::QUEUED_ORIGIN);
+
+        return is_string($origin['sb'] ?? null) && is_string($origin['tn'] ?? null)
+            ? ['sb' => $origin['sb'], 'tn' => $origin['tn']]
+            : null;
+    }
+
+    /**
+     * The session id never travels in the clear: a digest of it, keyed like
+     * the signature that covers it.
+     */
+    private static function sessionDigest(string $sessionId, string $key): string
+    {
+        return substr(hash_hmac('sha256', 'session:' . $sessionId, $key), 0, 32);
     }
 
     private static function base64UrlEncode(string $value): string

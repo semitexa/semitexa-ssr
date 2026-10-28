@@ -20,6 +20,8 @@ use Semitexa\Core\Session\SessionInterface;
 use Semitexa\Core\Tenant\TenantContextInterface;
 use Semitexa\Ssr\Application\Service\UiEvent\SignedContextBinding;
 use Semitexa\Ssr\Application\Service\Async\SseSessionCoroutines;
+use Semitexa\Core\Feature\CurrentFeatureFlags;
+use Semitexa\Core\Feature\FeatureFlagsInterface;
 
 /**
  * Who work done on a page's KISS stream is done as (tk-ls-kiss-visitor).
@@ -65,6 +67,33 @@ final class KissVisitor
                 'exception' => $e::class,
                 'message' => $e->getMessage(),
             ]);
+
+            return;
+        }
+        $this->useFeatureFlags($scope);
+    }
+
+    /**
+     * The pipeline's CurrentFeatureFlagsListener never runs on the stream:
+     * without this, feature() in a deferred region was off. Its own failure,
+     * logged as its own: under the visitor's message it read as a visitor
+     * problem while the visitor was in place and only the flags were missing.
+     */
+    private function useFeatureFlags(RequestScopedContainer $scope): void
+    {
+        try {
+            $flags = $scope->has(FeatureFlagsInterface::class) ? $scope->get(FeatureFlagsInterface::class) : null;
+        } catch (\Throwable $e) {
+            SseSessionCoroutines::rethrowIfCancellation($e);
+            $this->logger->error('Deferred render could not resolve the feature flags: feature() reads every flag as off', [
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+            ]);
+
+            return;
+        }
+        if ($flags instanceof FeatureFlagsInterface) {
+            CurrentFeatureFlags::set($flags);
         }
     }
 

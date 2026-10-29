@@ -26,8 +26,8 @@ use Swoole\Atomic\Long;
 final class SseOrder
 {
     /**
-     * @worker-scoped (the static-state lint's word; the counter itself is
-     * host-wide) Created by the master before the workers fork
+     * @worker-scoped The static-state lint's word; the counter itself is
+     * host-wide. Created by the master before the workers fork
      * ({@see \Semitexa\Ssr\Application\Service\Server\Lifecycle\CreateAsyncResourceSseTablesListener}).
      * An Atomic lives in shared memory, so every worker counts on the same one,
      * as it must: the tables these numbers are compared in are shared too.

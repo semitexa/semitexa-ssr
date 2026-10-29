@@ -84,11 +84,12 @@ final class StreamProbe
         } else {
             $addresses = gethostbynamel($host) ?: [];
             foreach (@dns_get_record($host, DNS_AAAA) ?: [] as $record) {
-                $addresses[] = (string) ($record['ipv6'] ?? '');
+                $addresses[] = is_string($record['ipv6'] ?? null) ? $record['ipv6'] : '';
             }
         }
         foreach ($addresses as $address) {
             // GLOBAL_RANGE also refuses CGNAT that NO_PRIV|NO_RES let through; it accepts NAT64/6to4, refused below.
+            // @phpstan-ignore identical.alwaysFalse (its filter_var types ignore FILTER_FLAG_GLOBAL_RANGE; 10.0.0.1 gives false here)
             if (filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_GLOBAL_RANGE) === false || self::translatesIpv4($address)) {
                 return false;
             }

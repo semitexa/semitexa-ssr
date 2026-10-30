@@ -38,6 +38,8 @@ class HtmlResponse extends ResourceResponse
 
     /**
      * Sets the browser tab / SEO title via SeoMeta.
+     *
+     * @api
      */
     public function pageTitle(string $title, ?string $suffix = null, ?string $prefix = null): static
     {
@@ -48,6 +50,8 @@ class HtmlResponse extends ResourceResponse
 
     /**
      * Sets an arbitrary SEO meta tag via SeoMeta.
+     *
+     * @api
      */
     public function seoTag(string $name, string $content): static
     {
@@ -55,6 +59,7 @@ class HtmlResponse extends ResourceResponse
         return $this;
     }
 
+    /** @api */
     public function seoTagDefault(string $name, string $content): static
     {
         SeoMeta::setDefault($name, $content);
@@ -63,6 +68,8 @@ class HtmlResponse extends ResourceResponse
 
     /**
      * @param array<int, string|array{term?: string, title?: string, label?: string, name?: string}> $keywords
+     *
+     * @api
      */
     public function seoKeywords(array $keywords): static
     {
@@ -117,6 +124,8 @@ class HtmlResponse extends ResourceResponse
      * When $template is omitted, falls back to the template declared via #[AsResource].
      * When a render handle is set, injects page_handle and layout_handle into context.
      * The $extraContext array is merged on top of the accumulated render context.
+     *
+     * @api
      */
     public function renderTemplate(?string $template = null, array $extraContext = []): static
     {
@@ -165,6 +174,8 @@ class HtmlResponse extends ResourceResponse
 
     /**
      * @param array<string, mixed> $context
+     *
+     * @api
      */
     public function renderString(string $templateSource, array $context = []): static
     {
@@ -195,12 +206,14 @@ class HtmlResponse extends ResourceResponse
         return $this;
     }
 
+    /** @api */
     public function disableAutoRender(): static
     {
         $this->autoRenderEnabled = false;
         return $this;
     }
 
+    /** @api */
     public function enableAutoRender(): static
     {
         $this->autoRenderEnabled = true;

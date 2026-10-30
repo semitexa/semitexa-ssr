@@ -19,6 +19,17 @@ final class ApiSurfaceTest extends TestCase
     public function the_api_surface_is_the_one_promised(): void
     {
         self::assertSame([
+            'Semitexa\Ssr\Application\Service\Http\Response\HtmlResponse::disableAutoRender()',
+            'Semitexa\Ssr\Application\Service\Http\Response\HtmlResponse::enableAutoRender()',
+            'Semitexa\Ssr\Application\Service\Http\Response\HtmlResponse::pageTitle()',
+            'Semitexa\Ssr\Application\Service\Http\Response\HtmlResponse::renderString()',
+            'Semitexa\Ssr\Application\Service\Http\Response\HtmlResponse::renderTemplate()',
+            'Semitexa\Ssr\Application\Service\Http\Response\HtmlResponse::seoKeywords()',
+            'Semitexa\Ssr\Application\Service\Http\Response\HtmlResponse::seoTag()',
+            'Semitexa\Ssr\Application\Service\Http\Response\HtmlResponse::seoTagDefault()',
+            'Semitexa\Ssr\Application\Service\Http\Response\HtmlSlotResponse::renderTemplate()',
+            'Semitexa\Ssr\Application\Service\Http\Response\HtmlSlotResponse::withClientModules()',
+            'Semitexa\Ssr\Application\Service\Http\Response\HtmlSlotResponse::withRenderContext()',
             'Semitexa\Ssr\Attribute\AsComponent',
             'Semitexa\Ssr\Attribute\AsDataProvider',
             'Semitexa\Ssr\Attribute\AsDeferred',

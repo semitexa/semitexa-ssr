@@ -50,6 +50,7 @@ abstract class HtmlSlotResponse
         return $this->renderContext;
     }
 
+    /** @api */
     public function withRenderContext(array $context): static
     {
         $clone = clone $this;
@@ -58,6 +59,7 @@ abstract class HtmlSlotResponse
         return $clone;
     }
 
+    /** @api */
     public function withClientModules(array $clientModules): static
     {
         if ($clientModules === []) {
@@ -77,6 +79,8 @@ abstract class HtmlSlotResponse
     /**
      * Renders the slot Twig template and returns HTML string.
      * Merges static context, render context, and optional extra context.
+     *
+     * @api
      */
     public function renderTemplate(?string $template = null): string
     {

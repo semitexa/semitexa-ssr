@@ -9,6 +9,8 @@ use Semitexa\Ssr\Application\Service\Http\Response\HtmlSlotResponse;
 /**
  * @template TSlot of HtmlSlotResponse
  * @template TResult of HtmlSlotResponse
+ *
+ * @api
  */
 interface TypedSlotHandlerInterface
 {

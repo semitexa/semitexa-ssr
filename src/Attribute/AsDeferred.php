@@ -7,6 +7,7 @@ namespace Semitexa\Ssr\Attribute;
 use Attribute;
 use Semitexa\Core\Attribute\Capability;
 
+/** @api */
 #[Capability(
     id: 'ssr.deferred',
     summary: 'Renders a slot after the main page and streams it in when it is ready.',

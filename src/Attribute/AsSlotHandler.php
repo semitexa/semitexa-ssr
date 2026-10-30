@@ -7,6 +7,7 @@ namespace Semitexa\Ssr\Attribute;
 use Attribute;
 use Semitexa\Core\Attribute\Capability;
 
+/** @api */
 #[Capability(
     id: 'ssr.slot-handler',
     summary: 'Server-side handler that populates a slot resource; handlers for one slot run in priority order.',

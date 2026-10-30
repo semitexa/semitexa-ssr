@@ -7,6 +7,7 @@ namespace Semitexa\Ssr\Attribute;
 use Attribute;
 use Semitexa\Core\Attribute\Capability;
 
+/** @api */
 #[Capability(
     id: 'ssr.slot-resource',
     summary: 'Declares a typed resource that fills a layout slot, with its template, transport mode, cache TTL and client modules.',

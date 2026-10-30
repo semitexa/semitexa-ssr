@@ -7,6 +7,7 @@ namespace Semitexa\Ssr\Attribute;
 use Attribute;
 use Semitexa\Core\Attribute\Capability;
 
+/** @api */
 #[Capability(
     id: 'ssr.component',
     summary: 'A reusable server-rendered component with its own template and optional client script; Platform UI makes it interactive (#[UiPart] + #[UiOn]).',

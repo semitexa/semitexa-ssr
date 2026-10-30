@@ -7,6 +7,7 @@ namespace Semitexa\Ssr\Attribute;
 use Attribute;
 use Semitexa\Core\Attribute\Capability;
 
+/** @api */
 #[Capability(
     id: 'ssr.layout-slot',
     summary: 'Binds a template into a named layout slot for a set of page handles, optionally deferred and cached.',

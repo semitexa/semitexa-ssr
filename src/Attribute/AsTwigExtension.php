@@ -31,6 +31,8 @@ use Semitexa\Core\Attribute\Capability;
  * Most extensions need nothing and are right to declare nothing: the functions
  * they expose reach request state through a per-coroutine store rather than a
  * dependency.
+ *
+ * @api
  */
 #[Attribute(Attribute::TARGET_CLASS)]
 class AsTwigExtension

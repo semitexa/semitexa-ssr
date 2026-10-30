@@ -6,6 +6,7 @@ namespace Semitexa\Ssr\Domain\Contract;
 
 use Semitexa\Ssr\Domain\Model\DataProviderContext;
 
+/** @api */
 interface DataProviderInterface
 {
     /**

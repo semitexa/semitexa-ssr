@@ -8,6 +8,7 @@ use Attribute;
 use Semitexa\Core\Attribute\Capability;
 use Semitexa\Core\Attribute\TransportType;
 
+/** @api */
 #[Capability(
     id: 'ssr.transport',
     summary: 'Declares how a resource reaches the browser - plain HTTP or a live SSE stream - and whether it is deferred.',

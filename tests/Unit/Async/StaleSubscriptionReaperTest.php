@@ -23,13 +23,6 @@ use Semitexa\Ssr\Domain\Model\SubscriptionRecord;
  */
 final class StaleSubscriptionReaperTest extends TestCase
 {
-    protected function setUp(): void
-    {
-        if (!class_exists(\Swoole\Table::class, false)) {
-            self::markTestSkipped('Swoole extension not loaded.');
-        }
-    }
-
     // -----------------------------------------------------------------------
     // Proof 1 — the orphan IS reaped (the leak closed)
     // -----------------------------------------------------------------------

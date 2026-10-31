@@ -62,9 +62,6 @@ final class HeldOpenGridStreamTest extends TestCase
 
     protected function setUp(): void
     {
-        if (!class_exists(\Swoole\Table::class, false)) {
-            self::markTestSkipped('Swoole extension not loaded.');
-        }
         SubscriptionDtoRegistry::clear();
         $this->resetSessions();
     }

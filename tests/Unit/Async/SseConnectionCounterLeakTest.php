@@ -32,12 +32,6 @@ final class SseConnectionCounterLeakTest extends TestCase
 {
     private const IP = 'leak-probe-ip';
 
-    protected function setUp(): void
-    {
-        if (!class_exists(Coroutine::class)) {
-            self::markTestSkipped('Swoole extension is required.');
-        }
-    }
 
     #[Test]
     public function the_deferred_release_runs_when_the_body_throws_past_the_explicit_release(): void

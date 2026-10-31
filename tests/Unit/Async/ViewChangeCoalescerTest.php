@@ -19,13 +19,6 @@ use Semitexa\Ssr\Application\Service\Async\ViewChangeCoalescer;
  */
 final class ViewChangeCoalescerTest extends TestCase
 {
-    protected function setUp(): void
-    {
-        if (!class_exists(\Swoole\Table::class, false)) {
-            self::markTestSkipped('Swoole extension not loaded.');
-        }
-    }
-
     #[Test]
     public function only_the_first_command_in_a_burst_enqueues_and_the_latest_view_wins(): void
     {

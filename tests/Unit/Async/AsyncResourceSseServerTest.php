@@ -568,10 +568,6 @@ final class AsyncResourceSseServerTest extends TestCase
     #[Test]
     public function session_coroutine_cancellation_clears_registry_and_stops_worker(): void
     {
-        if (!extension_loaded('swoole') || !function_exists('Co\\run') || !class_exists(Channel::class)) {
-            self::markTestSkipped('Swoole coroutine runtime is required for this test.');
-        }
-
         $sessionId = 'test-session';
         $started = new Channel(1);
         $finished = new Channel(1);

@@ -51,10 +51,6 @@ final class LivePubSubKeepAliveTest extends TestCase
     #[Test]
     public function arming_registers_a_real_pending_timer_and_disarming_clears_it(): void
     {
-        if (!class_exists(Coroutine::class)) {
-            self::markTestSkipped('Swoole extension is required.');
-        }
-
         $armedId = null;
         $existedWhileArmed = null;
         $existsAfterDisarm = null;
@@ -81,10 +77,6 @@ final class LivePubSubKeepAliveTest extends TestCase
     #[Test]
     public function arming_twice_keeps_the_first_timer(): void
     {
-        if (!class_exists(Coroutine::class)) {
-            self::markTestSkipped('Swoole extension is required.');
-        }
-
         $first = null;
         $second = null;
 

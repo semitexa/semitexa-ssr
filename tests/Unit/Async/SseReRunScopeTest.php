@@ -73,10 +73,6 @@ final class SseReRunScopeTest extends TestCase
     #[Test]
     public function the_depth_is_coroutine_local(): void
     {
-        if (!class_exists(Coroutine::class)) {
-            self::markTestSkipped('Swoole extension is required.');
-        }
-
         // THE invariant. A re-run yields on I/O to another session's connect
         // coroutine; that coroutine must see its own depth, not the re-running
         // one's. A per-worker counter would report true here and the sibling
@@ -106,10 +102,6 @@ final class SseReRunScopeTest extends TestCase
     #[Test]
     public function a_child_coroutine_cannot_close_the_parents_scope(): void
     {
-        if (!class_exists(Coroutine::class)) {
-            self::markTestSkipped('Swoole extension is required.');
-        }
-
         $scope = new SseReRunScope();
         $parentStillOpen = null;
 

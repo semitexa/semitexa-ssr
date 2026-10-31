@@ -35,13 +35,6 @@ use Semitexa\Ssr\Domain\Model\SubscriptionRecord;
  */
 final class ResourceInvalidationSubscriberTest extends TestCase
 {
-    protected function setUp(): void
-    {
-        if (!class_exists(\Swoole\Table::class, false)) {
-            self::markTestSkipped('Swoole extension not loaded.');
-        }
-    }
-
     protected function tearDown(): void
     {
         StaticLoggerBridge::reset();

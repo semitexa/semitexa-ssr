@@ -406,9 +406,6 @@ final class SseSessionCoroutinesTest extends TestCase
 
     private function requireSwoole(): void
     {
-        if (!class_exists(Coroutine::class)) {
-            self::markTestSkipped('Swoole extension is required.');
-        }
     }
 }
 

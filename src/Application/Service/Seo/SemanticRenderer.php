@@ -9,13 +9,27 @@ use Semitexa\Ssr\Application\Service\Layout\LayoutSlotRegistry;
 
 final class SemanticRenderer
 {
-    public static function generateForResource(object $resource, string $handle): array
+    /**
+     * The page's WebPage. Its name is the SeoMeta title, else the title the
+     * layout rendered (tags and entities undone); a page with neither carries
+     * no name rather than an empty one (bench-page-jsonld-empty-name: every
+     * generated page said "name": "").
+     *
+     * @return array<string, mixed>
+     */
+    public static function generateForResource(object $resource, string $handle, ?string $renderedTitle = null): array
     {
         $data = [
             '@context' => 'https://schema.org',
             '@type' => 'WebPage',
-            'name' => SeoMeta::getTitle(),
         ];
+        $name = SeoMeta::getTitle();
+        if ($name === '' && $renderedTitle !== null) {
+            $name = trim(html_entity_decode(strip_tags($renderedTitle), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+        }
+        if ($name !== '') {
+            $data['name'] = $name;
+        }
 
         $data['hasPart'] = self::getPageParts($handle);
 
@@ -41,7 +55,7 @@ final class SemanticRenderer
         return $parts;
     }
 
-    public static function render(): string
+    public static function render(?string $renderedTitle = null): string
     {
         $html = '';
         $context = self::getCurrentContext();
@@ -57,7 +71,7 @@ final class SemanticRenderer
             return $html;
         }
 
-        $schema = self::generateForResource($resource, $handle);
+        $schema = self::generateForResource($resource, $handle, $renderedTitle);
 
         $html .= '<script type="application/ld+json">' . json_encode(
             $schema,

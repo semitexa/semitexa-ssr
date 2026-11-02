@@ -23,9 +23,9 @@ final class SemanticRenderer
             '@context' => 'https://schema.org',
             '@type' => 'WebPage',
         ];
-        $name = SeoMeta::getTitle();
+        $name = self::text(SeoMeta::getTitle());
         if ($name === '' && $renderedTitle !== null) {
-            $name = trim(html_entity_decode(strip_tags($renderedTitle), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+            $name = self::text(html_entity_decode(strip_tags($renderedTitle), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
         }
         if ($name !== '') {
             $data['name'] = $name;
@@ -34,6 +34,15 @@ final class SemanticRenderer
         $data['hasPart'] = self::getPageParts($handle);
 
         return $data;
+    }
+
+    /**
+     * A title as text, trimmed of every Unicode space: `&nbsp;` decodes to a
+     * no-break space trim() leaves, and a whitespace-only title is no title.
+     */
+    private static function text(string $title): string
+    {
+        return (string) preg_replace('/^[\s\p{Z}\x{FEFF}]+|[\s\p{Z}\x{FEFF}]+$/u', '', $title);
     }
 
     public static function getPageParts(string $handle): array

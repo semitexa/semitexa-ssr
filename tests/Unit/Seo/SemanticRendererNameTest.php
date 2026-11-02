@@ -44,8 +44,17 @@ final class SemanticRendererNameTest extends TestCase
     #[Test]
     public function a_page_with_no_title_carries_no_name_rather_than_an_empty_one(): void
     {
-        foreach ([null, '', '   '] as $rendered) {
-            self::assertArrayNotHasKey('name', SemanticRenderer::generateForResource(new \stdClass(), 'shop.blank', $rendered));
+        foreach ([null, '', '   ', '&nbsp;', "<span>\u{00A0}\u{2003}</span>"] as $rendered) {
+            self::assertArrayNotHasKey('name', SemanticRenderer::generateForResource(new \stdClass(), 'shop.blank', $rendered), var_export($rendered, true));
         }
+    }
+
+    /** A whitespace-only SeoMeta title is no title: the rendered one names the page. */
+    #[Test]
+    public function a_blank_seo_meta_title_gives_way_to_the_rendered_one(): void
+    {
+        SeoMeta::setTitle('   ');
+
+        self::assertSame('Contact', SemanticRenderer::generateForResource(new \stdClass(), 'shop.contact', '&nbsp;Contact&nbsp;')['name'] ?? null);
     }
 }

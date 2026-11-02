@@ -66,10 +66,12 @@ final class SeoTwigExtension
 
     /**
      * The JSON-LD block. Emitted for machine readers, so it is markup and must
-     * not be escaped.
+     * not be escaped. A layout passes the page's rendered title
+     * (semantic_head(block('title'))) when the page sets it in Twig rather
+     * than through SeoMeta.
      */
-    public function semanticHead(): Markup
+    public function semanticHead(?string $title = null): Markup
     {
-        return new Markup(SemanticRenderer::render(), 'UTF-8');
+        return new Markup(SemanticRenderer::render($title), 'UTF-8');
     }
 }

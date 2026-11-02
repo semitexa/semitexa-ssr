@@ -4,10 +4,6 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Tests\Unit\Seo;
 
-require_once __DIR__ . '/Fixture/SitemapTestKit.php';
-require_once __DIR__ . '/Fixture/ArticleSitemapProvider.php';
-require_once __DIR__ . '/Fixture/RouteLikeSitemapProvider.php';
-
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Ssr\Application\Service\Seo\Sitemap\SitemapGenerationContext;

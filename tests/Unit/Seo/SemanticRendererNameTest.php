@@ -45,7 +45,9 @@ final class SemanticRendererNameTest extends TestCase
     public function a_page_with_no_title_carries_no_name_rather_than_an_empty_one(): void
     {
         foreach ([null, '', '   ', '&nbsp;', "<span>\u{00A0}\u{2003}</span>"] as $rendered) {
-            self::assertArrayNotHasKey('name', SemanticRenderer::generateForResource(new \stdClass(), 'shop.blank', $rendered), var_export($rendered, true));
+            $page = SemanticRenderer::generateForResource(new \stdClass(), 'shop.blank', $rendered);
+            self::assertSame('WebPage', $page['@type'] ?? null, 'the page is still described; only its name is left out');
+            self::assertArrayNotHasKey('name', $page, var_export($rendered, true));
         }
     }
 

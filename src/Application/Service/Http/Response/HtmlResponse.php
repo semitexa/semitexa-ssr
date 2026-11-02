@@ -386,7 +386,6 @@ class HtmlResponse extends ResourceResponse
         }
 
         IsomorphicContextStore::setPageHandle($handle);
-        IsomorphicContextStore::setDeferredSlots($deferredSlots);
 
         $context['__ssr_deferred_slots'] = $deferredSlots;
         $context['__ssr_deferred_request_id'] = $requestId;

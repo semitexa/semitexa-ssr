@@ -4,78 +4,52 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Context;
 
-use Swoole\Coroutine;
+use Semitexa\Core\Support\CoroutineLocal;
 
+/**
+ * The isomorphic page a request is rendering: its handle and its SSE session,
+ * per coroutine under Swoole and process-wide in the CLI, through
+ * CoroutineLocal (which owns that choice). Each value is set here as a string
+ * and read back as one; anything else under its keys reads as unset.
+ *
+ * It also held the page's deferred slots, written on every render and read by
+ * nothing: that store is gone.
+ */
 final class IsomorphicContextStore
 {
     private const KEY_PAGE_HANDLE = '__ssr_iso_page_handle';
-    private const KEY_DEFERRED_SLOTS = '__ssr_iso_deferred_slots';
     private const KEY_SESSION_ID = '__ssr_iso_session_id';
-
-    private static string $staticPageHandle = '';
-    private static array $staticDeferredSlots = [];
-    private static string $staticSessionId = '';
 
     public static function setPageHandle(string $handle): void
     {
-        if (self::inCoroutine()) {
-            Coroutine::getContext()[self::KEY_PAGE_HANDLE] = $handle;
-            return;
-        }
-        self::$staticPageHandle = $handle;
+        CoroutineLocal::set(self::KEY_PAGE_HANDLE, $handle);
     }
 
     public static function getPageHandle(): string
     {
-        if (self::inCoroutine()) {
-            return Coroutine::getContext()[self::KEY_PAGE_HANDLE] ?? '';
-        }
-        return self::$staticPageHandle;
-    }
-
-    public static function setDeferredSlots(array $slots): void
-    {
-        if (self::inCoroutine()) {
-            Coroutine::getContext()[self::KEY_DEFERRED_SLOTS] = $slots;
-            return;
-        }
-        self::$staticDeferredSlots = $slots;
-    }
-
-    public static function getDeferredSlots(): array
-    {
-        if (self::inCoroutine()) {
-            return Coroutine::getContext()[self::KEY_DEFERRED_SLOTS] ?? [];
-        }
-        return self::$staticDeferredSlots;
+        return self::text(self::KEY_PAGE_HANDLE);
     }
 
     public static function setSessionId(string $sessionId): void
     {
-        if (self::inCoroutine()) {
-            Coroutine::getContext()[self::KEY_SESSION_ID] = $sessionId;
-            return;
-        }
-        self::$staticSessionId = $sessionId;
+        CoroutineLocal::set(self::KEY_SESSION_ID, $sessionId);
     }
 
     public static function getSessionId(): string
     {
-        if (self::inCoroutine()) {
-            return Coroutine::getContext()[self::KEY_SESSION_ID] ?? '';
-        }
-        return self::$staticSessionId;
+        return self::text(self::KEY_SESSION_ID);
     }
 
     public static function reset(): void
     {
-        self::$staticPageHandle = '';
-        self::$staticDeferredSlots = [];
-        self::$staticSessionId = '';
+        CoroutineLocal::remove(self::KEY_PAGE_HANDLE);
+        CoroutineLocal::remove(self::KEY_SESSION_ID);
     }
 
-    private static function inCoroutine(): bool
+    private static function text(string $key): string
     {
-        return class_exists(Coroutine::class, false) && Coroutine::getCid() > 0;
+        $value = CoroutineLocal::get($key);
+
+        return is_string($value) ? $value : '';
     }
 }

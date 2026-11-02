@@ -28,6 +28,11 @@
             "Semitexa\\Ssr\\": "src/"
         }
     },
+    "autoload-dev": {
+        "psr-4": {
+            "Semitexa\\Ssr\\Tests\\": "tests/"
+        }
+    },
     "extra": {
         "semitexa-module": {
             "name": "core-frontend",

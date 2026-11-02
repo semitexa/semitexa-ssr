@@ -9,8 +9,16 @@ use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
 
 abstract class HtmlSlotResponse
 {
+    /**
+     * The #[AsSlotResource] of each slot class, read once: null for a class
+     * that declares none. The attribute itself, typed, rather than an array
+     * copied off it whose every key read back as mixed.
+     *
+     * @var array<class-string, ?AsSlotResource>
+     */
     private static array $attributeCache = [];
 
+    /** @var array<string, mixed> */
     protected array $renderContext = [];
 
     // Metadata resolved from #[AsSlotResource]
@@ -23,7 +31,9 @@ abstract class HtmlSlotResponse
     private ?string $skeletonTemplate = null;
     private string $mode = 'html';
     private int $refreshInterval = 0;
+    /** @var list<string> */
     private array $clientModules = [];
+    /** @var array<string, mixed> */
     private array $staticContext = [];
 
     public function __construct()
@@ -44,22 +54,40 @@ abstract class HtmlSlotResponse
 
     /**
      * Returns the accumulated render context for template rendering.
+     *
+     * @return array<string, mixed>
      */
     public function getRenderContext(): array
     {
         return $this->renderContext;
     }
 
-    /** @api */
+    /**
+     * Template variables to add, later ones winning. Only named entries are
+     * variables: an integer key names none (array_merge renumbered it onto
+     * the end of the context, where no template could reach it).
+     *
+     * @param array<mixed> $context
+     *
+     * @api
+     */
     public function withRenderContext(array $context): static
     {
         $clone = clone $this;
-        $clone->renderContext = array_merge($clone->renderContext, $context);
+        foreach ($context as $name => $value) {
+            if (is_string($name)) {
+                $clone->renderContext[$name] = $value;
+            }
+        }
 
         return $clone;
     }
 
-    /** @api */
+    /**
+     * @param array<mixed> $clientModules module names; anything not a non-empty string is dropped
+     *
+     * @api
+     */
     public function withClientModules(array $clientModules): static
     {
         if ($clientModules === []) {
@@ -141,11 +169,13 @@ abstract class HtmlSlotResponse
         return $this->refreshInterval;
     }
 
+    /** @return list<string> */
     public function getClientModules(): array
     {
         return $this->clientModules;
     }
 
+    /** @return array<string, mixed> */
     public function getStaticContext(): array
     {
         return $this->staticContext;
@@ -155,44 +185,25 @@ abstract class HtmlSlotResponse
     {
         $class = static::class;
         if (!array_key_exists($class, self::$attributeCache)) {
-            $ref = new \ReflectionClass($class);
-            $attrs = $ref->getAttributes(AsSlotResource::class);
-            if (!empty($attrs)) {
-                /** @var AsSlotResource $meta */
-                $meta = $attrs[0]->newInstance();
-                self::$attributeCache[$class] = [
-                    'handle'           => $meta->handle,
-                    'slot'             => $meta->slot,
-                    'template'         => $meta->template,
-                    'deferred'         => $meta->deferred,
-                    'priority'         => $meta->priority,
-                    'cacheTtl'         => $meta->cacheTtl,
-                    'skeletonTemplate' => $meta->skeletonTemplate,
-                    'mode'             => $meta->mode,
-                    'refreshInterval'  => $meta->refreshInterval,
-                    'clientModules'    => $meta->clientModules,
-                    'context'          => $meta->context,
-                ];
-            } else {
-                self::$attributeCache[$class] = null;
-            }
+            $attrs = (new \ReflectionClass($class))->getAttributes(AsSlotResource::class);
+            self::$attributeCache[$class] = $attrs === [] ? null : $attrs[0]->newInstance();
         }
 
-        $cached = self::$attributeCache[$class];
-        if ($cached === null) {
+        $meta = self::$attributeCache[$class];
+        if ($meta === null) {
             return;
         }
 
-        $this->slotHandle       = $cached['handle'];
-        $this->slotName         = $cached['slot'];
-        $this->declaredTemplate = $cached['template'];
-        $this->deferred         = $cached['deferred'];
-        $this->priority         = $cached['priority'];
-        $this->cacheTtl         = $cached['cacheTtl'];
-        $this->skeletonTemplate = $cached['skeletonTemplate'];
-        $this->mode             = $cached['mode'];
-        $this->refreshInterval  = $cached['refreshInterval'];
-        $this->clientModules    = $cached['clientModules'];
-        $this->staticContext    = $cached['context'];
+        $this->slotHandle       = $meta->handle;
+        $this->slotName         = $meta->slot;
+        $this->declaredTemplate = $meta->template;
+        $this->deferred         = $meta->deferred;
+        $this->priority         = $meta->priority;
+        $this->cacheTtl         = $meta->cacheTtl;
+        $this->skeletonTemplate = $meta->skeletonTemplate;
+        $this->mode             = $meta->mode;
+        $this->refreshInterval  = $meta->refreshInterval;
+        $this->clientModules    = $meta->clientModules;
+        $this->staticContext    = $meta->context;
     }
 }

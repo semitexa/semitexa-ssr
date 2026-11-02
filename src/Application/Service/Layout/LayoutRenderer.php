@@ -82,7 +82,6 @@ class LayoutRenderer
                     }
 
                     IsomorphicContextStore::setPageHandle($handle);
-                    IsomorphicContextStore::setDeferredSlots($deferredSlots);
 
                     // Add deferred rendering context to Twig
                     $baseContext['__ssr_deferred_slots'] = $deferredSlots;

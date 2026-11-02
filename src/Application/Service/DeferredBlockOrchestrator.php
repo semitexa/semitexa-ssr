@@ -63,6 +63,7 @@ final class DeferredBlockOrchestrator
      * Called after SSE connection established.
      * Launches all DataProvider::resolve() calls concurrently via Swoole coroutines.
      * Streams each block to the client as its DataProvider completes.
+     * @param array<mixed> $pageContext
      */
     public function streamDeferredBlocks(
         string $sessionId,
@@ -253,7 +254,7 @@ final class DeferredBlockOrchestrator
                         'message' => $e->getMessage(),
                     ]);
                 } finally {
-                    if ($channel !== null && $this->sseServer->isSessionActive($sessionId)) {
+                    if ($this->sseServer->isSessionActive($sessionId)) {
                         $channel->push([$slot, $data]);
                     } else {
                         $results[] = [$slot, $data];
@@ -274,6 +275,10 @@ final class DeferredBlockOrchestrator
                     break;
                 }
                 $received++;
+                // [slot, data] from a resolving coroutine; anything else is no block.
+                if (!is_array($item) || !($item[0] ?? null) instanceof DeferredSlotDefinition || !is_array($item[1] ?? null)) {
+                    continue;
+                }
                 [$slot, $data] = $item;
                 $eventId++;
                 $payload = $this->buildPayload($slot, $data, $persistentDeferredSse);
@@ -439,6 +444,8 @@ final class DeferredBlockOrchestrator
      * @param array<string, mixed>|null $requestSnapshot the stored snapshot, read
      *        back out of DeferredRequestRegistry rather than straight from the
      *        producer — so its shape is only as good as what was stored
+     * @param array<mixed> $pageContext
+     * @return array<string, mixed>
      */
     private function resolveSlotSafely(
         DeferredSlotDefinition $slot,
@@ -468,6 +475,8 @@ final class DeferredBlockOrchestrator
      * Synchronous render of specified slots (for XHR fallback).
      * Always returns server-rendered HTML regardless of slot mode.
      *
+     * @param list<string> $slotNames
+     * @param array<mixed> $pageContext
      * @return array<string, string> slot_id => rendered HTML
      */
     public function renderDeferredBlocksSync(
@@ -523,6 +532,7 @@ final class DeferredBlockOrchestrator
      * @param array<string, mixed>|null $requestSnapshot the stored snapshot, read
      *        back out of DeferredRequestRegistry rather than straight from the
      *        producer — so its shape is only as good as what was stored
+     * @param array<mixed> $pageContext
      */
     private function runLiveLoop(
         string $sessionId,
@@ -584,6 +594,7 @@ final class DeferredBlockOrchestrator
         }
     }
 
+    /** @param array<mixed> $data */
     private function buildPayload(
         DeferredSlotDefinition $slot,
         array $data,
@@ -624,6 +635,7 @@ final class DeferredBlockOrchestrator
         );
     }
 
+    /** @param array<mixed> $data */
     private function renderSlotHtml(DeferredSlotDefinition $slot, array $data): string
     {
         try {
@@ -643,11 +655,12 @@ final class DeferredBlockOrchestrator
      * Resolve slot data for rendering.
      * For new-style slot resources (resourceClass set): run the slot handler pipeline.
      * For legacy provider-backed slots: delegate to DataProviderRegistry.
-     */
-    /**
+     *
+     * @param array<mixed> $pageContext
      * @param array<string, mixed>|null $requestSnapshot the stored snapshot, read
      *        back out of DeferredRequestRegistry rather than straight from the
      *        producer — so its shape is only as good as what was stored
+     * @return array<string, mixed>
      */
     private function resolveSlotData(
         DeferredSlotDefinition $slot,

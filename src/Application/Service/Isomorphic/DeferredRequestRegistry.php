@@ -79,7 +79,7 @@ final class DeferredRequestRegistry
             return null;
         }
 
-        if ((int) ($row['created_at'] ?? 0) === 0) {
+        if (Row::asInt($row['created_at'] ?? null) === 0) {
             self::$table->del($key);
 
             return null;
@@ -175,6 +175,10 @@ final class DeferredRequestRegistry
         }
     }
 
+    /**
+     * @param array<mixed> $pageContext what the page renders with; only what serializes is kept
+     * @param list<string> $slotIds
+     */
     public static function store(
         string $requestId,
         string $pageHandle,
@@ -249,7 +253,8 @@ final class DeferredRequestRegistry
             );
         }
 
-        $ok = self::$table->set($key, [
+        $table = self::$table ?? throw new DeferredRenderingException('The deferred request table is not initialized.');
+        $ok = $table->set($key, [
             'page_handle' => $pageHandle,
             'page_context' => $serializedContext,
             'bind_token' => $bindToken,
@@ -306,7 +311,7 @@ final class DeferredRequestRegistry
         // Two columns, because two are what this changes. See the note on
         // markDelivered() for why the other seven are not listed here.
         if (self::updateExistingRow($key, [
-            'page_context' => self::backfillUiSseSession((string) $row['page_context']),
+            'page_context' => self::backfillUiSseSession(Row::asString($row['page_context'] ?? null)),
             'components' => $componentsJson,
         ]) === false) {
             throw new DeferredRenderingException('Failed to update deferred component instances.');
@@ -438,8 +443,8 @@ final class DeferredRequestRegistry
         return [
             'query'  => Row::keyedByName($get),
             'route'  => [],
-            'method' => (string) ($server['request_method'] ?? 'GET'),
-            'path'   => (string) ($server['request_uri'] ?? '/'),
+            'method' => Row::asString($server['request_method'] ?? null, 'GET'),
+            'path'   => Row::asString($server['request_uri'] ?? null, '/'),
         ];
     }
 
@@ -597,19 +602,15 @@ final class DeferredRequestRegistry
     }
 
     /**
-     * @param array<string, mixed> $context
+     * @param array<mixed> $context
      *
-     * @return array<string, mixed>
+     * @return array<mixed>
      */
     private static function sanitizeContext(array $context): array
     {
         $sanitized = [];
 
         foreach ($context as $key => $value) {
-            if (!is_string($key) && !is_int($key)) {
-                continue;
-            }
-
             $normalized = self::sanitizeValue($value);
             if ($normalized === self::unsupportedMarker()) {
                 continue;
@@ -633,10 +634,6 @@ final class DeferredRequestRegistry
 
         $sanitized = [];
         foreach ($value as $key => $item) {
-            if (!is_string($key) && !is_int($key)) {
-                continue;
-            }
-
             $normalized = self::sanitizeValue($item);
             if ($normalized === self::unsupportedMarker()) {
                 continue;
@@ -650,7 +647,9 @@ final class DeferredRequestRegistry
 
     private static function unsupportedMarker(): object
     {
-        static $marker;
+        /** @var \stdClass|null $marker */
+        static $marker = null;
+
         return $marker ??= new \stdClass();
     }
 
@@ -664,8 +663,7 @@ final class DeferredRequestRegistry
         $toDelete = [];
 
         foreach (self::$table as $key => $row) {
-            /** @var array{created_at:mixed} $row */
-            if (($now - (int) $row['created_at']) > self::TTL_SECONDS) {
+            if (is_string($key) && is_array($row) && ($now - Row::asInt($row['created_at'] ?? null)) > self::TTL_SECONDS) {
                 $toDelete[] = $key;
             }
         }

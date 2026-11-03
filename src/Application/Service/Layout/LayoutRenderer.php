@@ -56,7 +56,13 @@ class LayoutRenderer
                 $deferredSlots = LayoutSlotRegistry::getDeferredSlots($handle);
                 $hasDeferredComponentCandidates = ComponentRegistry::hasDeferredSseComponent();
 
-                if ($deferredSlots !== [] || $hasDeferredComponentCandidates) {
+                // A context too big to store (a long request URL) renders inline, as for a crawler.
+                $fits = $deferredSlots === [] || DeferredRequestRegistry::fits($context);
+                if (!$fits) {
+                    \Semitexa\Core\Log\StaticLoggerBridge::warning('ssr', 'Deferred slots rendered inline: the page context exceeds SSR_DEFERRED_CONTEXT_SIZE', ['handle' => $handle]);
+                }
+
+                if ($fits && ($deferredSlots !== [] || $hasDeferredComponentCandidates)) {
                     ComponentInstanceStore::reset();
 
                     if (!DeferredTemplateRegistry::isInitialized()) {

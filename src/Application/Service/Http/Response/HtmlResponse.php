@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Http\Response;
 
+use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Core\Attribute\AsResource;
 use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\HttpResponse as CoreResponse;
@@ -350,6 +351,13 @@ class HtmlResponse extends ResourceResponse
         $deferredSlots = LayoutSlotRegistry::getDeferredSlots($handle);
         $hasDeferredComponentCandidates = ComponentRegistry::hasDeferredSseComponent();
         if ($deferredSlots === [] && !$hasDeferredComponentCandidates) {
+            return $context;
+        }
+        // A context too big to store (a long request URL, repeated in it) is
+        // rendered inline, as for a crawler, instead of a 500 at store().
+        if ($deferredSlots !== [] && !DeferredRequestRegistry::fits(self::sanitizeDeferredContext($context))) {
+            StaticLoggerBridge::warning('ssr', 'Deferred slots rendered inline: the page context exceeds SSR_DEFERRED_CONTEXT_SIZE', ['handle' => $handle]);
+
             return $context;
         }
 

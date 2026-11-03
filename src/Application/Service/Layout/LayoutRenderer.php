@@ -90,6 +90,8 @@ class LayoutRenderer
                     }
 
                     IsomorphicContextStore::setPageHandle($handle);
+                    // Stored up front: no late question from an earlier render applies.
+                    IsomorphicContextStore::setLateDeferral(null);
 
                     // Add deferred rendering context to Twig
                     $baseContext['__ssr_deferred_slots'] = $deferredSlots;

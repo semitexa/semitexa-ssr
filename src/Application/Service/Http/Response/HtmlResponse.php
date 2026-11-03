@@ -352,12 +352,12 @@ class HtmlResponse extends ResourceResponse
         if ($deferredSlots === [] && !$hasDeferredComponentCandidates) {
             return $context;
         }
-        // A request too big to store (a long request URL, repeated in the
-        // context and carried by the snapshot) is rendered inline, as for a
-        // crawler: deferred slots and deferred components alike, instead of a
-        // 500 at store(). Without slots the first deferred component asks.
+        // A request too big to store (a long URL, in the context and the snapshot)
+        // renders slots and components inline, as for a crawler, not a 500 at
+        // store(). Without slots the first deferred component asks instead.
         if ($deferredSlots !== [] && !DeferredRequestRegistry::fits(self::sanitizeDeferredContext($context))) {
             \Semitexa\Ssr\Application\Service\Isomorphic\DeferredInlineWarning::once($handle);
+            IsomorphicContextStore::setPageHandle(''); // no page to defer to, whatever an earlier render left
 
             return $context;
         }

@@ -165,7 +165,8 @@ final class ComponentRendererDeferredTest extends TestCase
         $html = ComponentRenderer::render('deferred_demo', ['title' => 'Hello']);
 
         self::assertStringContainsString('data-ssr-deferred-component="deferred_demo"', $html);
-        self::assertSame(1, $asked);
+        self::assertStringContainsString('data-ssr-deferred-component="deferred_demo"', ComponentRenderer::render('deferred_demo', ['title' => 'Again']));
+        self::assertSame(1, $asked, 'a fitting answer is cached too');
         IsomorphicContextStore::setLateDeferral(null);
         self::assertTrue(IsomorphicContextStore::lateDeferralFits(), 'a request stored up front is not asked again');
     }

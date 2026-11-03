@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Server\Lifecycle;
 
+use Swoole\Lock;
 use Swoole\Table;
 
 readonly class AsyncResourceSseTables
@@ -12,6 +13,7 @@ readonly class AsyncResourceSseTables
         public Table $sessionWorkerTable,
         public Table $deliverTable,
         public Table $pendingDeliverTable,
+        public ?Lock $ownershipLock = null,
     ) {
     }
 }

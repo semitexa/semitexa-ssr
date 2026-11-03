@@ -33,6 +33,7 @@ final class BindAsyncResourceSseServerListener implements ServerLifecycleListene
                 $tables->sessionWorkerTable,
                 $tables->deliverTable,
                 $tables->pendingDeliverTable,
+                $tables->ownershipLock,
             );
         }
     }

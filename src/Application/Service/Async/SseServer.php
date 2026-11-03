@@ -1376,9 +1376,9 @@ final class SseServer implements FeedStreamSinkInterface
         \Swoole\Table $sessionWorkerTable,
         \Swoole\Table $deliverTable,
         ?\Swoole\Table $pendingDeliverTable = null,
-    ): void
-    {
-        $this->workerTables()->setTables($sessionWorkerTable, $deliverTable, $pendingDeliverTable);
+        ?\Swoole\Lock $ownershipLock = null,
+    ): void {
+        $this->workerTables()->setTables($sessionWorkerTable, $deliverTable, $pendingDeliverTable, $ownershipLock);
     }
 
     public function setDeferredBlockOrchestrator(?DeferredBlockOrchestrator $orchestrator): void

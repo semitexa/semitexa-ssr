@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Semitexa\Core\Attribute\WorkerState;
+use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Core\Support\Row;
 use Swoole\Http\Server;
+use Swoole\Lock;
 use Swoole\Table;
 
 /**
@@ -43,6 +46,20 @@ final class SseWorkerTables
     private ?Table $pending = null;
 
     /**
+     * Makes a claim and a release exclusive across workers. A release reads the
+     * row and then deletes it; a reconnect's claim on another worker between
+     * the two was erased (1 882 of 2 000 simultaneous pairs), leaving the tab
+     * with no owner row, so deliveries for it were not routed to its worker.
+     * Created before the fork with the tables; null where none was wired.
+     */
+    private ?Lock $ownershipLock = null;
+
+    private const LOCK_WAIT_SECONDS = 0.1;
+
+    #[WorkerState('Records that this process has warned about a lock it could not take; holds no request data.')]
+    private static bool $warnedUnlocked = false;
+
+    /**
      * The token each open connection on this worker wrote into the session
      * table, keyed by its response, so its own teardown can tell whether the
      * session still belongs to it. Weak: a closed response takes its entry.
@@ -56,11 +73,12 @@ final class SseWorkerTables
         $this->server = $server;
     }
 
-    public function setTables(Table $sessionWorker, Table $deliver, ?Table $pending = null): void
+    public function setTables(Table $sessionWorker, Table $deliver, ?Table $pending = null, ?Lock $ownershipLock = null): void
     {
         $this->sessionWorker = $sessionWorker;
         $this->deliver = $deliver;
         $this->pending = $pending;
+        $this->ownershipLock = $ownershipLock;
     }
 
     public function server(): ?Server
@@ -121,7 +139,9 @@ final class SseWorkerTables
             $this->connections[$connection] = $token;
             $row = ['connection' => $token, 'opened_seq' => SseOrder::next()] + $row;
         }
-        $this->sessionWorker?->set(self::tableKey($sessionId), $row);
+        $key = self::tableKey($sessionId);
+        // Without the lock a claim is still written: a set alone strands nothing.
+        $this->exclusively(fn () => $this->sessionWorker?->set($key, $row));
     }
 
     /**
@@ -150,10 +170,51 @@ final class SseWorkerTables
      */
     public function releaseOwnership(string $sessionId, ?object $connection = null): void
     {
-        if ($connection !== null && $this->supersededAt($sessionId, $connection) !== null) {
+        // Without the lock a release leaves the row: a stale claim is overwritten
+        // by the next one, an erased live claim leaves the tab unrouted.
+        $this->exclusively(function () use ($sessionId, $connection): void {
+            if ($connection !== null && $this->supersededAt($sessionId, $connection) !== null) {
+                return;
+            }
+            $this->sessionWorker?->del(self::tableKey($sessionId));
+        }, runUnlocked: false);
+    }
+
+    /**
+     * Run $section under the ownership lock, waiting at most LOCK_WAIT_SECONDS:
+     * the section is two table operations, so a longer wait means the holder
+     * died inside it and the process-shared mutex will never be released.
+     * Then $section runs unlocked or not at all, as $runUnlocked says, and
+     * this process says so once, instead of every worker blocking on every
+     * connection until the server restarts.
+     */
+    private function exclusively(\Closure $section, bool $runUnlocked = true): void
+    {
+        if ($this->ownershipLock === null) {
+            $section();
+
             return;
         }
-        $this->sessionWorker?->del(self::tableKey($sessionId));
+        // @phpstan-ignore arguments.count (the stubs predate Swoole 6's lock(int $operation, float $timeout))
+        if ($this->ownershipLock->lock(LOCK_EX, self::LOCK_WAIT_SECONDS) !== true) {
+            if (!self::$warnedUnlocked) {
+                self::$warnedUnlocked = true;
+                StaticLoggerBridge::warning('ssr', 'SSE ownership lock not acquired in time (a worker may have died holding it)', [
+                    'wait_seconds' => self::LOCK_WAIT_SECONDS,
+                    'section' => $runUnlocked ? 'ran unlocked' : 'skipped',
+                ]);
+            }
+            if ($runUnlocked) {
+                $section();
+            }
+
+            return;
+        }
+        try {
+            $section();
+        } finally {
+            $this->ownershipLock->unlock();
+        }
     }
 
     /** Whether this worker holds the session's current connection, or nothing records who does. */

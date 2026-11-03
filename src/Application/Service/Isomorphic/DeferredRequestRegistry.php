@@ -185,7 +185,7 @@ final class DeferredRequestRegistry
      * and any visitor can send one. The renderers ask first and render such a
      * page's slots inline, as for a crawler.
      *
-     * @param array<string, mixed> $pageContext
+     * @param array<mixed> $pageContext what the page renders with, as store() takes it
      * @param array<string, mixed>|null $snapshot the current Swoole request's by default
      */
     public static function fits(array $pageContext, ?array $snapshot = null): bool

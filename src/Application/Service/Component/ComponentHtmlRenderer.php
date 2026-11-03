@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Component;
 
+use Semitexa\Ssr\Application\Service\Isomorphic\DeferredInlineWarning;
 use Semitexa\Ssr\Context\IsomorphicContextStore;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
@@ -124,6 +125,12 @@ final class ComponentHtmlRenderer
             $immediate = $forceImmediateRender || CoroutineLocal::get(self::CTX_IMMEDIATE, false) === true;
             $deferringNow = !$immediate && $deferred && $transportMode === TransportType::Sse
                 && IsomorphicContextStore::getPageHandle() !== '';
+            // A page with no deferred slots learns here, once, whether its
+            // request can be stored; if not, its components render now.
+            if ($deferringNow && !IsomorphicContextStore::lateDeferralFits()) {
+                DeferredInlineWarning::once(IsomorphicContextStore::getPageHandle());
+                $deferringNow = false;
+            }
 
             // ONE identity per rendered instance. A re-render passes its id back
             // as the `instanceId` prop, so the instance keeps it.

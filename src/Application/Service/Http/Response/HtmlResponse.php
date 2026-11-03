@@ -355,8 +355,8 @@ class HtmlResponse extends ResourceResponse
         // A request too big to store (a long request URL, repeated in the
         // context and carried by the snapshot) is rendered inline, as for a
         // crawler: deferred slots and deferred components alike, instead of a
-        // 500 at store() or a placeholder nothing fills.
-        if (!DeferredRequestRegistry::fits(self::sanitizeDeferredContext($context))) {
+        // 500 at store(). Without slots the first deferred component asks.
+        if ($deferredSlots !== [] && !DeferredRequestRegistry::fits(self::sanitizeDeferredContext($context))) {
             \Semitexa\Ssr\Application\Service\Isomorphic\DeferredInlineWarning::once($handle);
 
             return $context;
@@ -385,6 +385,7 @@ class HtmlResponse extends ResourceResponse
         }
 
         $bindToken = bin2hex(random_bytes(16));
+        IsomorphicContextStore::setLateDeferral($deferredSlots !== [] ? null : static fn (): bool => DeferredRequestRegistry::fits(self::sanitizeDeferredContext($context)));
         if ($deferredSlots !== []) {
             self::storeDeferredRequest($requestId, $handle, $context, $deferredSlots, $bindToken);
         } else {

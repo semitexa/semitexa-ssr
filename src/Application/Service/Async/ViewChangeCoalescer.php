@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service\Async;
 
 use Semitexa\Core\Support\Row;
+use Swoole\Lock;
 use Swoole\Table;
 
 /**
@@ -53,9 +54,22 @@ final class ViewChangeCoalescer
         'params' => 4096,
     ];
 
+    /**
+     * Makes submit() and consume() exclusive across workers. submit() is an
+     * incr and a set; a consume() between them deleted the row, and the set
+     * wrote it back with pending >= 1 and no control in flight, so every later
+     * command coalesced into nothing and the stream stopped following its view
+     * (reproduced in 2 of 200 runs of two submitting workers and one
+     * consuming). A row-level compare-and-set would do without it (Swoole 6.3).
+     */
+    private readonly ?Lock $lock;
+
     public function __construct(
         private readonly Table $table,
-    ) {}
+        ?Lock $lock = null,
+    ) {
+        $this->lock = $lock;
+    }
 
     /**
      * Build a real, created {@see \Swoole\Table} for the view-change counters +
@@ -70,7 +84,8 @@ final class ViewChangeCoalescer
         $table->column('params', Table::TYPE_STRING, self::COLUMNS['params']);
         $table->create();
 
-        return new self($table);
+        // Created with the table, before the fork, so every worker shares it.
+        return new self($table, new Lock(\defined('SWOOLE_MUTEX') ? SWOOLE_MUTEX : 2));
     }
 
     /**
@@ -93,11 +108,17 @@ final class ViewChangeCoalescer
         // BOTH columns back explicitly with the incremented pending — so the params
         // overwrite never disturbs the counter regardless of Swoole's partial-set
         // semantics. Mirrors R3's incr-as-the-atomic-primitive discipline.
-        $pending = (int) $this->table->incr($key, 'pending', 1);
-        $this->table->set($key, [
-            'pending' => $pending,
-            'params' => self::encode($params),
-        ]);
+        $params = self::encode($params);
+        $this->lock?->lock();
+        try {
+            $pending = (int) $this->table->incr($key, 'pending', 1);
+            $this->table->set($key, [
+                'pending' => $pending,
+                'params' => $params,
+            ]);
+        } finally {
+            $this->lock?->unlock();
+        }
 
         return $pending === 1;
     }
@@ -113,10 +134,15 @@ final class ViewChangeCoalescer
     public function consume(string $streamingId): ?array
     {
         $key = $this->key($streamingId);
-        $row = $this->table->get($key);
-        // Clear regardless: a present-but-undecodable row is still consumed so a
-        // later command can re-arm rather than coalescing into a dead pending mark.
-        $this->table->del($key);
+        $this->lock?->lock();
+        try {
+            $row = $this->table->get($key);
+            // Clear regardless: a present-but-undecodable row is still consumed so a
+            // later command can re-arm rather than coalescing into a dead pending mark.
+            $this->table->del($key);
+        } finally {
+            $this->lock?->unlock();
+        }
 
         if (!is_array($row)) {
             return null;

@@ -14,7 +14,8 @@ use Swoole\Atomic;
  * the controls, as in the server. A consume() between a submit()'s incr and
  * its set used to leave a pending row with no control in flight: every later
  * command coalesced into nothing. Real processes, since the race is between
- * them; before the lock, 247 of 300 such bursts ended so.
+ * them; with no lock and that order, 247 of 300 such bursts ended so. Both
+ * the locked path and the unlocked one a lock timeout falls back to are held.
  */
 final class ViewChangeCoalescerRaceTest extends TestCase
 {
@@ -33,6 +34,20 @@ final class ViewChangeCoalescerRaceTest extends TestCase
         }
 
         self::assertSame(0, $stuck, "{$stuck} of " . self::RUNS . ' bursts left a pending row with no control in flight');
+    }
+
+    #[Test]
+    public function a_burst_that_runs_unlocked_still_leaves_no_stream_that_ignores_the_next_command(): void
+    {
+        // What runs after a lock timeout: the same table, no lock.
+        $stuck = 0;
+        for ($run = 0; $run < self::RUNS; $run++) {
+            $locked = ViewChangeCoalescer::create(64);
+            $table = (new \ReflectionProperty(ViewChangeCoalescer::class, 'table'))->getValue($locked);
+            $stuck += $this->burstLeavesItStuck(new ViewChangeCoalescer($table)) ? 1 : 0;
+        }
+
+        self::assertSame(0, $stuck, "{$stuck} of " . self::RUNS . ' unlocked bursts left a pending row with no control in flight');
     }
 
     #[Test]
@@ -62,9 +77,9 @@ final class ViewChangeCoalescerRaceTest extends TestCase
         self::assertLessThan(0.5, $waited, 'bounded by the lock wait, not by the holder');
     }
 
-    private function burstLeavesItStuck(): bool
+    private function burstLeavesItStuck(?ViewChangeCoalescer $coalescer = null): bool
     {
-        $coalescer = ViewChangeCoalescer::create(64);
+        $coalescer ??= ViewChangeCoalescer::create(64);
         $inFlight = new Atomic(0);
         $finished = new Atomic(0);
         $children = [];

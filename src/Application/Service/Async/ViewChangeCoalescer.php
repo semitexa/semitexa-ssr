@@ -57,12 +57,12 @@ final class ViewChangeCoalescer
     ];
 
     /**
-     * Makes submit() and consume() exclusive across workers. submit() is an
-     * incr and a set; a consume() between them deleted the row, and the set
-     * wrote it back with pending >= 1 and no control in flight, so every later
-     * command coalesced into nothing and the stream stopped following its view
-     * (reproduced in 2 of 200 runs of two submitting workers and one
-     * consuming). A row-level compare-and-set would do without it (Swoole 6.3).
+     * Makes submit() and consume() exclusive across workers, so the params a
+     * consume() reads are the latest a submit() wrote. Liveness does not rest
+     * on it: submit() writes the params before its incr, so a stream is never
+     * left with a pending row and no control in flight, locked or not (an
+     * incr-then-set order did that in 247 of 300 bursts at 4 workers).
+     * A row-level compare-and-set would do without it (Swoole 6.3).
      */
     private readonly ?Lock $lock;
 
@@ -111,19 +111,17 @@ final class ViewChangeCoalescer
     {
         $key = $this->key($streamingId);
 
-        // Atomic gate first (creates the row at pending=1 when absent), then write
-        // BOTH columns back explicitly with the incremented pending — so the params
-        // overwrite never disturbs the counter regardless of Swoole's partial-set
-        // semantics. Mirrors R3's incr-as-the-atomic-primitive discipline.
+        // The params first, then the atomic gate. set() with only `params` keeps
+        // an existing row's counter and creates a missing row at pending=0, so
+        // a pending >= 1 row is only ever made by the incr that returns 1, whose
+        // caller enqueues the control that will consume it. Even unlocked (a
+        // lock timeout), a consume() between the two cannot leave a pending row
+        // with no control in flight; the lock keeps the LATEST params exact.
         $params = self::encode($params);
         $pending = $this->exclusively(function () use ($key, $params): int {
-            $pending = (int) $this->table->incr($key, 'pending', 1);
-            $this->table->set($key, [
-                'pending' => $pending,
-                'params' => $params,
-            ]);
+            $this->table->set($key, ['params' => $params]);
 
-            return $pending;
+            return (int) $this->table->incr($key, 'pending', 1);
         });
 
         return $pending === 1;
@@ -152,8 +150,15 @@ final class ViewChangeCoalescer
         if (!is_array($row)) {
             return null;
         }
+        // A row the gate made alone: run unlocked, a consume() took the params
+        // between a submit()'s set and its incr. That submit's control carries
+        // its params inline; null sends the caller to them.
+        $params = Row::of($row)->string('params');
+        if ($params === '') {
+            return null;
+        }
 
-        return self::decode(Row::of($row)->string('params'));
+        return self::decode($params);
     }
 
     public function isPending(string $streamingId): bool
@@ -185,9 +190,11 @@ final class ViewChangeCoalescer
      * Run $section under the lock, waiting at most LOCK_WAIT_SECONDS. The
      * section is three table operations, so a longer wait means the holder
      * died inside it (killed, out of memory) and the process-shared mutex
-     * will never be released: the section then runs unlocked, as it did
-     * before the lock, and this process says so once, instead of every
-     * worker blocking on every command until the server restarts.
+     * will never be released: the section then runs unlocked, and this
+     * process says so once, instead of every worker blocking on every command
+     * until the server restarts. Unlocked, a stream still follows every later
+     * command (see submit()), and a burst at worst re-runs with an older view
+     * of the same burst instead of the latest.
      *
      * @template T
      * @param \Closure(): T $section

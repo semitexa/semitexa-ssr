@@ -88,4 +88,24 @@ final class DeferredRequestFitsTest extends TestCase
         self::assertFalse($fits, 'a long query on the request being served');
         self::assertTrue(DeferredRequestRegistry::fits($small), 'outside a request there is no snapshot to measure');
     }
+
+    #[Test]
+    public function a_small_request_being_served_still_defers(): void
+    {
+        // The other side of the case above: a measured snapshot that fits
+        // is admitted, so fits() cannot pass by refusing every bound request.
+        $request = $this->createStub(SwooleRequest::class);
+        $request->get = ['q' => 'a'];
+        $request->server = ['request_method' => 'GET', 'request_uri' => '/shop'];
+        $bound = [$request, $this->createStub(SwooleResponse::class), $this->createStub(Server::class)];
+        $fits = null;
+
+        Coroutine\run(static function () use ($bound, &$fits): void {
+            $key = (new ReflectionClassConstant(SwooleBootstrap::class, 'COROUTINE_CONTEXT_KEY'))->getValue();
+            Coroutine::getContext()[$key] = $bound;
+            $fits = DeferredRequestRegistry::fits(['page' => ['iri' => '/shop']]);
+        });
+
+        self::assertTrue($fits);
+    }
 }

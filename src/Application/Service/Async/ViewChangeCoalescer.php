@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service\Async;
 
 use Semitexa\Core\Support\Row;
+use Semitexa\Core\Attribute\WorkerState;
+use Semitexa\Core\Log\StaticLoggerBridge;
 use Swoole\Lock;
 use Swoole\Table;
 
@@ -64,6 +66,11 @@ final class ViewChangeCoalescer
      */
     private readonly ?Lock $lock;
 
+    private const LOCK_WAIT_SECONDS = 0.1;
+
+    #[WorkerState('Records that this process has warned about running unlocked; holds no request data.')]
+    private static bool $warnedUnlocked = false;
+
     public function __construct(
         private readonly Table $table,
         ?Lock $lock = null,
@@ -109,16 +116,15 @@ final class ViewChangeCoalescer
         // overwrite never disturbs the counter regardless of Swoole's partial-set
         // semantics. Mirrors R3's incr-as-the-atomic-primitive discipline.
         $params = self::encode($params);
-        $this->lock?->lock();
-        try {
+        $pending = $this->exclusively(function () use ($key, $params): int {
             $pending = (int) $this->table->incr($key, 'pending', 1);
             $this->table->set($key, [
                 'pending' => $pending,
                 'params' => $params,
             ]);
-        } finally {
-            $this->lock?->unlock();
-        }
+
+            return $pending;
+        });
 
         return $pending === 1;
     }
@@ -134,15 +140,14 @@ final class ViewChangeCoalescer
     public function consume(string $streamingId): ?array
     {
         $key = $this->key($streamingId);
-        $this->lock?->lock();
-        try {
+        $row = $this->exclusively(function () use ($key): mixed {
             $row = $this->table->get($key);
             // Clear regardless: a present-but-undecodable row is still consumed so a
             // later command can re-arm rather than coalescing into a dead pending mark.
             $this->table->del($key);
-        } finally {
-            $this->lock?->unlock();
-        }
+
+            return $row;
+        });
 
         if (!is_array($row)) {
             return null;
@@ -174,6 +179,37 @@ final class ViewChangeCoalescer
     public function count(): int
     {
         return count($this->table);
+    }
+
+    /**
+     * Run $section under the lock, waiting at most LOCK_WAIT_SECONDS. The
+     * section is three table operations, so a longer wait means the holder
+     * died inside it (killed, out of memory) and the process-shared mutex
+     * will never be released: the section then runs unlocked, as it did
+     * before the lock, and this process says so once, instead of every
+     * worker blocking on every command until the server restarts.
+     *
+     * @template T
+     * @param \Closure(): T $section
+     * @return T
+     */
+    private function exclusively(\Closure $section): mixed
+    {
+        // @phpstan-ignore arguments.count (the stubs predate Swoole 6's lock(int $operation, float $timeout))
+        $held = $this->lock?->lock(LOCK_EX, self::LOCK_WAIT_SECONDS) === true;
+        if ($this->lock !== null && !$held && !self::$warnedUnlocked) {
+            self::$warnedUnlocked = true;
+            StaticLoggerBridge::warning('ssr', 'View-change coalescer lock not acquired in time; running unlocked (a worker may have died holding it)', [
+                'wait_seconds' => self::LOCK_WAIT_SECONDS,
+            ]);
+        }
+        try {
+            return $section();
+        } finally {
+            if ($held) {
+                $this->lock->unlock();
+            }
+        }
     }
 
     /**

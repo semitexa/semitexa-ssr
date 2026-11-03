@@ -70,6 +70,18 @@ final class ViewChangeCoalescerTest extends TestCase
     }
 
     #[Test]
+    public function a_row_the_gate_made_without_params_consumes_to_null(): void
+    {
+        $coalescer = ViewChangeCoalescer::create(64);
+        $table = (new \ReflectionProperty(ViewChangeCoalescer::class, 'table'))->getValue($coalescer);
+        // Unlocked, a consume() between a submit()'s set and incr leaves this.
+        $table->incr('str_a', 'pending', 1);
+
+        self::assertNull($coalescer->consume('str_a'), 'the control carries the params inline');
+        self::assertFalse($coalescer->isPending('str_a'));
+    }
+
+    #[Test]
     public function peek_reads_the_latest_params_without_consuming(): void
     {
         $coalescer = ViewChangeCoalescer::create(64);

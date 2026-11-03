@@ -170,8 +170,9 @@ final class SseControlRouter
      * A view change: re-run with a FILTER-ONLY parameter override.
      *
      * The coalescer holds the latest view when several changes arrived in quick
-     * succession; the inline `params` are the uncoalesced fallback for when no
-     * coalescer is wired. Note the asymmetry with re-run: `consume()` already
+     * succession; the inline `params` are read when it has none: no coalescer
+     * is wired, or a consume() raced an unlocked submit() (see
+     * ViewChangeCoalescer::consume()). Note the asymmetry with re-run: `consume()` already
      * clears the pending mark, so there is nothing to clear afterwards.
      *
      * @param array<string, mixed> $data

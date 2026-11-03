@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service\Async;
 
 use Semitexa\Core\Support\Row;
+use Semitexa\Core\Attribute\WorkerState;
+use Semitexa\Core\Log\StaticLoggerBridge;
+use Swoole\Lock;
 use Swoole\Table;
 
 /**
@@ -53,9 +56,27 @@ final class ViewChangeCoalescer
         'params' => 4096,
     ];
 
+    /**
+     * Makes submit() and consume() exclusive across workers, so the params a
+     * consume() reads are the latest a submit() wrote. Liveness does not rest
+     * on it: submit() writes the params before its incr, so a stream is never
+     * left with a pending row and no control in flight, locked or not (an
+     * incr-then-set order did that in 247 of 300 bursts at 4 workers).
+     * A row-level compare-and-set would do without it (Swoole 6.3).
+     */
+    private readonly ?Lock $lock;
+
+    private const LOCK_WAIT_SECONDS = 0.1;
+
+    #[WorkerState('Records that this process has warned about running unlocked; holds no request data.')]
+    private static bool $warnedUnlocked = false;
+
     public function __construct(
         private readonly Table $table,
-    ) {}
+        ?Lock $lock = null,
+    ) {
+        $this->lock = $lock;
+    }
 
     /**
      * Build a real, created {@see \Swoole\Table} for the view-change counters +
@@ -70,7 +91,8 @@ final class ViewChangeCoalescer
         $table->column('params', Table::TYPE_STRING, self::COLUMNS['params']);
         $table->create();
 
-        return new self($table);
+        // Created with the table, before the fork, so every worker shares it.
+        return new self($table, new Lock(\defined('SWOOLE_MUTEX') ? SWOOLE_MUTEX : 2));
     }
 
     /**
@@ -89,15 +111,18 @@ final class ViewChangeCoalescer
     {
         $key = $this->key($streamingId);
 
-        // Atomic gate first (creates the row at pending=1 when absent), then write
-        // BOTH columns back explicitly with the incremented pending — so the params
-        // overwrite never disturbs the counter regardless of Swoole's partial-set
-        // semantics. Mirrors R3's incr-as-the-atomic-primitive discipline.
-        $pending = (int) $this->table->incr($key, 'pending', 1);
-        $this->table->set($key, [
-            'pending' => $pending,
-            'params' => self::encode($params),
-        ]);
+        // The params first, then the atomic gate. set() with only `params` keeps
+        // an existing row's counter and creates a missing row at pending=0, so
+        // a pending >= 1 row is only ever made by the incr that returns 1, whose
+        // caller enqueues the control that will consume it. Even unlocked (a
+        // lock timeout), a consume() between the two cannot leave a pending row
+        // with no control in flight; the lock keeps the LATEST params exact.
+        $params = self::encode($params);
+        $pending = $this->exclusively(function () use ($key, $params): int {
+            $this->table->set($key, ['params' => $params]);
+
+            return (int) $this->table->incr($key, 'pending', 1);
+        });
 
         return $pending === 1;
     }
@@ -106,23 +131,36 @@ final class ViewChangeCoalescer
      * Atomically read the latest view's params for `$streamingId` and clear the row
      * (re-arming the next burst). Called by the loop branch (R4) when it drains a
      * `{__ctrl:viewchange}` control. Returns null when nothing is pending (the
-     * decisive cross-worker / torn-down edge — a safe no-op re-run is skipped).
+     * decisive cross-worker / torn-down edge — a safe no-op re-run is skipped),
+     * and when the row holds no params (a consume() raced an unlocked submit();
+     * the control carries that command's params inline).
      *
      * @return array<string, mixed>|null
      */
     public function consume(string $streamingId): ?array
     {
         $key = $this->key($streamingId);
-        $row = $this->table->get($key);
-        // Clear regardless: a present-but-undecodable row is still consumed so a
-        // later command can re-arm rather than coalescing into a dead pending mark.
-        $this->table->del($key);
+        $row = $this->exclusively(function () use ($key): mixed {
+            $row = $this->table->get($key);
+            // Clear regardless: a present-but-undecodable row is still consumed so a
+            // later command can re-arm rather than coalescing into a dead pending mark.
+            $this->table->del($key);
+
+            return $row;
+        });
 
         if (!is_array($row)) {
             return null;
         }
+        // A row the gate made alone: run unlocked, a consume() took the params
+        // between a submit()'s set and its incr. That submit's control carries
+        // its params inline; null sends the caller to them.
+        $params = Row::of($row)->string('params');
+        if ($params === '') {
+            return null;
+        }
 
-        return self::decode(Row::of($row)->string('params'));
+        return self::decode($params);
     }
 
     public function isPending(string $streamingId): bool
@@ -148,6 +186,39 @@ final class ViewChangeCoalescer
     public function count(): int
     {
         return count($this->table);
+    }
+
+    /**
+     * Run $section under the lock, waiting at most LOCK_WAIT_SECONDS. The
+     * section is two table operations, so a longer wait means the holder
+     * died inside it (killed, out of memory) and the process-shared mutex
+     * will never be released: the section then runs unlocked, and this
+     * process says so once, instead of every worker blocking on every command
+     * until the server restarts. Unlocked, a stream still follows every later
+     * command (see submit()), and a burst at worst re-runs with an older view
+     * of the same burst instead of the latest.
+     *
+     * @template T
+     * @param \Closure(): T $section
+     * @return T
+     */
+    private function exclusively(\Closure $section): mixed
+    {
+        // @phpstan-ignore arguments.count (the stubs predate Swoole 6's lock(int $operation, float $timeout))
+        $held = $this->lock?->lock(LOCK_EX, self::LOCK_WAIT_SECONDS) === true;
+        if ($this->lock !== null && !$held && !self::$warnedUnlocked) {
+            self::$warnedUnlocked = true;
+            StaticLoggerBridge::warning('ssr', 'View-change coalescer lock not acquired in time; running unlocked (a worker may have died holding it)', [
+                'wait_seconds' => self::LOCK_WAIT_SECONDS,
+            ]);
+        }
+        try {
+            return $section();
+        } finally {
+            if ($held) {
+                $this->lock->unlock();
+            }
+        }
     }
 
     /**

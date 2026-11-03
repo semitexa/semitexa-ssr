@@ -85,10 +85,43 @@ final class SseWorkerTablesOwnershipRaceTest extends TestCase
             $warned->setValue(null, false);
         }
 
-        self::assertIsArray($released, 'a release it could not lock leaves the row; the next claim overwrites it');
+        self::assertIsArray($released, 'a release it could not lock is never done unlocked');
         self::assertIsArray($sessions->get('other'), 'a claim it could not lock is still written');
         self::assertGreaterThanOrEqual(0.2, $waited, 'both waited for the lock');
         self::assertLessThan(1.0, $waited, 'bounded by the lock wait, not by the holder');
+
+        // The next ownership call that takes the lock finishes the release.
+        $tables->recordOwnership('third', new \stdClass());
+        self::assertFalse($sessions->get('tab'), 'the deferred release is done under the lock');
+    }
+
+    #[Test]
+    public function a_deferred_release_spares_a_claim_made_since(): void
+    {
+        [$sessions, $deliver] = $this->tables();
+        $lock = new Lock(\defined('SWOOLE_MUTEX') ? SWOOLE_MUTEX : 2);
+        $old = new SseWorkerTables();
+        $old->setTables($sessions, $deliver, null, $lock);
+        $connection = new \stdClass();
+        $old->recordOwnership('tab', $connection);
+        $warned = new \ReflectionProperty(SseWorkerTables::class, 'warnedUnlocked');
+        $warned->setValue(null, true);
+        $lock->lock();
+        try {
+            $old->releaseOwnership('tab', $connection);
+        } finally {
+            $lock->unlock();
+            $warned->setValue(null, false);
+        }
+        // The tab reconnects (another worker) before the old one's worker takes the lock again.
+        $fresh = new SseWorkerTables();
+        $fresh->setTables($sessions, $deliver, null, $lock);
+        $fresh->recordOwnership('tab', new \stdClass());
+        $claim = $sessions->get('tab');
+
+        $old->recordOwnership('other', new \stdClass());
+
+        self::assertSame($claim, $sessions->get('tab'), 'the reconnect\'s claim is not the released one');
     }
 
     /** @return array{Table, Table} */

@@ -56,6 +56,18 @@ final class SseWorkerTables
 
     private const LOCK_WAIT_SECONDS = 0.1;
 
+    /** Releases a lock timeout deferred, kept per worker; past this the oldest stays stale. */
+    private const MAX_DEFERRED_RELEASES = 1024;
+
+    /**
+     * Releases the lock was not taken for: table key => the releasing
+     * connection's token. Finished under the lock by this worker's next
+     * claim or release, and only while the row still carries that token.
+     *
+     * @var array<string, string>
+     */
+    private array $deferredReleases = [];
+
     #[WorkerState('Records that this process has warned about a lock it could not take; holds no request data.')]
     private static bool $warnedUnlocked = false;
 
@@ -170,14 +182,34 @@ final class SseWorkerTables
      */
     public function releaseOwnership(string $sessionId, ?object $connection = null): void
     {
-        // Without the lock a release leaves the row: a stale claim is overwritten
-        // by the next one, an erased live claim leaves the tab unrouted.
-        $this->exclusively(function () use ($sessionId, $connection): void {
+        $ran = $this->exclusively(function () use ($sessionId, $connection): void {
             if ($connection !== null && $this->supersededAt($sessionId, $connection) !== null) {
                 return;
             }
             $this->sessionWorker?->del(self::tableKey($sessionId));
         }, runUnlocked: false);
+        // Never deleted unlocked: that read-then-delete is the race the lock
+        // closes. Finished later, under the lock, if the claim is still ours.
+        $token = $connection !== null ? ($this->connections[$connection] ?? null) : null;
+        if (!$ran && $token !== null) {
+            unset($this->deferredReleases[self::tableKey($sessionId)]);
+            $this->deferredReleases[self::tableKey($sessionId)] = $token;
+            if (count($this->deferredReleases) > self::MAX_DEFERRED_RELEASES) {
+                unset($this->deferredReleases[array_key_first($this->deferredReleases)]);
+            }
+        }
+    }
+
+    /** Under the lock: drop each deferred release's row that its connection still holds. */
+    private function finishDeferredReleases(): void
+    {
+        foreach ($this->deferredReleases as $key => $token) {
+            $row = $this->sessionWorker?->get($key);
+            if (is_array($row) && Row::of($row)->string('connection') === $token) {
+                $this->sessionWorker?->del($key);
+            }
+        }
+        $this->deferredReleases = [];
     }
 
     /**
@@ -186,14 +218,14 @@ final class SseWorkerTables
      * died inside it and the process-shared mutex will never be released.
      * Then $section runs unlocked or not at all, as $runUnlocked says, and
      * this process says so once, instead of every worker blocking on every
-     * connection until the server restarts.
+     * connection until the server restarts. Whether $section ran is returned.
      */
-    private function exclusively(\Closure $section, bool $runUnlocked = true): void
+    private function exclusively(\Closure $section, bool $runUnlocked = true): bool
     {
         if ($this->ownershipLock === null) {
             $section();
 
-            return;
+            return true;
         }
         // @phpstan-ignore arguments.count (the stubs predate Swoole 6's lock(int $operation, float $timeout))
         if ($this->ownershipLock->lock(LOCK_EX, self::LOCK_WAIT_SECONDS) !== true) {
@@ -208,13 +240,16 @@ final class SseWorkerTables
                 $section();
             }
 
-            return;
+            return $runUnlocked;
         }
         try {
+            $this->finishDeferredReleases();
             $section();
         } finally {
             $this->ownershipLock->unlock();
         }
+
+        return true;
     }
 
     /** Whether this worker holds the session's current connection, or nothing records who does. */

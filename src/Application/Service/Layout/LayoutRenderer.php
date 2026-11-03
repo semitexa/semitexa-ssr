@@ -61,7 +61,7 @@ class LayoutRenderer
                 $defers = $deferredSlots !== [] || $hasDeferredComponentCandidates;
                 $fits = !$defers || DeferredRequestRegistry::fits($context);
                 if (!$fits) {
-                    \Semitexa\Core\Log\StaticLoggerBridge::warning('ssr', 'Deferred content rendered inline: the request cannot be stored for deferred rendering (page context over SSR_DEFERRED_CONTEXT_SIZE or nested past 32 levels, request snapshot over SSR_REQUEST_SNAPSHOT_SIZE, or a value JSON cannot encode)', ['handle' => $handle]);
+                    \Semitexa\Ssr\Application\Service\Isomorphic\DeferredInlineWarning::once($handle);
                 }
 
                 if ($fits && $defers) {

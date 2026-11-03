@@ -131,7 +131,9 @@ final class ViewChangeCoalescer
      * Atomically read the latest view's params for `$streamingId` and clear the row
      * (re-arming the next burst). Called by the loop branch (R4) when it drains a
      * `{__ctrl:viewchange}` control. Returns null when nothing is pending (the
-     * decisive cross-worker / torn-down edge — a safe no-op re-run is skipped).
+     * decisive cross-worker / torn-down edge — a safe no-op re-run is skipped),
+     * and when the row holds no params (a consume() raced an unlocked submit();
+     * the control carries that command's params inline).
      *
      * @return array<string, mixed>|null
      */
@@ -188,7 +190,7 @@ final class ViewChangeCoalescer
 
     /**
      * Run $section under the lock, waiting at most LOCK_WAIT_SECONDS. The
-     * section is three table operations, so a longer wait means the holder
+     * section is two table operations, so a longer wait means the holder
      * died inside it (killed, out of memory) and the process-shared mutex
      * will never be released: the section then runs unlocked, and this
      * process says so once, instead of every worker blocking on every command

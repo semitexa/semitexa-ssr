@@ -96,9 +96,10 @@ final class SseControlFrame
     }
 
     /**
-     * A view change. `$params` is omitted when a coalescer already holds the
-     * pending view — the marker then means "read the latest view from the
-     * coalescer", which is how N rapid changes collapse into one re-run.
+     * A view change. With a coalescer the marker means "read the latest view
+     * from the coalescer", which is how N rapid changes collapse into one
+     * re-run; `$params`, when given, are the command's own view, read only
+     * when the coalescer has none for the stream.
      *
      * @param array<string, mixed>|null $params
      * @return array<string, mixed>

@@ -1598,12 +1598,14 @@ final class SseServer implements FeedStreamSinkInterface
 
         // Store the latest view + gate the enqueue. Only the 0→1 command enqueues a
         // control; the owner reads the LATEST params from the coalescer when it
-        // drains, so a coalesced burst re-queries the final view. The control also
-        // carries this command's params, read only when the coalescer's row has
-        // none (a consume() raced an unlocked submit()). Coalescing is
-        // per-streaming_id, so distinct subscriptions on one session never collide.
+        // drains, so a coalesced burst re-queries the final view; the control's own
+        // params are read only when the row has none (a consume() raced an unlocked
+        // submit()), and stay out when they do not encode, or the frame would not
+        // be delivered and the pending mark never clear. Coalescing is per
+        // streaming_id, so distinct subscriptions on one session never collide.
         if ($this->runtime()->viewChangeCoalescer->submit($streamingId, $params)) {
-            $this->deliver($sessionId, SseControlFrame::viewChange($streamingId, $params));
+            $inline = json_encode($params) === false ? null : $params;
+            $this->deliver($sessionId, SseControlFrame::viewChange($streamingId, $inline));
         }
 
         return true;

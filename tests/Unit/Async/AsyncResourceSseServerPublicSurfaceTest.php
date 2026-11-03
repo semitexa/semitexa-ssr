@@ -71,7 +71,7 @@ final class AsyncResourceSseServerPublicSurfaceTest extends TestCase
         'setServer' => 'static function(Swoole\Http\Server $server): void',
         'setSseServedPaths' => 'static function(array $paths): void',
         'setSubscriptionFactory' => 'static function(?Semitexa\Ssr\Domain\Contract\SubscriptionFactoryInterface $factory): void',
-        'setTables' => 'static function(Swoole\Table $sessionWorkerTable, Swoole\Table $deliverTable, ?Swoole\Table $pendingDeliverTable=): void',
+        'setTables' => 'static function(Swoole\Table $sessionWorkerTable, Swoole\Table $deliverTable, ?Swoole\Table $pendingDeliverTable=, ?Swoole\Lock $ownershipLock=): void',
         'setViewChangeCoalescer' => 'static function(?Semitexa\Ssr\Application\Service\Async\ViewChangeCoalescer $coalescer): void',
         'submitSubscribe' => 'static function(string $sessionId, string $streamingId, string $routePath, string $routeMethod, array $requestSnapshot, string $routeName=, ?string $requesterTenantId=, bool $acceptsPatches=): bool',
         'submitUnsubscribe' => 'static function(string $sessionId, string $streamingId): bool',

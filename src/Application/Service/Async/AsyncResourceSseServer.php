@@ -111,9 +111,9 @@ final class AsyncResourceSseServer
         self::instance()->setSseServedPaths($paths);
     }
 
-    public static function setTables(\Swoole\Table $sessionWorkerTable, \Swoole\Table $deliverTable, ?\Swoole\Table $pendingDeliverTable = null): void
+    public static function setTables(\Swoole\Table $sessionWorkerTable, \Swoole\Table $deliverTable, ?\Swoole\Table $pendingDeliverTable = null, ?\Swoole\Lock $ownershipLock = null): void
     {
-        self::instance()->setTables($sessionWorkerTable, $deliverTable, $pendingDeliverTable);
+        self::instance()->setTables($sessionWorkerTable, $deliverTable, $pendingDeliverTable, $ownershipLock);
     }
 
     public static function setDeferredBlockOrchestrator(?DeferredBlockOrchestrator $orchestrator): void

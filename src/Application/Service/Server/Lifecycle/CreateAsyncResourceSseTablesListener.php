@@ -10,6 +10,7 @@ use Semitexa\Core\Server\Lifecycle\ServerLifecycleListenerInterface;
 use Semitexa\Core\Server\Lifecycle\ServerLifecyclePhase;
 use Semitexa\Ssr\Application\Service\Async\SseOrder;
 use Swoole\Atomic\Long;
+use Swoole\Lock;
 use Swoole\Table;
 
 #[AsServerLifecycleListener(
@@ -53,7 +54,8 @@ final class CreateAsyncResourceSseTablesListener implements ServerLifecycleListe
 
         $context->bootstrapState->set(
             SsrBootstrapStateKey::ASYNC_RESOURCE_SSE_TABLES,
-            new AsyncResourceSseTables($sessionWorkerTable, $deliverTable, $pendingDeliverTable),
+            // The lock too is created before the fork, so every worker shares it.
+            new AsyncResourceSseTables($sessionWorkerTable, $deliverTable, $pendingDeliverTable, new Lock(\defined('SWOOLE_MUTEX') ? SWOOLE_MUTEX : 2)),
         );
     }
 }

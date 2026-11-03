@@ -127,6 +127,50 @@ final class ComponentRendererDeferredTest extends TestCase
         self::assertSame([], ComponentInstanceStore::all());
     }
 
+    /**
+     * A page with no deferred slots stores its request late. Whether it fits
+     * is asked by the first deferred component, once; a page that renders
+     * none never asks (the demo home page encoded 172 KB per request to learn
+     * it did not fit).
+     */
+    public function testALateRequestThatDoesNotFitRendersTheComponentNowAndIsAskedOnce(): void
+    {
+        $this->registerDeferredSseComponent();
+        IsomorphicContextStore::setPageHandle('demo.page');
+        $asked = 0;
+        IsomorphicContextStore::setLateDeferral(static function () use (&$asked): bool {
+            $asked++;
+
+            return false;
+        });
+
+        self::assertSame('rendered:Hello', ComponentRenderer::render('deferred_demo', ['title' => 'Hello']));
+        self::assertSame('rendered:Again', ComponentRenderer::render('deferred_demo', ['title' => 'Again']));
+        self::assertSame([], ComponentInstanceStore::all(), 'no placeholder a stored request would never fill');
+        self::assertSame(1, $asked, 'asked once per request');
+    }
+
+    public function testALateRequestThatFitsStillDefersAndAPageWithoutComponentsNeverAsks(): void
+    {
+        $this->registerDeferredSseComponent();
+        IsomorphicContextStore::setPageHandle('demo.page');
+        $asked = 0;
+        IsomorphicContextStore::setLateDeferral(static function () use (&$asked): bool {
+            $asked++;
+
+            return true;
+        });
+        self::assertSame(0, $asked, 'nothing rendered, nothing asked');
+
+        $html = ComponentRenderer::render('deferred_demo', ['title' => 'Hello']);
+
+        self::assertStringContainsString('data-ssr-deferred-component="deferred_demo"', $html);
+        self::assertStringContainsString('data-ssr-deferred-component="deferred_demo"', ComponentRenderer::render('deferred_demo', ['title' => 'Again']));
+        self::assertSame(1, $asked, 'a fitting answer is cached too');
+        IsomorphicContextStore::setLateDeferral(null);
+        self::assertTrue(IsomorphicContextStore::lateDeferralFits(), 'a request stored up front is not asked again');
+    }
+
     public function testForceImmediateRenderSkipsDeferredShortCircuit(): void
     {
         $this->registerDeferredSseComponent();

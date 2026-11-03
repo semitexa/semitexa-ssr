@@ -19,6 +19,7 @@ final class IsomorphicContextStore
 {
     private const KEY_PAGE_HANDLE = '__ssr_iso_page_handle';
     private const KEY_SESSION_ID = '__ssr_iso_session_id';
+    private const KEY_LATE_FITS = '__ssr_iso_late_fits';
 
     public static function setPageHandle(string $handle): void
     {
@@ -40,10 +41,41 @@ final class IsomorphicContextStore
         return self::text(self::KEY_SESSION_ID);
     }
 
+    /**
+     * A page with no deferred slots stores its request late, and only when a
+     * deferred component renders. Whether that request fits is asked then, by
+     * the first such component, not up front: the demo home page, which
+     * renders none, encoded its 172 KB context on every request to learn it.
+     *
+     * @param (\Closure(): bool)|null $fits asked at most once per request; null when the request is stored up front
+     */
+    public static function setLateDeferral(?\Closure $fits): void
+    {
+        if ($fits === null) {
+            CoroutineLocal::remove(self::KEY_LATE_FITS);
+
+            return;
+        }
+        CoroutineLocal::set(self::KEY_LATE_FITS, $fits);
+    }
+
+    /** Whether a deferred component may defer: true unless a late request does not fit. */
+    public static function lateDeferralFits(): bool
+    {
+        $fits = CoroutineLocal::get(self::KEY_LATE_FITS);
+        if ($fits instanceof \Closure) {
+            $fits = $fits() === true;
+            CoroutineLocal::set(self::KEY_LATE_FITS, $fits);
+        }
+
+        return $fits !== false;
+    }
+
     public static function reset(): void
     {
         CoroutineLocal::remove(self::KEY_PAGE_HANDLE);
         CoroutineLocal::remove(self::KEY_SESSION_ID);
+        CoroutineLocal::remove(self::KEY_LATE_FITS);
     }
 
     private static function text(string $key): string

@@ -176,6 +176,40 @@ final class DeferredRequestRegistry
     }
 
     /**
+     * Whether a deferred request can be stored: the page context in its
+     * column (with room for the UI SSE session store() adds), and the request
+     * snapshot in its own. A long request URL fills both. The context repeats
+     * it (iri, canonical, alternates), and the snapshot carries it with the
+     * query and headers. A 7 000-character query took every deferred page to a
+     * 500, since store() and storeRequestSnapshot() refuse an oversized row,
+     * and any visitor can send one. The renderers ask first and render such a
+     * page's slots inline, as for a crawler.
+     *
+     * @param array<mixed> $pageContext what the page renders with, as store() takes it
+     * @param array<string, mixed>|null $snapshot the current Swoole request's by default
+     */
+    public static function fits(array $pageContext, ?array $snapshot = null): bool
+    {
+        $contextSize = self::$contextColumnSize > 0 ? self::$contextColumnSize : 8192;
+        $snapshotSize = self::$snapshotColumnSize > 0 ? self::$snapshotColumnSize : 4096;
+        $snapshot ??= self::snapshotFromCurrentSwooleRequest();
+        try {
+            // store() refuses a context nested past its depth limit too.
+            $sanitized = self::sanitizeContext($pageContext);
+            self::validateContext($sanitized);
+            $context = json_encode($sanitized, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+            $request = $snapshot === null ? '' : json_encode($snapshot, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+        } catch (\JsonException | DeferredRenderingException) {
+            return false;
+        }
+
+        return strlen($context) + self::SESSION_HEADROOM <= $contextSize && strlen($request) <= $snapshotSize;
+    }
+
+    /** What store() may add to a context after fits() measured it: the UI SSE session id. */
+    private const SESSION_HEADROOM = 256;
+
+    /**
      * @param array<mixed> $pageContext what the page renders with; only what serializes is kept
      * @param list<string> $slotIds
      */

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Http\Response;
 
+use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Core\Attribute\AsResource;
 use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\HttpResponse as CoreResponse;
@@ -350,6 +351,15 @@ class HtmlResponse extends ResourceResponse
         $deferredSlots = LayoutSlotRegistry::getDeferredSlots($handle);
         $hasDeferredComponentCandidates = ComponentRegistry::hasDeferredSseComponent();
         if ($deferredSlots === [] && !$hasDeferredComponentCandidates) {
+            return $context;
+        }
+        // A request too big to store (a long request URL, repeated in the
+        // context and carried by the snapshot) is rendered inline, as for a
+        // crawler: deferred slots and deferred components alike, instead of a
+        // 500 at store() or a placeholder nothing fills.
+        if (!DeferredRequestRegistry::fits(self::sanitizeDeferredContext($context))) {
+            StaticLoggerBridge::warning('ssr', 'Deferred content rendered inline: the request cannot be stored for deferred rendering (page context over SSR_DEFERRED_CONTEXT_SIZE or nested past 32 levels, request snapshot over SSR_REQUEST_SNAPSHOT_SIZE, or a value JSON cannot encode)', ['handle' => $handle]);
+
             return $context;
         }
 

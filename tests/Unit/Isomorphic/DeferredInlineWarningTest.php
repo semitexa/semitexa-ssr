@@ -75,4 +75,22 @@ final class DeferredInlineWarningTest extends TestCase
 
         self::assertSame(['demo_home', 'demo_blog'], $this->lines);
     }
+
+    #[Test]
+    public function past_256_handles_the_worker_forgets_and_a_handle_may_warn_again(): void
+    {
+        DeferredInlineWarning::once('first');
+        for ($i = 1; $i < 256; $i++) {
+            DeferredInlineWarning::once("page_{$i}");
+        }
+        DeferredInlineWarning::once('first');
+        self::assertCount(256, $this->lines, 'within the cap a handle warns once');
+
+        // The 257th handle clears what the worker remembers.
+        DeferredInlineWarning::once('page_256');
+        DeferredInlineWarning::once('first');
+
+        self::assertSame(['page_256', 'first'], array_slice($this->lines, -2));
+        self::assertCount(258, $this->lines);
+    }
 }

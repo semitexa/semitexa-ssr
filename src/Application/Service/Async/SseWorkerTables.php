@@ -222,13 +222,14 @@ final class SseWorkerTables
      */
     private function exclusively(\Closure $section, bool $runUnlocked = true): bool
     {
-        if ($this->ownershipLock === null) {
+        $lock = $this->ownershipLock;
+        if ($lock === null) {
             $section();
 
             return true;
         }
         // @phpstan-ignore arguments.count (the stubs predate Swoole 6's lock(int $operation, float $timeout))
-        if ($this->ownershipLock->lock(LOCK_EX, self::LOCK_WAIT_SECONDS) !== true) {
+        if ($lock->lock(LOCK_EX, self::LOCK_WAIT_SECONDS) !== true) {
             if (!self::$warnedUnlocked) {
                 self::$warnedUnlocked = true;
                 StaticLoggerBridge::warning('ssr', 'SSE ownership lock not acquired in time (a worker may have died holding it)', [
@@ -246,7 +247,7 @@ final class SseWorkerTables
             $this->finishDeferredReleases();
             $section();
         } finally {
-            $this->ownershipLock->unlock();
+            $lock->unlock();
         }
 
         return true;

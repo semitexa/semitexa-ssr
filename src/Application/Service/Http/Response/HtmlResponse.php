@@ -353,10 +353,12 @@ class HtmlResponse extends ResourceResponse
         if ($deferredSlots === [] && !$hasDeferredComponentCandidates) {
             return $context;
         }
-        // A context too big to store (a long request URL, repeated in it) is
-        // rendered inline, as for a crawler, instead of a 500 at store().
-        if ($deferredSlots !== [] && !DeferredRequestRegistry::fits(self::sanitizeDeferredContext($context))) {
-            StaticLoggerBridge::warning('ssr', 'Deferred slots rendered inline: the page context exceeds SSR_DEFERRED_CONTEXT_SIZE', ['handle' => $handle]);
+        // A request too big to store (a long request URL, repeated in the
+        // context and carried by the snapshot) is rendered inline, as for a
+        // crawler: deferred slots and deferred components alike, instead of a
+        // 500 at store() or a placeholder nothing fills.
+        if (!DeferredRequestRegistry::fits(self::sanitizeDeferredContext($context))) {
+            StaticLoggerBridge::warning('ssr', 'Deferred content rendered inline: the request does not fit SSR_DEFERRED_CONTEXT_SIZE (page context) or SSR_REQUEST_SNAPSHOT_SIZE (request snapshot)', ['handle' => $handle]);
 
             return $context;
         }

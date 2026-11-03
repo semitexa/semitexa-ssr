@@ -176,10 +176,6 @@ final class DeferredRequestRegistry
     }
 
     /**
-     * @param array<mixed> $pageContext what the page renders with; only what serializes is kept
-     * @param list<string> $slotIds
-     */
-    /**
      * Whether a deferred request can be stored: the page context in its
      * column (with room for the UI SSE session store() adds), and the request
      * snapshot in its own. A long request URL fills both. The context repeats
@@ -198,9 +194,12 @@ final class DeferredRequestRegistry
         $snapshotSize = self::$snapshotColumnSize > 0 ? self::$snapshotColumnSize : 4096;
         $snapshot ??= self::snapshotFromCurrentSwooleRequest();
         try {
-            $context = json_encode(self::sanitizeContext($pageContext), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+            // store() refuses a context nested past its depth limit too.
+            $sanitized = self::sanitizeContext($pageContext);
+            self::validateContext($sanitized);
+            $context = json_encode($sanitized, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
             $request = $snapshot === null ? '' : json_encode($snapshot, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
-        } catch (\JsonException) {
+        } catch (\JsonException | DeferredRenderingException) {
             return false;
         }
 
@@ -210,6 +209,10 @@ final class DeferredRequestRegistry
     /** What store() may add to a context after fits() measured it: the UI SSE session id. */
     private const SESSION_HEADROOM = 256;
 
+    /**
+     * @param array<mixed> $pageContext what the page renders with; only what serializes is kept
+     * @param list<string> $slotIds
+     */
     public static function store(
         string $requestId,
         string $pageHandle,

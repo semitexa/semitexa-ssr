@@ -163,6 +163,7 @@ final class DeferredRequestRegistryTest extends TestCase
      */
     public function testALiveStreamKeepsItsPageAlivePastTheTtl(): void
     {
+        $this->bootRegistry();
         $id = 'dr_keep_alive';
         DeferredRequestRegistry::store($id, 'page', [], ['slot'], 'token', 'en');
         $this->ageRow($id, 500);
@@ -173,6 +174,7 @@ final class DeferredRequestRegistryTest extends TestCase
 
     public function testAPageNobodyVouchesForStillExpires(): void
     {
+        $this->bootRegistry();
         $id = 'dr_no_keep_alive';
         DeferredRequestRegistry::store($id, 'page', [], ['slot'], 'token', 'en');
         $this->ageRow($id, 500);
@@ -182,6 +184,7 @@ final class DeferredRequestRegistryTest extends TestCase
 
     public function testKeepAliveBringsNothingBackFromTheDead(): void
     {
+        $this->bootRegistry();
         DeferredRequestRegistry::store('dr_other', 'page', [], ['slot'], 'token', 'en');
         $id = 'dr_gone';
         DeferredRequestRegistry::keepAlive($id);
@@ -193,7 +196,9 @@ final class DeferredRequestRegistryTest extends TestCase
     private function ageRow(string $id, int $seconds): void
     {
         $table = DeferredRequestRegistry::getTable();
-        $this->assertNotNull($table);
+        if ($table === null) {
+            $this->fail('The registry has no table.');
+        }
         foreach ($table as $key => $row) {
             if (str_contains((string) $key, $id)) {
                 $table->set((string) $key, ['created_at' => time() - $seconds]);

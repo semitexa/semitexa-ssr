@@ -17,6 +17,19 @@ use Semitexa\Core\Attribute\Capability;
         'the same Twig include copied across several templates',
         'per-page <script> tags wiring one block by hand',
     ],
+    usage: <<<'USAGE'
+        #[AsComponent(name: 'shop.card', template: '@project-layouts-Shop/card.html.twig')]
+        final class CardComponent {}
+
+        // In any template; the props are the template's context:
+        {{ component('shop.card', {title: 'Orders'}) }}
+
+        // Own data comes from #[WithDataProvider(CardData::class)], an #[AsService] implementing
+        // DataProviderInterface::resolve(DataProviderContext $context, array $hint = []): array.
+        // A component that reacts to the visitor needs #[UiPart] and #[UiOn], and
+        // {{ ui_page_sse_session_meta() }} on the page. Before writing one, check what exists
+        // with ai:ask components: a form, grid, table or card is already there.
+        USAGE,
 )]
 #[Attribute(Attribute::TARGET_CLASS)]
 class AsComponent

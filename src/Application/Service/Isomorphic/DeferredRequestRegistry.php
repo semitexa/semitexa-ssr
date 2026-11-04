@@ -126,6 +126,7 @@ final class DeferredRequestRegistry
         $table->column('delivered', Table::TYPE_STRING, 2048);
         $table->column('request_snapshot', Table::TYPE_STRING, $config->requestSnapshotSize);
         $table->column('created_at', Table::TYPE_INT);
+        $table->column('renewed_at', Table::TYPE_INT);
         $table->create();
         return $table;
     }
@@ -195,8 +196,8 @@ final class DeferredRequestRegistry
         $snapshot ??= self::snapshotFromCurrentSwooleRequest();
         try {
             // store() refuses a context nested past its depth limit too.
-            $sanitized = self::sanitizeContext($pageContext);
-            self::validateContext($sanitized);
+            $sanitized = DeferredContextValues::sanitize($pageContext);
+            DeferredContextValues::validate($sanitized);
             $context = json_encode($sanitized, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
             $request = $snapshot === null ? '' : json_encode($snapshot, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
         } catch (\JsonException | DeferredRenderingException) {
@@ -229,8 +230,8 @@ final class DeferredRequestRegistry
             self::initialize($config);
         }
 
-        $pageContext = self::sanitizeContext($pageContext);
-        self::validateContext($pageContext);
+        $pageContext = DeferredContextValues::sanitize($pageContext);
+        DeferredContextValues::validate($pageContext);
 
         // Capture the originating page's canonical UI SSE session id (the live
         // `sub` channel minted by ui_page_sse_session_meta() / the page
@@ -625,6 +626,22 @@ final class DeferredRequestRegistry
         return hash_equals($entry->bindToken, $bindToken);
     }
 
+    /**
+     * A page with a live slot outlives the TTL, and its stream reconnects: once at
+     * SSE_MAX_CONNECTION_AGE_SECONDS, or on any drop. An expired request then answers
+     * nothing and the slot freezes for good, with no error anywhere. So the stream
+     * vouches for the page while it is open.
+     *
+     * A column of its own, not created_at: that one is how a write to a vanished
+     * row is told from a real one, see {@see updateExistingRow()}.
+     */
+    public static function keepAlive(?string $requestId): void
+    {
+        if ($requestId !== null) {
+            self::updateExistingRow(self::tableKey($requestId), ['renewed_at' => time()]);
+        }
+    }
+
     public static function remove(string $requestId): void
     {
         self::$table?->del(self::tableKey($requestId));
@@ -633,58 +650,6 @@ final class DeferredRequestRegistry
     public static function getTable(): ?Table
     {
         return self::$table;
-    }
-
-    /**
-     * @param array<mixed> $context
-     *
-     * @return array<mixed>
-     */
-    private static function sanitizeContext(array $context): array
-    {
-        $sanitized = [];
-
-        foreach ($context as $key => $value) {
-            $normalized = self::sanitizeValue($value);
-            if ($normalized === self::unsupportedMarker()) {
-                continue;
-            }
-
-            $sanitized[$key] = $normalized;
-        }
-
-        return $sanitized;
-    }
-
-    private static function sanitizeValue(mixed $value): mixed
-    {
-        if ($value === null || is_scalar($value)) {
-            return $value;
-        }
-
-        if (!is_array($value)) {
-            return self::unsupportedMarker();
-        }
-
-        $sanitized = [];
-        foreach ($value as $key => $item) {
-            $normalized = self::sanitizeValue($item);
-            if ($normalized === self::unsupportedMarker()) {
-                continue;
-            }
-
-            $sanitized[$key] = $normalized;
-        }
-
-        return $sanitized;
-    }
-
-    private static function unsupportedMarker(): object
-    {
-        /** @var \stdClass|null $marker */
-        static $marker = null;
-
-        return $marker ??= new \stdClass();
     }
 
     private static function gc(): void
@@ -697,7 +662,7 @@ final class DeferredRequestRegistry
         $toDelete = [];
 
         foreach (self::$table as $key => $row) {
-            if (is_string($key) && is_array($row) && ($now - Row::asInt($row['created_at'] ?? null)) > self::TTL_SECONDS) {
+            if (is_string($key) && is_array($row) && ($now - max(Row::asInt($row['created_at'] ?? null), Row::asInt($row['renewed_at'] ?? null))) > self::TTL_SECONDS) {
                 $toDelete[] = $key;
             }
         }
@@ -710,26 +675,6 @@ final class DeferredRequestRegistry
     private static function tableKey(string $requestId): string
     {
         return strlen($requestId) > 63 ? md5($requestId) : $requestId;
-    }
-
-    private static function validateContext(mixed $value, int $depth = 0): void
-    {
-        if ($depth > 32) {
-            throw new DeferredRenderingException('Page context exceeds maximum nesting depth.');
-        }
-
-        if (is_array($value)) {
-            foreach ($value as $item) {
-                self::validateContext($item, $depth + 1);
-            }
-            return;
-        }
-
-        if (is_null($value) || is_scalar($value)) {
-            return;
-        }
-
-        throw new DeferredRenderingException('Page context contains non-serializable values.');
     }
 
     public static function reset(): void

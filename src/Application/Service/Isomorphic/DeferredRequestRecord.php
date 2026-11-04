@@ -41,6 +41,8 @@ final readonly class DeferredRequestRecord
         public array $delivered,
         public ?array $requestSnapshot,
         public ?int $createdAt,
+        /** When a live stream last vouched for this page; 0 if none did. */
+        public int $renewedAt = 0,
     ) {
     }
 
@@ -73,6 +75,7 @@ final readonly class DeferredRequestRecord
             delivered:       self::jsonStringList($row, 'delivered'),
             requestSnapshot: self::jsonMapOrNull($row, 'request_snapshot'),
             createdAt:       is_numeric($row['created_at'] ?? null) ? (int) $row['created_at'] : null,
+            renewedAt:       is_numeric($row['renewed_at'] ?? null) ? (int) $row['renewed_at'] : 0,
         );
     }
 
@@ -87,7 +90,7 @@ final readonly class DeferredRequestRecord
             return false;
         }
 
-        return ($now - $this->createdAt) > $ttlSeconds;
+        return ($now - max($this->createdAt, $this->renewedAt)) > $ttlSeconds;
     }
 
     /** @param array<string, mixed> $row */

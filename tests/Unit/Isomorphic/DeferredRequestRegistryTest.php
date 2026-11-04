@@ -161,6 +161,49 @@ final class DeferredRequestRegistryTest extends TestCase
      * DeferredRenderingException and LayoutRenderer logs a failed finalisation
      * and abandons the rest of the work for a request nobody will read again.
      */
+    public function testALiveStreamKeepsItsPageAlivePastTheTtl(): void
+    {
+        $id = 'dr_keep_alive';
+        DeferredRequestRegistry::store($id, 'page', [], ['slot'], 'token', 'en');
+        $this->ageRow($id, 500);
+        DeferredRequestRegistry::keepAlive($id);
+
+        $this->assertNotNull(DeferredRequestRegistry::consume($id));
+    }
+
+    public function testAPageNobodyVouchesForStillExpires(): void
+    {
+        $id = 'dr_no_keep_alive';
+        DeferredRequestRegistry::store($id, 'page', [], ['slot'], 'token', 'en');
+        $this->ageRow($id, 500);
+
+        $this->assertNull(DeferredRequestRegistry::consume($id));
+    }
+
+    public function testKeepAliveBringsNothingBackFromTheDead(): void
+    {
+        DeferredRequestRegistry::store('dr_other', 'page', [], ['slot'], 'token', 'en');
+        $id = 'dr_gone';
+        DeferredRequestRegistry::keepAlive($id);
+
+        $this->assertNull(DeferredRequestRegistry::consume($id));
+        $this->assertSame(1, DeferredRequestRegistry::getTable()?->count());
+    }
+
+    private function ageRow(string $id, int $seconds): void
+    {
+        $table = DeferredRequestRegistry::getTable();
+        $this->assertNotNull($table);
+        foreach ($table as $key => $row) {
+            if (str_contains((string) $key, $id)) {
+                $table->set((string) $key, ['created_at' => time() - $seconds]);
+
+                return;
+            }
+        }
+        $this->fail('No row for ' . $id);
+    }
+
     public function testAVanishedRowIsNotReportedAsAFailedWrite(): void
     {
         $this->bootRegistry();

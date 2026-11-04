@@ -182,6 +182,21 @@ final class DeferredRequestRegistryTest extends TestCase
         $this->assertNull(DeferredRequestRegistry::consume($id));
     }
 
+    public function testTheCollectorSparesARenewedPageAndTakesAnAbandonedOne(): void
+    {
+        $this->bootRegistry();
+        DeferredRequestRegistry::store('dr_renewed', 'page', [], ['slot'], 'token', 'en');
+        DeferredRequestRegistry::store('dr_abandoned', 'page', [], ['slot'], 'token', 'en');
+        $this->ageRow('dr_renewed', 500);
+        $this->ageRow('dr_abandoned', 500);
+        DeferredRequestRegistry::keepAlive('dr_renewed');
+
+        (new \ReflectionMethod(DeferredRequestRegistry::class, 'gc'))->invoke(null);
+
+        $this->assertNotNull(DeferredRequestRegistry::consume('dr_renewed'));
+        $this->assertSame(1, DeferredRequestRegistry::getTable()?->count());
+    }
+
     public function testKeepAliveBringsNothingBackFromTheDead(): void
     {
         $this->bootRegistry();

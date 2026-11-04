@@ -166,10 +166,43 @@ final class DeferredRequestRegistryTest extends TestCase
         $this->bootRegistry();
         $id = 'dr_keep_alive';
         DeferredRequestRegistry::store($id, 'page', [], ['slot'], 'token', 'en');
+        DeferredRequestRegistry::keepAlive($id);
+        $this->ageRow($id, 500);
+
+        $this->assertNotNull(DeferredRequestRegistry::consume($id));
+    }
+
+    public function testAWrongBindTokenRenewsNothing(): void
+    {
+        $this->bootRegistry();
+        $id = 'dr_wrong_token';
+        DeferredRequestRegistry::store($id, 'page', [], ['slot'], 'token', 'en');
+        DeferredRequestRegistry::keepAlive($id, 'not-the-token');
+        $this->ageRow($id, 500);
+
+        $this->assertNull(DeferredRequestRegistry::consume($id));
+    }
+
+    public function testTheRightBindTokenRenews(): void
+    {
+        $this->bootRegistry();
+        $id = 'dr_right_token';
+        DeferredRequestRegistry::store($id, 'page', [], ['slot'], 'token', 'en');
+        DeferredRequestRegistry::keepAlive($id, 'token');
+        $this->ageRow($id, 500);
+
+        $this->assertNotNull(DeferredRequestRegistry::consume($id));
+    }
+
+    public function testAnExpiredRequestIsNotBroughtBack(): void
+    {
+        $this->bootRegistry();
+        $id = 'dr_expired';
+        DeferredRequestRegistry::store($id, 'page', [], ['slot'], 'token', 'en');
         $this->ageRow($id, 500);
         DeferredRequestRegistry::keepAlive($id);
 
-        $this->assertNotNull(DeferredRequestRegistry::consume($id));
+        $this->assertNull(DeferredRequestRegistry::consume($id));
     }
 
     public function testAPageNobodyVouchesForStillExpires(): void
@@ -187,13 +220,24 @@ final class DeferredRequestRegistryTest extends TestCase
         $this->bootRegistry();
         DeferredRequestRegistry::store('dr_renewed', 'page', [], ['slot'], 'token', 'en');
         DeferredRequestRegistry::store('dr_abandoned', 'page', [], ['slot'], 'token', 'en');
+        DeferredRequestRegistry::keepAlive('dr_renewed');
         $this->ageRow('dr_renewed', 500);
         $this->ageRow('dr_abandoned', 500);
-        DeferredRequestRegistry::keepAlive('dr_renewed');
 
         (new \ReflectionMethod(DeferredRequestRegistry::class, 'gc'))->invoke(null);
 
         $this->assertNotNull(DeferredRequestRegistry::consume('dr_renewed'));
+        $this->assertSame(1, DeferredRequestRegistry::getTable()?->count());
+    }
+
+    public function testAStreamWithNoDeferredRequestVouchesForNothing(): void
+    {
+        $this->bootRegistry();
+        DeferredRequestRegistry::store('dr_other', 'page', [], ['slot'], 'token', 'en');
+
+        DeferredRequestRegistry::keepAlive('');
+        DeferredRequestRegistry::keepAlive(null);
+
         $this->assertSame(1, DeferredRequestRegistry::getTable()?->count());
     }
 

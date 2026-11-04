@@ -627,17 +627,17 @@ final class DeferredRequestRegistry
     }
 
     /**
-     * An open page outlives the TTL, and its stream reconnects: once at
-     * SSE_MAX_CONNECTION_AGE_SECONDS, or on any drop. An expired request then answers
-     * nothing: a live slot freezes for good, and any live page is refused for ever.
-     * So every held-open stream vouches for its page, guests included.
-     *
-     * A column of its own, not created_at: that one is how a write to a vanished
-     * row is told from a real one, see {@see updateExistingRow()}.
+     * An open page outlives the TTL, and a reconnect finding its request expired is
+     * refused for ever. So a held-open stream vouches for its page: with a token,
+     * as its id comes from the query, and never for an expired request. A column of
+     * its own: created_at is how {@see updateExistingRow()} spots a vanished row.
      */
-    public static function keepAlive(?string $requestId): void
+    public static function keepAlive(?string $requestId, ?string $bindToken = null): void
     {
-        if ($requestId !== null && $requestId !== '') {
+        if ($requestId === null || $requestId === '' || ($bindToken !== null && !self::matchesBindToken($requestId, $bindToken))) {
+            return;
+        }
+        if (self::consume($requestId) !== null) {
             self::updateExistingRow(self::tableKey($requestId), ['renewed_at' => time()]);
         }
     }

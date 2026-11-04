@@ -729,7 +729,7 @@ final class SseServer implements FeedStreamSinkInterface
                 break;
             }
 
-            \Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry::keepAlive(SseStreamRequest::fromRequest($request)->deferredRequestId);
+            \Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry::keepAlive(SseStreamRequest::fromRequest($request)->deferredRequestId, $this->getSsrBindToken($request));
             $this->sessionRegistry()->waitForWork($sessionId, self::HELD_OPEN_TICK_SECONDS);
         }
         \Semitexa\Core\Server\InFlightRequests::tearDownAfterDrain(); // left for the drain: the teardown after this is spared, not cut

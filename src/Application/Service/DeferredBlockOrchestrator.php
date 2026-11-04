@@ -154,7 +154,7 @@ final class DeferredBlockOrchestrator
                 'reconnect' => $channelStaysOpen,
             ]);
             if ($liveEnabled) {
-                $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale, $requestSnapshot, $visitor);
+                $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale, $requestSnapshot, $visitor, $deferredRequestId);
             }
             return;
         }
@@ -218,7 +218,7 @@ final class DeferredBlockOrchestrator
                 'reconnect' => $channelStaysOpen,
             ]);
             if ($liveEnabled) {
-                $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale, $requestSnapshot, $visitor);
+                $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale, $requestSnapshot, $visitor, $deferredRequestId);
             }
             return;
         }
@@ -335,7 +335,7 @@ final class DeferredBlockOrchestrator
             ]);
         }
         if ($liveEnabled) {
-            $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale, $requestSnapshot, $visitor);
+            $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale, $requestSnapshot, $visitor, $deferredRequestId);
         }
     }
 
@@ -542,6 +542,7 @@ final class DeferredBlockOrchestrator
         ?string $locale = null,
         ?array $requestSnapshot = null,
         ?Request $visitor = null,
+        ?string $deferredRequestId = null,
     ): void
     {
         if ($liveSlots === []) {
@@ -568,6 +569,7 @@ final class DeferredBlockOrchestrator
             }
 
             $now = microtime(true);
+            DeferredRequestRegistry::keepAlive($deferredRequestId);
             foreach ($liveSlots as $slot) {
                 if (($now - ($lastDelivered[$slot->slotId] ?? 0)) < $slot->refreshInterval) {
                     continue;
@@ -674,14 +676,12 @@ final class DeferredBlockOrchestrator
         // ALREADY deferred. A slot resolving in two milliseconds is one whose
         // skeleton costs a round trip to hide work that had already finished.
         //
-        // A MARK carrying its own duration, not a begin/end pair. The whole
-        // point of this path is that the slots resolve CONCURRENTLY — one
-        // coroutine per slot, all sharing the request's tracer — and a span
-        // stack matched by NAME cannot survive that: two coroutines opening
-        // `slot.resolve` and closing it in the other order have each closed
-        // the other's span, so the trace reports nesting that never happened
-        // and durations belonging to a different slot. A mark touches no
-        // stack, which is what makes it safe here.
+        // A MARK carrying its own duration, not a begin/end pair: the slots
+        // resolve CONCURRENTLY, all sharing the request's tracer, and a span
+        // stack matched by NAME cannot survive that. Two coroutines closing
+        // `slot.resolve` in the other order have each closed the other's span,
+        // so the trace reports nesting that never happened and durations of
+        // a different slot. A mark touches no stack.
         $startedAt = hrtime(true);
 
         try {

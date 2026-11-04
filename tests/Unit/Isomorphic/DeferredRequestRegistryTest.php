@@ -161,6 +161,69 @@ final class DeferredRequestRegistryTest extends TestCase
      * DeferredRenderingException and LayoutRenderer logs a failed finalisation
      * and abandons the rest of the work for a request nobody will read again.
      */
+    public function testALiveStreamKeepsItsPageAlivePastTheTtl(): void
+    {
+        $this->bootRegistry();
+        $id = 'dr_keep_alive';
+        DeferredRequestRegistry::store($id, 'page', [], ['slot'], 'token', 'en');
+        $this->ageRow($id, 500);
+        DeferredRequestRegistry::keepAlive($id);
+
+        $this->assertNotNull(DeferredRequestRegistry::consume($id));
+    }
+
+    public function testAPageNobodyVouchesForStillExpires(): void
+    {
+        $this->bootRegistry();
+        $id = 'dr_no_keep_alive';
+        DeferredRequestRegistry::store($id, 'page', [], ['slot'], 'token', 'en');
+        $this->ageRow($id, 500);
+
+        $this->assertNull(DeferredRequestRegistry::consume($id));
+    }
+
+    public function testTheCollectorSparesARenewedPageAndTakesAnAbandonedOne(): void
+    {
+        $this->bootRegistry();
+        DeferredRequestRegistry::store('dr_renewed', 'page', [], ['slot'], 'token', 'en');
+        DeferredRequestRegistry::store('dr_abandoned', 'page', [], ['slot'], 'token', 'en');
+        $this->ageRow('dr_renewed', 500);
+        $this->ageRow('dr_abandoned', 500);
+        DeferredRequestRegistry::keepAlive('dr_renewed');
+
+        (new \ReflectionMethod(DeferredRequestRegistry::class, 'gc'))->invoke(null);
+
+        $this->assertNotNull(DeferredRequestRegistry::consume('dr_renewed'));
+        $this->assertSame(1, DeferredRequestRegistry::getTable()?->count());
+    }
+
+    public function testKeepAliveBringsNothingBackFromTheDead(): void
+    {
+        $this->bootRegistry();
+        DeferredRequestRegistry::store('dr_other', 'page', [], ['slot'], 'token', 'en');
+        $id = 'dr_gone';
+        DeferredRequestRegistry::keepAlive($id);
+
+        $this->assertNull(DeferredRequestRegistry::consume($id));
+        $this->assertSame(1, DeferredRequestRegistry::getTable()?->count());
+    }
+
+    private function ageRow(string $id, int $seconds): void
+    {
+        $table = DeferredRequestRegistry::getTable();
+        if ($table === null) {
+            $this->fail('The registry has no table.');
+        }
+        foreach ($table as $key => $row) {
+            if (str_contains((string) $key, $id)) {
+                $table->set((string) $key, ['created_at' => time() - $seconds]);
+
+                return;
+            }
+        }
+        $this->fail('No row for ' . $id);
+    }
+
     public function testAVanishedRowIsNotReportedAsAFailedWrite(): void
     {
         $this->bootRegistry();

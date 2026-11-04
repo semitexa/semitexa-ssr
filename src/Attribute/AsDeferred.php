@@ -5,21 +5,16 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Attribute;
 
 use Attribute;
-use Semitexa\Core\Attribute\Capability;
+use Semitexa\Core\Attribute\InternalAttribute;
 
-/** @api */
-#[Capability(
-    id: 'ssr.deferred',
-    summary: 'Renders a slot after the main page and streams it in when it is ready.',
-    useWhen: 'A region is slow enough to delay first paint - an external call, a heavy query - and the rest of the page should not wait for it.',
-    avoidWhen: 'The region is fast. Deferring adds a round trip and a visible skeleton, so it makes a quick region slower and jumpier.',
-    replaces: [
-        'a client-side fetch() against a bespoke JSON route, with manual DOM insertion',
-        'blocking the whole page render on one slow dependency',
-        'a hand-written loading skeleton toggled by page JavaScript',
-    ],
-    seeAlso: 'ssr.transport',
-)]
+/**
+ * @api
+ *
+ * @deprecated 2026.11.04 Nothing reads this attribute, so a class carrying it renders
+ *             as if it were not there. Use #[AsSlotResource(deferred: true)]; see
+ *             `ai:ask mechanisms --id=ssr.deferred`.
+ */
+#[InternalAttribute(reason: 'Deprecated and read by nothing: ssr.deferred is advertised on AsSlotResource.')]
 #[Attribute(Attribute::TARGET_CLASS)]
 final class AsDeferred
 {

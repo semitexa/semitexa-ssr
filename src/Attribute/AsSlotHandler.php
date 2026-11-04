@@ -17,6 +17,20 @@ use Semitexa\Core\Attribute\Capability;
         'computing region content inside the page handler and passing it down',
         'an if/else chain deciding what a shared region shows',
     ],
+    usage: <<<'USAGE'
+        #[AsSlotHandler(slot: StatsSlot::class)]
+        final class StatsSlotHandler implements TypedSlotHandlerInterface
+        {
+            public function handle(object $slot): object
+            {
+                return $slot->withRenderContext(['orders' => $this->orders->count()]);
+            }
+        }
+
+        // handle() gets the slot and nothing else: there is no request here. What the page
+        // knows arrives in $slot->getRenderContext(), from what the page's resource was given
+        // with $this->with('key', $value). The slot's template reads the context by key.
+        USAGE,
 )]
 #[Attribute(Attribute::TARGET_CLASS | Attribute::IS_REPEATABLE)]
 final class AsSlotHandler

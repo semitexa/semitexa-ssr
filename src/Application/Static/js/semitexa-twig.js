@@ -1038,10 +1038,22 @@
             SemitexaSSR._connect(manifest);
         }
     }
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', bootstrapDeferred);
-    } else {
+    // Decided at DOMContentLoaded, when every deferred and module script has run:
+    // this script is `defer` and the owner is a module, so placed first it ran in
+    // `interactive` with no owner yet, opened a second stream, and the slot never
+    // updated. `load` covers a copy added after that event has passed.
+    // Once for the first load only: a shell navigation calls bootstrapDeferred again.
+    var started = false;
+    function startOnce() {
+        if (started) return;
+        started = true;
         bootstrapDeferred();
+    }
+    if (document.readyState === 'complete') {
+        startOnce();
+    } else {
+        document.addEventListener('DOMContentLoaded', startOnce);
+        window.addEventListener('load', startOnce);
     }
 
     // A shell navigation swaps the document's regions without a reload, so

@@ -6,6 +6,7 @@ namespace Semitexa\Ssr\Application\Service\Layout;
 
 use Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore;
 use Semitexa\Ssr\Application\Service\Asset\AssetRenderer;
+use Semitexa\Ssr\Application\Service\Http\RenderSpan;
 use Semitexa\Ssr\Application\Service\Seo\SiteHead\SiteHeadStore;
 
 /**
@@ -21,8 +22,9 @@ final class PageDocumentFinalizer
 {
     public static function finalize(string $html): string
     {
-        $html = AssetRenderer::finalizeDynamicCss($html, AssetCollectorStore::get());
+        $html = RenderSpan::around('ssr.document.css', static fn (): string => AssetRenderer::finalizeDynamicCss($html, AssetCollectorStore::get()));
+        $html = RenderSpan::around('ssr.document.head', static fn (): string => SiteHeadStore::inject($html));
 
-        return PageBodyEndStore::inject(SiteHeadStore::inject($html));
+        return RenderSpan::around('ssr.document.body_end', static fn (): string => PageBodyEndStore::inject($html));
     }
 }

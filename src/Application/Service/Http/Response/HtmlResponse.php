@@ -15,6 +15,7 @@ use Semitexa\Ssr\Context\PageRenderContextStore;
 use Semitexa\Ssr\Application\Service\Shell\ShellResponder;
 use Semitexa\Ssr\Application\Service\Component\ComponentInstanceStore;
 use Semitexa\Ssr\Application\Service\Component\ComponentRegistry;
+use Semitexa\Ssr\Application\Service\Http\RenderSpan;
 use Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry;
 use Semitexa\Ssr\Application\Service\Isomorphic\DeferredTemplateRegistry;
 use Semitexa\Ssr\Application\Service\Isomorphic\PlaceholderRenderer;
@@ -139,8 +140,7 @@ class HtmlResponse extends ResourceResponse
         $this->beginTopLevelRender();
 
         // Populate AssetCollector before Twig renders so {{ asset_head() }} has data
-        $this->prepareAssetCollector($tmpl);
-
+        RenderSpan::around('ssr.assets', fn () => $this->prepareAssetCollector($tmpl));
         $context = $this->getRenderContext();
         if ($extraContext !== []) {
             $context = array_merge($context, $extraContext);
@@ -156,14 +156,14 @@ class HtmlResponse extends ResourceResponse
 
         /** @var array<string, mixed> $context */
         $context = $context;
-        $context = $this->applyIsomorphicContext($context);
+        $context = RenderSpan::around('ssr.isomorphic', fn (): array => $this->applyIsomorphicContext($context));
         self::applySeoDefaults($context);
         PageRenderContextStore::set($context);
 
         try {
-            $html = ModuleTemplateRegistry::getTwig()->render($tmpl, $context);
-            $html = $this->finalizeIsomorphicHtml($html, $context);
-            $html = PageDocumentFinalizer::finalize($html);
+            $html = RenderSpan::around('twig.render', fn (): string => ModuleTemplateRegistry::getTwig()->render($tmpl, $context));
+            $html = RenderSpan::around('ssr.finalize', fn (): string => $this->finalizeIsomorphicHtml($html, $context));
+            $html = RenderSpan::around('ssr.document', fn (): string => PageDocumentFinalizer::finalize($html));
             $this->setContent($html);
         } finally {
             PageRenderContextStore::reset();

@@ -47,7 +47,10 @@ final class AssetRenderer
         $bundleEmitted = false;
 
         foreach ($entries as $entry) {
-            $signature = self::buildRenderSignature($entry);
+            // Built once: the signature and the link need the same URL, and each
+            // build stats the file (54 calls for 27 entries on the demo home page).
+            $url = in_array($entry->type, ['inline-css', 'inline-js'], true) ? null : AssetManager::getUrl($entry->path, $entry->module);
+            $signature = self::buildRenderSignature($entry, $url);
             if (isset($renderedKeys[$signature])) {
                 continue;
             }
@@ -75,10 +78,10 @@ final class AssetRenderer
             }
 
             $html .= match ($entry->type) {
-                'css'        => self::renderCssLink($entry),
-                'preload'    => self::renderPreload($entry),
+                'css'        => self::renderCssLink($entry, $url),
+                'preload'    => self::renderPreload($entry, $url),
                 'inline-css' => self::renderInlineCss($entry),
-                'js'         => self::renderScript($entry),
+                'js'         => self::renderScript($entry, $url),
                 'inline-js'  => self::renderInlineScript($entry),
                 default      => '',
             };
@@ -345,10 +348,10 @@ final class AssetRenderer
         return strtolower((string) Environment::getEnvValue('APP_ENV', 'prod')) !== 'dev';
     }
 
-    private static function renderCssLink(AssetEntry $entry): string
+    private static function renderCssLink(AssetEntry $entry, ?string $url = null): string
     {
         $attrs = self::buildAttributes($entry->attributes);
-        $raw = AssetManager::getUrl($entry->path, $entry->module);
+        $raw = $url ?? AssetManager::getUrl($entry->path, $entry->module);
         $url = htmlspecialchars($raw, ENT_QUOTES, 'UTF-8');
 
         self::reportDuplicateStylesheet($entry, $raw);
@@ -391,15 +394,15 @@ final class AssetRenderer
         ]);
     }
 
-    private static function renderScript(AssetEntry $entry): string
+    private static function renderScript(AssetEntry $entry, ?string $url = null): string
     {
         $attrs = self::buildAttributes($entry->attributes);
-        $url = htmlspecialchars(AssetManager::getUrl($entry->path, $entry->module), ENT_QUOTES, 'UTF-8');
+        $url = htmlspecialchars($url ?? AssetManager::getUrl($entry->path, $entry->module), ENT_QUOTES, 'UTF-8');
 
         return '<script src="' . $url . '"' . $attrs . '></script>' . "\n";
     }
 
-    private static function renderPreload(AssetEntry $entry): string
+    private static function renderPreload(AssetEntry $entry, ?string $url = null): string
     {
         $ext = strtolower(pathinfo($entry->path, PATHINFO_EXTENSION));
         $as = match ($ext) {
@@ -410,7 +413,7 @@ final class AssetRenderer
         };
 
         $attrs = self::buildAttributes($entry->attributes);
-        $url = htmlspecialchars(AssetManager::getUrl($entry->path, $entry->module), ENT_QUOTES, 'UTF-8');
+        $url = htmlspecialchars($url ?? AssetManager::getUrl($entry->path, $entry->module), ENT_QUOTES, 'UTF-8');
         $crossOrigin = ($as === 'font') ? ' crossorigin' : '';
 
         return '<link rel="preload" href="' . $url . '" as="' . $as . '"' . $crossOrigin . $attrs . '>' . "\n";
@@ -518,11 +521,11 @@ final class AssetRenderer
         return $parts;
     }
 
-    private static function buildRenderSignature(AssetEntry $entry): string
+    private static function buildRenderSignature(AssetEntry $entry, ?string $url = null): string
     {
         $identity = match ($entry->type) {
             'inline-css', 'inline-js' => $entry->module . '|' . $entry->path,
-            default => AssetManager::getUrl($entry->path, $entry->module),
+            default => $url ?? AssetManager::getUrl($entry->path, $entry->module),
         };
 
         return $entry->type . '|' . $entry->position . '|' . $identity;

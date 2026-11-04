@@ -698,8 +698,7 @@ final class SseServer implements FeedStreamSinkInterface
         $state = new SseHeldOpenState($authenticatedUserId, time());
         $maxAgeSeconds = $this->maxConnectionAgeSeconds();
 
-        // A reconnect takes the session over (on this worker it replaces the
-        // registry entry): from then on its frames are the new connection's.
+        // A reconnect takes the session over: from then on its frames are the new connection's.
         while (!$state->isClosed() && !\Semitexa\Core\Lifecycle\WorkerDrainSignal::isDraining() && $this->sessionRegistry()->isOpenWith($sessionId, $response) && $this->workerTables()->supersededAt($sessionId, $response) === null) {
             // Hard connection-age cap — bounds hanging-connection attacks.
             if ($state->hasOutlivedCap(time(), $maxAgeSeconds)) {
@@ -730,6 +729,7 @@ final class SseServer implements FeedStreamSinkInterface
                 break;
             }
 
+            \Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry::keepAlive(SseStreamRequest::fromRequest($request)->deferredRequestId);
             $this->sessionRegistry()->waitForWork($sessionId, self::HELD_OPEN_TICK_SECONDS);
         }
         \Semitexa\Core\Server\InFlightRequests::tearDownAfterDrain(); // left for the drain: the teardown after this is spared, not cut

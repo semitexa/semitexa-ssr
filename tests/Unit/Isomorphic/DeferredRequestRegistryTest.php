@@ -197,6 +197,17 @@ final class DeferredRequestRegistryTest extends TestCase
         $this->assertSame(1, DeferredRequestRegistry::getTable()?->count());
     }
 
+    public function testAStreamWithNoDeferredRequestVouchesForNothing(): void
+    {
+        $this->bootRegistry();
+        DeferredRequestRegistry::store('dr_other', 'page', [], ['slot'], 'token', 'en');
+
+        DeferredRequestRegistry::keepAlive('');
+        DeferredRequestRegistry::keepAlive(null);
+
+        $this->assertSame(1, DeferredRequestRegistry::getTable()?->count());
+    }
+
     public function testKeepAliveBringsNothingBackFromTheDead(): void
     {
         $this->bootRegistry();

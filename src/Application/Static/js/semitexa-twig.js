@@ -753,6 +753,7 @@
         _consume: function (manifest) {
             if (!manifest || !manifest.requestId) return;
             var self = this;
+            self._stopConsuming();
             self._manifest = manifest;
             self._connected = true;
             self._consumerActive = true;
@@ -963,6 +964,9 @@
                 return resp.json();
             }).then(function (data) {
                 if (!data) return;
+                // The page may have changed while this was in flight, and a slot of
+                // the same id on the next page must not take the old page's content.
+                if (!self._manifest || self._manifest.requestId !== manifest.requestId) return;
                 for (var slotId in data) {
                     if (data.hasOwnProperty(slotId)) {
                         var el = document.querySelector('[data-ssr-deferred="' + slotId + '"]');

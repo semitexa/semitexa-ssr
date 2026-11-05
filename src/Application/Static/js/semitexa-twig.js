@@ -1076,6 +1076,10 @@
     if (typeof document !== 'undefined' && document.addEventListener) {
         document.addEventListener('semitexa:navigation:committed', function () {
             forgetManifest();
+            // This page starts here: buffered frames belong to the old one, and
+            // the wait for DOMContentLoaded must not consume a second time.
+            started = true;
+            earlyFrames.length = 0;
             bootstrapDeferred();
         });
     }

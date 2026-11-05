@@ -753,6 +753,7 @@
         _consume: function (manifest) {
             if (!manifest || !manifest.requestId) return;
             var self = this;
+            self._stopConsuming();
             self._manifest = manifest;
             self._connected = true;
             self._consumerActive = true;
@@ -795,14 +796,14 @@
                 fallbackPending();
             }, SHARED_STREAM_FALLBACK_MS);
 
-            document.addEventListener('semitexa:ui-sse:connected', function () {
+            function onConnected() {
                 self._fireEvent('semitexa:deferred:stream', {
                     phase: 'connected',
                     requestId: manifest.requestId,
                     sessionId: manifest.sessionId,
                     transport: 'shared'
                 });
-            });
+            }
 
             function onFrame(ev) {
                 var payload = (ev && ev.detail) ? ev.detail.message : null;
@@ -853,9 +854,20 @@
                 }
             }
 
+            document.addEventListener('semitexa:ui-sse:connected', onConnected);
             document.addEventListener('semitexa:ui-sse:frame', onFrame);
+            self._stopConsuming = function () {
+                clearTimeout(fallbackTimer);
+                document.removeEventListener('semitexa:ui-sse:connected', onConnected);
+                document.removeEventListener('semitexa:ui-sse:frame', onFrame);
+            };
             earlyFrames.splice(0).forEach(onFrame);
         },
+
+        // Replaced by _consume(). A navigation calls it for the page it leaves: left
+        // listening, that page rendered every frame again and its timer asked for
+        // slots that are gone.
+        _stopConsuming: function () {},
 
         _setBindCookie: function (manifest) {
             if (!manifest || !manifest.bindToken) return;
@@ -952,6 +964,9 @@
                 return resp.json();
             }).then(function (data) {
                 if (!data) return;
+                // The page may have changed while this was in flight, and a slot of
+                // the same id on the next page must not take the old page's content.
+                if (!self._manifest || self._manifest.requestId !== manifest.requestId) return;
                 for (var slotId in data) {
                     if (data.hasOwnProperty(slotId)) {
                         var el = document.querySelector('[data-ssr-deferred="' + slotId + '"]');
@@ -1076,6 +1091,7 @@
     if (typeof document !== 'undefined' && document.addEventListener) {
         document.addEventListener('semitexa:navigation:committed', function () {
             forgetManifest();
+            SemitexaSSR._stopConsuming();
             // This page starts here: buffered frames belong to the old one, and
             // the wait for DOMContentLoaded must not consume a second time.
             started = true;

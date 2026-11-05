@@ -349,6 +349,31 @@ final class ShellRegionExtractorTest extends TestCase
     }
 
     #[Test]
+    public function aMetaInsideATemplateIsNotOnThePage(): void
+    {
+        $html = '<template><template></template><meta name="semitexa-ui-sse-session" content="sse_inert"></template>'
+            . '<meta name="semitexa-ui-sse-session" content="sse_real">';
+
+        self::assertSame('sse_real', $this->extractor->pageMeta($html)['semitexa-ui-sse-session']);
+    }
+
+    #[Test]
+    public function aMetaReadsInEverySpellingHtmlAllows(): void
+    {
+        self::assertSame('sse_a', $this->extractor->pageMeta('<meta name=semitexa-ui-sse-session content=sse_a>')['semitexa-ui-sse-session']);
+        self::assertSame('sse_b', $this->extractor->pageMeta('<meta name = "semitexa-ui-sse-session" content = \'sse_b\'>')['semitexa-ui-sse-session']);
+        self::assertSame('', $this->extractor->pageMeta('<meta content="name=semitexa-ui-sse-session">')['semitexa-ui-sse-session']);
+    }
+
+    #[Test]
+    public function aMetaWithNoContentIsStillTheFirst(): void
+    {
+        $html = '<meta name="semitexa-ui-sse-session"><meta name="semitexa-ui-sse-session" content="sse_second">';
+
+        self::assertSame('', $this->extractor->pageMeta($html)['semitexa-ui-sse-session']);
+    }
+
+    #[Test]
     public function anEmptyFirstMetaStillWins(): void
     {
         // querySelector stops at it: the client reads no session on a real load.

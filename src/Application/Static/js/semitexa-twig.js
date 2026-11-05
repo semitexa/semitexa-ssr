@@ -1108,8 +1108,10 @@
     // to a page that is gone. `swapped` and not `committed`: the owner opens the
     // new page's stream on this same signal, and `committed` waits for the
     // scripts in the region, long enough for the stream's first frames to land.
+    // A platform-ui that does not announce `swapped` yet still sends `committed`.
     if (typeof document !== 'undefined' && document.addEventListener) {
-        document.addEventListener('semitexa:navigation:swapped', function () {
+        var announcesSwap = false;
+        function followSwap() {
             forgetManifest();
             SemitexaSSR._stopConsuming();
             SemitexaSSR._closeOwnStream();
@@ -1118,6 +1120,15 @@
             started = true;
             earlyFrames.length = 0;
             bootstrapDeferred();
+        }
+        document.addEventListener('semitexa:navigation:swapped', function () {
+            announcesSwap = true;
+            followSwap();
+        });
+        document.addEventListener('semitexa:navigation:committed', function () {
+            if (!announcesSwap) {
+                followSwap();
+            }
         });
     }
 })();

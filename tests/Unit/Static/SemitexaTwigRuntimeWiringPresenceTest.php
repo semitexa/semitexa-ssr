@@ -106,7 +106,12 @@ final class SemitexaTwigRuntimeWiringPresenceTest extends TestCase
         // Presence only, like everything here. `committed` waits for the scripts
         // in the region, and the owner's stream is open by then.
         self::assertStringContainsString("addEventListener('semitexa:navigation:swapped'", $this->source);
-        self::assertStringNotContainsString("addEventListener('semitexa:navigation:committed'", $this->source);
+        // verify:accept-test-change a platform-ui that only sends committed is followed until it announces swapped
+        self::assertMatchesRegularExpression(
+            "/addEventListener\\('semitexa:navigation:committed', function \\(\\) \\{\\s*if \\(!announcesSwap\\)/",
+            $this->source,
+            'committed is only the old client: with swapped it would follow a page twice.',
+        );
     }
 
     public function testTheFallbackAsksByTheManifestsHandleBeforeTheChromesAttribute(): void

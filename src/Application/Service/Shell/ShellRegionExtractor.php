@@ -66,6 +66,14 @@ final class ShellRegionExtractor
      */
     private const ATTR_START = '(?<![\w-])';
 
+    /** A <template> and all it holds, nested ones included. */
+    private const TEMPLATE_ELEMENT = '~<template\b[^>]*>(?:[^<]++|<(?!/?template\b)|(?R))*+</template\s*>~i';
+
+    /** A `>` inside a quoted value does not end the tag. */
+    private const META_TAG = '#<meta\b(?:[^>"\']|"[^"]*"|\'[^\']*\')*+>#i';
+
+    private const ATTRIBUTE_PAIR = '#([^\s=/>"\']+)(?:\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+)))?#';
+
     /** Attributes up to the one being matched, without crossing out of the tag. */
     private const ATTR = '[^>]*';
 
@@ -242,24 +250,42 @@ final class ShellRegionExtractor
     public function pageMeta(string $html): array
     {
         $html = self::withoutInertText($html);
+        // `querySelector` does not look inside a <template>.
+        $html = preg_replace(self::TEMPLATE_ELEMENT, '', $html) ?? $html;
         $meta = array_fill_keys(self::PAGE_META, null);
 
-        if (preg_match_all('#<meta\b[^>]*>#i', $html, $tags) === false) {
+        if (preg_match_all(self::META_TAG, $html, $tags) === false) {
             return array_fill_keys(self::PAGE_META, '');
         }
 
         foreach ($tags[0] as $tag) {
-            if (preg_match('#' . self::ATTR_START . 'name=["\']([^"\']+)["\']#i', $tag, $name) !== 1
-                || preg_match('#' . self::ATTR_START . 'content=["\']([^"\']*)["\']#i', $tag, $content) !== 1) {
-                continue;
-            }
+            $attributes = self::attributesOf(substr($tag, strlen('<meta')));
+            $name = $attributes['name'] ?? '';
 
-            if (array_key_exists($name[1], $meta)) {
-                $meta[$name[1]] ??= self::decode($content[1]);
+            if (array_key_exists($name, $meta)) {
+                $meta[$name] ??= self::decode($attributes['content'] ?? '');
             }
         }
 
         return array_map(static fn (?string $value): string => $value ?? '', $meta);
+    }
+
+    /**
+     * A tag's attributes in every spelling HTML allows, read in order so a value
+     * that mentions another attribute stays a value. The first of a name wins.
+     *
+     * @return array<string, string>
+     */
+    private static function attributesOf(string $tag): array
+    {
+        $attributes = [];
+        preg_match_all(self::ATTRIBUTE_PAIR, $tag, $pairs, PREG_SET_ORDER | PREG_UNMATCHED_AS_NULL);
+
+        foreach ($pairs as $pair) {
+            $attributes[strtolower((string) $pair[1])] ??= $pair[2] ?? $pair[3] ?? $pair[4] ?? '';
+        }
+
+        return $attributes;
     }
 
     /**

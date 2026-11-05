@@ -166,9 +166,13 @@ HTML;
         // `data-ssr-handle` sits on the chrome, so after a shell navigation it
         // names the first page, and the fallback asked for this page's slots
         // under that handle and got a 404.
+        $previous = IsomorphicContextStore::getPageHandle();
         IsomorphicContextStore::setPageHandle('orders');
-        $manifest = PlaceholderRenderer::renderManifest('dr_abc', 'sse_def', [], 'bind_xyz');
-        IsomorphicContextStore::setPageHandle('');
+        try {
+            $manifest = PlaceholderRenderer::renderManifest('dr_abc', 'sse_def', [], 'bind_xyz');
+        } finally {
+            IsomorphicContextStore::setPageHandle($previous);
+        }
 
         preg_match('#>(\{.*\})<#s', $manifest, $json);
 

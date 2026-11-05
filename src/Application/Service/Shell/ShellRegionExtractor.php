@@ -361,6 +361,9 @@ final class ShellRegionExtractor
 
         $js = [];
         $seen = [];
+        // Not what a region carries: the client runs that when it swaps the
+        // region in, and listing it here ran it a second time.
+        $html = $this->withoutRegions($html);
         if (preg_match_all('#<script\b[^>]*' . self::ATTR_START . 'src=["\']([^"\']+)["\'][^>]*>#i', $html, $scripts, PREG_SET_ORDER)) {
             foreach ($scripts as $script) {
                 $src = self::decode($script[1]);
@@ -411,6 +414,23 @@ final class ShellRegionExtractor
         }
 
         return $out;
+    }
+
+    /** The document with every region blanked, byte for byte. */
+    private function withoutRegions(string $html): string
+    {
+        $offset = 0;
+        while (($start = $this->findRegionStart($html, $offset, $name, $tag)) !== null) {
+            $end = $this->findRegionEnd($html, $start, (string) $tag);
+            if ($end === null) {
+                $offset = $start + 1;
+                continue;
+            }
+            $html = substr_replace($html, str_repeat(' ', $end - $start), $start, $end - $start);
+            $offset = $end;
+        }
+
+        return $html;
     }
 
     /**

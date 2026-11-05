@@ -30,7 +30,8 @@ use Semitexa\Core\Attribute\Capability;
     seeAlso: 'ssr.deferred',
     usage: <<<'USAGE'
         // Which one to reach for, each with its own usage (ai:ask mechanisms --id=...):
-        // ssr.slot-resource  a region that fills in after the page, or updates by itself
+        // ssr.slot-resource  a region of a page with its own data and template
+        // ssr.deferred       that region filled in after the page, or updating by itself
         // ssr.component      a reusable piece of markup with its own template
         // ssr.twig-extension a new function or filter for templates
         //

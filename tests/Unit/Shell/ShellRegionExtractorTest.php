@@ -360,6 +360,14 @@ final class ShellRegionExtractorTest extends TestCase
     }
 
     #[Test]
+    public function aScriptInARegionTheEnvelopeDropsStaysAnAsset(): void
+    {
+        $html = '<main data-shell-region="page"></main><aside data-shell-region="page"><script src="/widget.js"></script></aside>';
+
+        self::assertSame(['/widget.js'], array_column($this->extractor->assets($html)['js'], 'src'));
+    }
+
+    #[Test]
     public function aMetaInsideATemplateIsNotOnThePage(): void
     {
         $html = '<template><template></template><meta name="semitexa-ui-sse-session" content="sse_inert"></template>'

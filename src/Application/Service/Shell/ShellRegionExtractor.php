@@ -416,16 +416,26 @@ final class ShellRegionExtractor
         return $out;
     }
 
-    /** The document with every region blanked, byte for byte. */
+    /**
+     * The document with every region the envelope carries blanked, byte for byte.
+     * A second region of one name is not carried, see extract(): what it holds
+     * stays an asset of the page.
+     */
     private function withoutRegions(string $html): string
     {
         $offset = 0;
+        $carried = [];
         while (($start = $this->findRegionStart($html, $offset, $name, $tag)) !== null) {
             $end = $this->findRegionEnd($html, $start, (string) $tag);
             if ($end === null) {
                 $offset = $start + 1;
                 continue;
             }
+            if (isset($carried[$name])) {
+                $offset = $end;
+                continue;
+            }
+            $carried[$name] = true;
             $html = substr_replace($html, str_repeat(' ', $end - $start), $start, $end - $start);
             $offset = $end;
         }

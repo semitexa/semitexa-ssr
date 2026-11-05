@@ -27,6 +27,14 @@
     // fill still-pending slots via the XHR fallback so placeholders never hang.
     var SHARED_STREAM_FALLBACK_MS = 6000;
 
+    // Frames the owner sends while this runtime waits to learn that it has an
+    // owner. A slot would recover through the fallback; a component would not.
+    var earlyFrames = [];
+    var started = false;
+    function keepEarlyFrame(ev) {
+        if (!started) earlyFrames.push(ev);
+    }
+
     // ── The manifest ───────────────────────────────────────────────────────
     //
     // The server emits it as <script type="application/json"
@@ -796,7 +804,7 @@
                 });
             });
 
-            document.addEventListener('semitexa:ui-sse:frame', function (ev) {
+            function onFrame(ev) {
                 var payload = (ev && ev.detail) ? ev.detail.message : null;
                 if (!payload || typeof payload !== 'object') return;
 
@@ -843,7 +851,10 @@
                     self._handleComponentMessage(payload);
                     return;
                 }
-            });
+            }
+
+            document.addEventListener('semitexa:ui-sse:frame', onFrame);
+            earlyFrames.splice(0).forEach(onFrame);
         },
 
         _setBindCookie: function (manifest) {
@@ -1038,20 +1049,23 @@
             SemitexaSSR._connect(manifest);
         }
     }
-    // Decided at DOMContentLoaded, when every deferred and module script has run:
-    // this script is `defer` and the owner is a module, so placed first it ran in
-    // `interactive` with no owner yet, opened a second stream, and the slot never
-    // updated. `load` covers a copy added after that event has passed.
+    // An owner already here is consumed at once: its frames are on their way, and
+    // a component has no XHR fallback if they arrive before the listeners do.
+    // With no owner yet the decision waits for DOMContentLoaded, when every deferred
+    // and module script has run: this script is `defer` and the owner is a module,
+    // so placed first it ran in `interactive`, opened a second stream, and the slot
+    // never updated. `load` covers a copy added after that event has passed.
     // Once for the first load only: a shell navigation calls bootstrapDeferred again.
-    var started = false;
     function startOnce() {
         if (started) return;
         started = true;
         bootstrapDeferred();
     }
-    if (document.readyState === 'complete') {
+    if (document.readyState === 'complete'
+        || (document.readyState !== 'loading' && SemitexaSSR._hasUnifiedOwner())) {
         startOnce();
     } else {
+        document.addEventListener('semitexa:ui-sse:frame', keepEarlyFrame);
         document.addEventListener('DOMContentLoaded', startOnce);
         window.addEventListener('load', startOnce);
     }

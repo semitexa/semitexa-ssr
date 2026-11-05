@@ -66,6 +66,14 @@ final class ShellRegionExtractor
      */
     private const ATTR_START = '(?<![\w-])';
 
+    /** A <template> and all it holds, nested ones included. */
+    private const TEMPLATE_ELEMENT = '~<template\b[^>]*>(?:[^<]++|<(?!/?template\b)|(?R))*+</template\s*>~i';
+
+    /** A `>` inside a quoted value does not end the tag. */
+    private const META_TAG = '#<meta\b(?:[^>"\']|"[^"]*"|\'[^\']*\')*+>#i';
+
+    private const ATTRIBUTE_PAIR = '#([^\s=/>"\']+)(?:\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+)))?#';
+
     /** Attributes up to the one being matched, without crossing out of the tag. */
     private const ATTR = '[^>]*';
 
@@ -74,6 +82,9 @@ final class ShellRegionExtractor
 
     /** Stylesheet attributes that change whether and how it applies. */
     private const LINK_ATTRIBUTES = ['media', 'integrity', 'crossorigin', 'referrerpolicy'];
+
+    /** Metas that describe THIS render and so have to follow a swap. */
+    private const PAGE_META = ['semitexa-ui-sse-session', 'semitexa-ui-transport-mode'];
 
     /**
      * Every region the document marks, keyed by name, in document order.
@@ -219,6 +230,62 @@ final class ShellRegionExtractor
         }
 
         return trim((string) end($matches[1]));
+    }
+
+    /**
+     * The per-render metas this document carries, '' for each it does not.
+     *
+     * Every name is present, so an absent value says "this page has none" and
+     * the client can remove what the last page left. A page may print these
+     * in <head>, where a grid or an island announces them, and no region ever
+     * carries them there: a swap left the new page on the previous page's
+     * session and mode. Read from the whole document, because the client
+     * cannot tell which of the two places a page used.
+     *
+     * The first of each, which is the one `querySelector` hands the client on
+     * a real load.
+     *
+     * @return array<string, string>
+     */
+    public function pageMeta(string $html): array
+    {
+        $html = self::withoutInertText($html);
+        // `querySelector` does not look inside a <template>.
+        $html = preg_replace(self::TEMPLATE_ELEMENT, '', $html) ?? $html;
+        $meta = array_fill_keys(self::PAGE_META, null);
+
+        if (preg_match_all(self::META_TAG, $html, $tags) === false) {
+            return array_fill_keys(self::PAGE_META, '');
+        }
+
+        foreach ($tags[0] as $tag) {
+            $attributes = self::attributesOf(substr($tag, strlen('<meta')));
+            $name = $attributes['name'] ?? '';
+
+            if (array_key_exists($name, $meta)) {
+                $meta[$name] ??= self::decode($attributes['content'] ?? '');
+            }
+        }
+
+        return array_map(static fn (?string $value): string => $value ?? '', $meta);
+    }
+
+    /**
+     * A tag's attributes in every spelling HTML allows, read in order so a value
+     * that mentions another attribute stays a value. The first of a name wins.
+     *
+     * @return array<string, string>
+     */
+    private static function attributesOf(string $tag): array
+    {
+        $attributes = [];
+        preg_match_all(self::ATTRIBUTE_PAIR, $tag, $pairs, PREG_SET_ORDER | PREG_UNMATCHED_AS_NULL);
+
+        foreach ($pairs as $pair) {
+            $attributes[strtolower((string) $pair[1])] ??= $pair[2] ?? $pair[3] ?? $pair[4] ?? '';
+        }
+
+        return $attributes;
     }
 
     /**

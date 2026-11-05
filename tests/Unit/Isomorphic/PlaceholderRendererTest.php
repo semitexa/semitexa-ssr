@@ -7,6 +7,7 @@ namespace Semitexa\Ssr\Tests\Unit\Isomorphic;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Ssr\Domain\Model\DeferredSlotDefinition;
 use Semitexa\Ssr\Application\Service\Isomorphic\PlaceholderRenderer;
+use Semitexa\Ssr\Context\IsomorphicContextStore;
 
 final class PlaceholderRendererTest extends TestCase
 {
@@ -158,5 +159,23 @@ HTML;
             ['deferred_product_carousel', 'deferred_chart_widget'],
             array_map(static fn (DeferredSlotDefinition $slot): string => $slot->slotId, $renderedSlots)
         );
+    }
+
+    public function testManifestNamesThePageItsSlotsBelongTo(): void
+    {
+        // `data-ssr-handle` sits on the chrome, so after a shell navigation it
+        // names the first page, and the fallback asked for this page's slots
+        // under that handle and got a 404.
+        $previous = IsomorphicContextStore::getPageHandle();
+        IsomorphicContextStore::setPageHandle('orders');
+        try {
+            $manifest = PlaceholderRenderer::renderManifest('dr_abc', 'sse_def', [], 'bind_xyz');
+        } finally {
+            IsomorphicContextStore::setPageHandle($previous);
+        }
+
+        preg_match('#>(\{.*\})<#s', $manifest, $json);
+
+        self::assertSame('orders', json_decode($json[1], true, 8, JSON_THROW_ON_ERROR)['handle']);
     }
 }

@@ -8,7 +8,7 @@ namespace Semitexa\Ssr\Application\Service\Shell;
  * What a chrome-less response carries.
  *
  * A record rather than an array shape: the renderer, the client and the tests
- * all read the same five fields, and a hand-written `array{}` that drifts
+ * all read the same six fields, and a hand-written `array{}` that drifts
  * hides the branch nobody took.
  *
  * `url` is here because the SERVER decides it. A redirect, a canonicalised
@@ -24,6 +24,7 @@ final readonly class ShellEnvelope
      * @param array<string, string> $regions name => outer HTML
      * @param array{css: list<array{href: string, attrs: array<string, string>}>, js: list<array{src: string, type: string, attrs: array<string, string>}>} $assets
      * @param string $deferredManifest the page's deferred-slot manifest JSON, or '' when it defers nothing
+     * @param array<string, string> $pageMeta the render's own metas, name => content, '' when the page has none
      */
     public function __construct(
         public string $url,
@@ -31,10 +32,11 @@ final readonly class ShellEnvelope
         public array $regions,
         public array $assets,
         public string $deferredManifest = '',
+        public array $pageMeta = [],
     ) {}
 
     /**
-     * @return array{shell: true, url: string, title: string, regions: array<string, string>, assets: array{css: list<array{href: string, attrs: array<string, string>}>, js: list<array{src: string, type: string, attrs: array<string, string>}>}, deferredManifest: string}
+     * @return array{shell: true, url: string, title: string, regions: array<string, string>, assets: array{css: list<array{href: string, attrs: array<string, string>}>, js: list<array{src: string, type: string, attrs: array<string, string>}>}, deferredManifest: string, pageMeta: object}
      */
     public function toArray(): array
     {
@@ -52,6 +54,10 @@ final readonly class ShellEnvelope
             // only regions left the arriving skeletons bound to the PREVIOUS
             // page's request. Empty when the page defers nothing.
             'deferredManifest' => $this->deferredManifest,
+            // The same gap for the metas a page prints in <head>: the session
+            // its components publish to and the mode it runs in. An object
+            // even when empty, so the client reads one shape.
+            'pageMeta' => (object) $this->pageMeta,
         ];
     }
 
@@ -79,6 +85,7 @@ final readonly class ShellEnvelope
                     'regions' => (object) [],
                     'assets' => ['css' => [], 'js' => []],
                     'deferredManifest' => '',
+                    'pageMeta' => (object) [],
                 ],
                 JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE
             );

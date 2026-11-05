@@ -100,6 +100,11 @@ final class ShellResponseShapeTest extends TestCase
         self::assertSame([['href' => '/assets/app.css', 'attrs' => []]], $payload['assets']['css']);
         self::assertSame([['src' => '/assets/app.js', 'type' => '', 'attrs' => []]], $payload['assets']['js']);
         self::assertSame('', $payload['deferredManifest'], 'this page defers nothing');
+        self::assertSame(
+            ['semitexa-ui-sse-session' => '', 'semitexa-ui-transport-mode' => ''],
+            $payload['pageMeta'],
+            'this page has no stream, and says so',
+        );
         self::assertStringContainsString('application/json', $response->getHeaders()['Content-Type']);
     }
 

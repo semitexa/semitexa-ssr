@@ -795,14 +795,14 @@
                 fallbackPending();
             }, SHARED_STREAM_FALLBACK_MS);
 
-            document.addEventListener('semitexa:ui-sse:connected', function () {
+            function onConnected() {
                 self._fireEvent('semitexa:deferred:stream', {
                     phase: 'connected',
                     requestId: manifest.requestId,
                     sessionId: manifest.sessionId,
                     transport: 'shared'
                 });
-            });
+            }
 
             function onFrame(ev) {
                 var payload = (ev && ev.detail) ? ev.detail.message : null;
@@ -853,9 +853,20 @@
                 }
             }
 
+            document.addEventListener('semitexa:ui-sse:connected', onConnected);
             document.addEventListener('semitexa:ui-sse:frame', onFrame);
+            self._stopConsuming = function () {
+                clearTimeout(fallbackTimer);
+                document.removeEventListener('semitexa:ui-sse:connected', onConnected);
+                document.removeEventListener('semitexa:ui-sse:frame', onFrame);
+            };
             earlyFrames.splice(0).forEach(onFrame);
         },
+
+        // Replaced by _consume(). A navigation calls it for the page it leaves: left
+        // listening, that page rendered every frame again and its timer asked for
+        // slots that are gone.
+        _stopConsuming: function () {},
 
         _setBindCookie: function (manifest) {
             if (!manifest || !manifest.bindToken) return;
@@ -1076,6 +1087,7 @@
     if (typeof document !== 'undefined' && document.addEventListener) {
         document.addEventListener('semitexa:navigation:committed', function () {
             forgetManifest();
+            SemitexaSSR._stopConsuming();
             // This page starts here: buffered frames belong to the old one, and
             // the wait for DOMContentLoaded must not consume a second time.
             started = true;

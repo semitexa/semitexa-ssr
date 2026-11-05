@@ -15,6 +15,28 @@ use Semitexa\Core\Attribute\Capability;
     replaces: [
         'registering the extension manually during server boot',
     ],
+    usage: <<<'USAGE'
+        #[AsTwigExtension]
+        final class MoneyTwigExtension
+        {
+            public function registerFunctions(): void
+            {
+                TwigExtensionRegistry::registerFunction('money', self::money(...));
+            }
+
+            public static function money(int $cents): string
+            {
+                return number_format($cents / 100, 2);
+            }
+        }
+
+        // In a template:
+        {{ money(order.total) }}
+
+        // registerFilters() and TwigExtensionRegistry::registerFilter() work the same way.
+        // Injection needs #[AsService] as well, or the class is built with new and the first call
+        // fails inside a template with an uninitialised property.
+        USAGE,
 )]
 /**
  * Marks a class whose `registerFunctions()` / `registerFilters()` the catalog

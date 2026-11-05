@@ -28,6 +28,16 @@ use Semitexa\Core\Attribute\Capability;
         'a template loader and asset manifest hand-rolled once per project',
     ],
     seeAlso: 'ssr.deferred',
+    usage: <<<'USAGE'
+        // Which one to reach for, each with its own usage (ai:ask mechanisms --id=...):
+        // ssr.slot-resource  a region that fills in after the page, or updates by itself
+        // ssr.component      a reusable piece of markup with its own template
+        // ssr.twig-extension a new function or filter for templates
+        //
+        // What a page shows goes through its response resource: the handler calls a typed setter
+        // such as withTitle(), the setter calls $this->with('title', $title), and the template
+        // reads {{ title }}. with() is protected, so a handler cannot call it directly.
+        USAGE,
 )]
 final class Capabilities
 {

@@ -16,6 +16,24 @@ use Semitexa\Core\Attribute\Capability;
         'a live wire that only the handler body knows about, which reads as dead to anything that joins watchers to publishers',
     ],
     seeAlso: 'ui.event-intent',
+    usage: <<<'USAGE'
+        // The service that changes the data says which scope it touches, and touches it:
+        #[PublishesScope(WalletComponent::SCOPE_CRON)]
+        final class WalletCronJob implements ScheduledJobInterface
+        {
+            #[InjectAsReadonly]
+            protected ScopeInvalidatorInterface $scopes;
+
+            public function handle(ScheduledJobContext $context): void
+            {
+                $this->wallet->credit('cron', self::AMOUNT);
+                $this->scopes->touch(WalletComponent::SCOPE_CRON);
+            }
+        }
+
+        // The attribute calls nothing: touch() is what re-runs the watchers. It tells the
+        // live-tenancy check that the wire is real, because no resource owns this scope.
+        USAGE,
 )]
 /**
  * The publishing half of a live wire that no resource owns.

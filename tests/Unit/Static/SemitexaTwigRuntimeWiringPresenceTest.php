@@ -100,4 +100,29 @@ final class SemitexaTwigRuntimeWiringPresenceTest extends TestCase
             'Existing layout-slot selector must remain intact',
         );
     }
+
+    public function testFollowsAShellSwapOnTheSignalTheStreamOwnerUses(): void
+    {
+        // Presence only, like everything here. `committed` waits for the scripts
+        // in the region, and the owner's stream is open by then.
+        self::assertStringContainsString("addEventListener('semitexa:navigation:swapped'", $this->source);
+        self::assertStringNotContainsString("addEventListener('semitexa:navigation:committed'", $this->source);
+    }
+
+    public function testTheFallbackAsksByTheManifestsHandleBeforeTheChromesAttribute(): void
+    {
+        self::assertMatchesRegularExpression(
+            "/_pageHandle: function \\(manifest\\) \\{\\s*if \\(manifest && manifest\\.handle\\) return manifest\\.handle;/",
+            $this->source,
+        );
+        self::assertSame(1, substr_count($this->source, "querySelector('[data-ssr-handle]')"), 'one reader of the chrome attribute');
+    }
+
+    public function testConsumerModeSetsTheBindCookieTheFallbackIsCheckedAgainst(): void
+    {
+        self::assertMatchesRegularExpression(
+            '/_consume: function \\(manifest\\) \\{.*?self\\._setBindCookie\\(manifest\\);.*?_stopConsuming: function/s',
+            $this->source,
+        );
+    }
 }

@@ -75,6 +75,9 @@ final class ShellRegionExtractor
     /** Stylesheet attributes that change whether and how it applies. */
     private const LINK_ATTRIBUTES = ['media', 'integrity', 'crossorigin', 'referrerpolicy'];
 
+    /** Metas that describe THIS render and so have to follow a swap. */
+    private const PAGE_META = ['semitexa-ui-sse-session', 'semitexa-ui-transport-mode'];
+
     /**
      * Every region the document marks, keyed by name, in document order.
      *
@@ -219,6 +222,44 @@ final class ShellRegionExtractor
         }
 
         return trim((string) end($matches[1]));
+    }
+
+    /**
+     * The per-render metas this document carries, '' for each it does not.
+     *
+     * Every name is present, so an absent value says "this page has none" and
+     * the client can remove what the last page left. A page may print these
+     * in <head>, where a grid or an island announces them, and no region ever
+     * carries them there: a swap left the new page on the previous page's
+     * session and mode. Read from the whole document, because the client
+     * cannot tell which of the two places a page used.
+     *
+     * The first of each, which is the one `querySelector` hands the client on
+     * a real load.
+     *
+     * @return array<string, string>
+     */
+    public function pageMeta(string $html): array
+    {
+        $html = self::withoutInertText($html);
+        $meta = array_fill_keys(self::PAGE_META, null);
+
+        if (preg_match_all('#<meta\b[^>]*>#i', $html, $tags) === false) {
+            return array_fill_keys(self::PAGE_META, '');
+        }
+
+        foreach ($tags[0] as $tag) {
+            if (preg_match('#' . self::ATTR_START . 'name=["\']([^"\']+)["\']#i', $tag, $name) !== 1
+                || preg_match('#' . self::ATTR_START . 'content=["\']([^"\']*)["\']#i', $tag, $content) !== 1) {
+                continue;
+            }
+
+            if (array_key_exists($name[1], $meta)) {
+                $meta[$name[1]] ??= self::decode($content[1]);
+            }
+        }
+
+        return array_map(static fn (?string $value): string => $value ?? '', $meta);
     }
 
     /**

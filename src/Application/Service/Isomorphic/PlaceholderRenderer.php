@@ -9,6 +9,7 @@ use Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore;
 use Semitexa\Ssr\Application\Service\Asset\ModuleAssetRegistry;
 use Semitexa\Ssr\Domain\Model\DeferredSlotDefinition;
 use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
+use Semitexa\Ssr\Context\IsomorphicContextStore;
 
 final class PlaceholderRenderer
 {
@@ -170,6 +171,9 @@ final class PlaceholderRenderer
             'requestId' => $requestId,
             'sessionId' => $sessionId,
             'bindToken' => $bindToken,
+            // The fallback asks by it, and `data-ssr-handle` sits on the chrome a
+            // swap keeps. Both renderers store the page before they get here.
+            'handle' => IsomorphicContextStore::getPageHandle(),
             'slots' => $slotManifest,
             'components' => $componentManifest,
         ];
@@ -185,7 +189,7 @@ final class PlaceholderRenderer
                 'exception' => $e::class,
                 'message' => $e->getMessage(),
             ]);
-            $json = '{"requestId":"","sessionId":"","bindToken":"","slots":[]}';
+            $json = '{"requestId":"","sessionId":"","bindToken":"","handle":"","slots":[]}';
         }
 
         return '<script type="application/json" ' . self::MANIFEST_ATTRIBUTE . '>' . $json . '</script>';

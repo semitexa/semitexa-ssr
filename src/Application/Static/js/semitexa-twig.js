@@ -658,6 +658,7 @@
                             var fallbackManifest = {
                                 requestId: manifest.requestId,
                                 sessionId: manifest.sessionId,
+                                handle: manifest.handle,
                                 slots: missed.map(function (id) { return {id: id}; })
                             };
                             self._fallback(fallbackManifest);
@@ -757,6 +758,9 @@
             self._manifest = manifest;
             self._connected = true;
             self._consumerActive = true;
+            // For the fallback. The owner sets it too, but only when it opens a
+            // stream, and this request is checked against it either way.
+            self._setBindCookie(manifest);
             self._deferredCompleted = false;
             self._deferredLive = false;
 
@@ -785,6 +789,7 @@
                 self._fallback({
                     requestId: manifest.requestId,
                     sessionId: manifest.sessionId,
+                    handle: manifest.handle,
                     slots: missed.map(function (id) { return {id: id}; })
                 });
             }
@@ -869,6 +874,25 @@
         // slots that are gone.
         _stopConsuming: function () {},
 
+        // The stream this runtime opened itself, when the page had no owner. Left
+        // open across a navigation, a live one held a connection for a page that
+        // is gone.
+        _closeOwnStream: function () {
+            if (this._eventSource) this._eventSource.close();
+            this._eventSource = null;
+            this._connected = false;
+        },
+
+        // The manifest says, because `data-ssr-handle` sits on the chrome a shell
+        // navigation keeps: there it still names the first page, whose handle the
+        // server refuses for this page's slots. The attribute is for a manifest
+        // from a server that does not send the handle yet.
+        _pageHandle: function (manifest) {
+            if (manifest && manifest.handle) return manifest.handle;
+            var handleEl = document.querySelector('[data-ssr-handle]');
+            return handleEl ? handleEl.getAttribute('data-ssr-handle') : '';
+        },
+
         _setBindCookie: function (manifest) {
             if (!manifest || !manifest.bindToken) return;
             document.cookie = 'semitexa_ssr_bind=' + encodeURIComponent(manifest.bindToken) + '; Path=/; SameSite=Lax';
@@ -951,11 +975,7 @@
             var slots = Array.isArray(manifest.slots) ? manifest.slots : [];
             var slotIds = slots.map(function (s) { return s.id; });
 
-            // We need the page handle, extract from manifest or use a data attribute
-            var handleEl = document.querySelector('[data-ssr-handle]');
-            var pageHandle = handleEl ? handleEl.getAttribute('data-ssr-handle') : '';
-
-            var fallbackUrl = '/__semitexa_hug?handle=' + encodeURIComponent(pageHandle)
+            var fallbackUrl = '/__semitexa_hug?handle=' + encodeURIComponent(self._pageHandle(manifest))
                 + '&slots=' + encodeURIComponent(slotIds.join(','))
                 + '&deferred_request_id=' + encodeURIComponent(manifest.requestId);
 
@@ -991,11 +1011,9 @@
             var self = this;
             var el = document.querySelector('[data-ssr-deferred="' + slotId + '"]');
             if (!el) return;
-            var handleEl = document.querySelector('[data-ssr-handle]');
-            var pageHandle = handleEl ? handleEl.getAttribute('data-ssr-handle') : '';
             var requestId = self._manifest && self._manifest.requestId ? self._manifest.requestId : '';
 
-            fetch('/__semitexa_hug?handle=' + encodeURIComponent(pageHandle)
+            fetch('/__semitexa_hug?handle=' + encodeURIComponent(self._pageHandle(self._manifest))
                 + '&slots=' + encodeURIComponent(slotId)
                 + (requestId ? '&deferred_request_id=' + encodeURIComponent(requestId) : ''))
                 .then(function (resp) { return resp.ok ? resp.json() : null; })
@@ -1087,11 +1105,14 @@
 
     // A shell navigation swaps the document's regions without a reload, so
     // nothing here would otherwise notice that the manifest it parsed belongs
-    // to a page that is gone. Same signal the other runtimes listen to.
+    // to a page that is gone. `swapped` and not `committed`: the owner opens the
+    // new page's stream on this same signal, and `committed` waits for the
+    // scripts in the region, long enough for the stream's first frames to land.
     if (typeof document !== 'undefined' && document.addEventListener) {
-        document.addEventListener('semitexa:navigation:committed', function () {
+        document.addEventListener('semitexa:navigation:swapped', function () {
             forgetManifest();
             SemitexaSSR._stopConsuming();
+            SemitexaSSR._closeOwnStream();
             // This page starts here: buffered frames belong to the old one, and
             // the wait for DOMContentLoaded must not consume a second time.
             started = true;

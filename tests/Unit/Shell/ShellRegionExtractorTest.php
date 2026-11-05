@@ -299,4 +299,61 @@ final class ShellRegionExtractorTest extends TestCase
         self::assertSame('{"requestId":"r-2"}', $this->extractor->deferredManifest($html));
         self::assertSame('', $this->extractor->deferredManifest('<main data-shell-region="main">x</main>'));
     }
+
+    #[Test]
+    public function aPagesOwnMetasAreReadFromHeadAndFromARegion(): void
+    {
+        $head = '<head><meta name="semitexa-ui-sse-session" content="sse_a"><meta name="semitexa-ui-transport-mode" content="live"></head>'
+            . '<main data-shell-region="main">x</main>';
+        $region = '<main data-shell-region="main"><meta content="drain" name="semitexa-ui-transport-mode">'
+            . '<meta name="semitexa-ui-sse-session" content="sse_b"></main>';
+
+        self::assertSame(
+            ['semitexa-ui-sse-session' => 'sse_a', 'semitexa-ui-transport-mode' => 'live'],
+            $this->extractor->pageMeta($head),
+        );
+        self::assertSame(
+            ['semitexa-ui-sse-session' => 'sse_b', 'semitexa-ui-transport-mode' => 'drain'],
+            $this->extractor->pageMeta($region),
+        );
+    }
+
+    #[Test]
+    public function aPageWithoutTheMetasSaysSoByName(): void
+    {
+        // Every name present: this is how the client learns to remove what the
+        // previous page left in <head>.
+        self::assertSame(
+            ['semitexa-ui-sse-session' => '', 'semitexa-ui-transport-mode' => ''],
+            $this->extractor->pageMeta('<head><meta name="description" content="x"></head><main data-shell-region="main">x</main>'),
+        );
+    }
+
+    #[Test]
+    public function metasWrittenAsTextAreNotThePagesMetas(): void
+    {
+        $html = '<!-- <meta name="semitexa-ui-sse-session" content="sse_comment"> -->'
+            . '<textarea><meta name="semitexa-ui-sse-session" content="sse_text"></textarea>'
+            . '<meta name="semitexa-ui-sse-session" content="sse_real">';
+
+        self::assertSame('sse_real', $this->extractor->pageMeta($html)['semitexa-ui-sse-session']);
+    }
+
+    #[Test]
+    public function theFirstOfARepeatedMetaWins(): void
+    {
+        // What querySelector hands the client on a real load.
+        $html = '<meta name="semitexa-ui-sse-session" content="sse_first"><meta name="semitexa-ui-sse-session" content="sse_second">';
+
+        self::assertSame('sse_first', $this->extractor->pageMeta($html)['semitexa-ui-sse-session']);
+    }
+
+    #[Test]
+    public function anEmptyFirstMetaStillWins(): void
+    {
+        // querySelector stops at it: the client reads no session on a real load.
+        $html = '<meta name="semitexa-ui-sse-session" content=""><meta name="semitexa-ui-sse-session" content="sse_second">';
+
+        self::assertSame('', $this->extractor->pageMeta($html)['semitexa-ui-sse-session']);
+    }
 }

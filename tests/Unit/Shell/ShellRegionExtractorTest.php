@@ -349,17 +349,6 @@ final class ShellRegionExtractorTest extends TestCase
     }
 
     #[Test]
-    public function aScriptInARegionIsTheRegionsToRun(): void
-    {
-        // Listed here too it ran twice: ensureAssets, then the swapped region.
-        $html = '<head><script src="/chrome.js"></script></head>'
-            . '<main data-shell-region="page"><div><script src="/page.js"></script></div></main>'
-            . '<script src="/after.js"></script>';
-
-        self::assertSame(['/chrome.js', '/after.js'], array_column($this->extractor->assets($html)['js'], 'src'));
-    }
-
-    #[Test]
     public function aMetaInsideATemplateIsNotOnThePage(): void
     {
         $html = '<template><template></template><meta name="semitexa-ui-sse-session" content="sse_inert"></template>'

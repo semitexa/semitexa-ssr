@@ -18,16 +18,21 @@ use Semitexa\Core\Attribute\Capability;
     seeAlso: 'ui.event-intent',
     usage: <<<'USAGE'
         // The service that changes the data says which scope it touches, and touches it:
-        #[PublishesScope(WalletComponent::SCOPE_CRON)]
+        #[AsService]
+        #[AsScheduledJob(key: 'wallet.cron', cronExpression: '* * * * *', overlapPolicy: 'skip')]
+        #[PublishesScope('wallet_cron')]
         final class WalletCronJob implements ScheduledJobInterface
         {
+            #[InjectAsReadonly]
+            protected WalletAccount $wallet;
+
             #[InjectAsReadonly]
             protected ScopeInvalidatorInterface $scopes;
 
             public function handle(ScheduledJobContext $context): void
             {
-                $this->wallet->credit('cron', self::AMOUNT);
-                $this->scopes->touch(WalletComponent::SCOPE_CRON);
+                $this->wallet->credit('cron', 10);
+                $this->scopes->touch('wallet_cron');
             }
         }
 

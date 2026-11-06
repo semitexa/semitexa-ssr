@@ -10,8 +10,9 @@ namespace Semitexa\Ssr\Application\Service\Isomorphic;
  *
  * One cookie per origin locked a tab out: a second tab overwrote it, and the first
  * was refused on every reconnect for as long as it stayed open. So the name carries
- * the request. The client removes it when it leaves the page, which keeps the count
- * at the tabs open. The plain name is still read, for a client from before this.
+ * the request. The client removes it when it leaves the page, and it lasts a day
+ * from the last connection for what a crash leaves behind, which keeps the count
+ * near the tabs open. The plain name is still read, for a client from before this.
  */
 final class DeferredBindCookie
 {
@@ -25,9 +26,13 @@ final class DeferredBindCookie
     /** @param array<array-key, mixed> $cookies */
     public static function tokenIn(array $cookies, string $requestId): string
     {
-        $own = $cookies[self::nameFor($requestId)] ?? null;
-        $token = is_string($own) && $own !== '' ? $own : ($cookies[self::NAME] ?? '');
+        foreach ([self::nameFor($requestId), self::NAME] as $name) {
+            $token = $cookies[$name] ?? null;
+            if (is_string($token) && trim($token) !== '') {
+                return trim($token);
+            }
+        }
 
-        return is_string($token) ? trim($token) : '';
+        return '';
     }
 }

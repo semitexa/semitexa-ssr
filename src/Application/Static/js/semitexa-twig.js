@@ -802,6 +802,7 @@
             }, SHARED_STREAM_FALLBACK_MS);
 
             function onConnected() {
+                self._setBindCookie(manifest);
                 self._fireEvent('semitexa:deferred:stream', {
                     phase: 'connected',
                     requestId: manifest.requestId,
@@ -909,11 +910,12 @@
         },
 
         // Named by the request: one name for the origin let a second tab lock the
-        // first out of its stream. Gone with the page, so they stay as few as the tabs.
+        // first out of its stream. Gone with the page, and a day after the last
+        // connection for a page that never got to say goodbye, so they stay few.
         _setBindCookie: function (manifest) {
             if (!manifest || !manifest.bindToken || !manifest.requestId) return;
             document.cookie = 'semitexa_ssr_bind_' + manifest.requestId + '='
-                + encodeURIComponent(manifest.bindToken) + '; Path=/; SameSite=Lax';
+                + encodeURIComponent(manifest.bindToken) + '; Path=/; Max-Age=86400; SameSite=Lax';
         },
 
         _clearBindCookie: function (manifest) {
@@ -1135,11 +1137,10 @@
     if (typeof document !== 'undefined' && document.addEventListener) {
         var announcesSwap = false;
         if (window.addEventListener) {
-            window.addEventListener('pagehide', function () {
-                SemitexaSSR._clearBindCookie(SemitexaSSR._manifest);
-            });
-            window.addEventListener('pageshow', function (ev) {
-                if (ev.persisted) SemitexaSSR._setBindCookie(SemitexaSSR._manifest);
+            // Not for a page the back-forward cache keeps: it may come back and
+            // reconnect, and the day above covers it if it does not.
+            window.addEventListener('pagehide', function (ev) {
+                if (!ev.persisted) SemitexaSSR._clearBindCookie(SemitexaSSR._manifest);
             });
         }
         function followSwap() {

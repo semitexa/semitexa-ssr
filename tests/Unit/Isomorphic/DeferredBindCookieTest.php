@@ -32,6 +32,12 @@ final class DeferredBindCookieTest extends TestCase
     }
 
     #[Test]
+    public function a_blank_cookie_of_its_own_falls_back_to_the_plain_one(): void
+    {
+        self::assertSame('old', DeferredBindCookie::tokenIn(['semitexa_ssr_bind_dr_a' => '  ', 'semitexa_ssr_bind' => 'old'], 'dr_a'));
+    }
+
+    #[Test]
     public function no_cookie_is_no_token(): void
     {
         self::assertSame('', DeferredBindCookie::tokenIn([], 'dr_a'));

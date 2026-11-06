@@ -111,7 +111,7 @@ final class SemitexaTwigRuntimeWiringPresenceTest extends TestCase
     {
         self::assertStringContainsString("'semitexa_ssr_bind_' + manifest.requestId + '='", $this->source);
         self::assertStringContainsString("window.addEventListener('pagehide'", $this->source);
-        self::assertStringContainsString('if (!ev.persisted) SemitexaSSR._clearBindCookie(', $this->source);
+        self::assertStringContainsString('if (ev.persisted) SemitexaSSR._setBindCookie(', $this->source);
         self::assertStringContainsString('Max-Age=86400', $this->source, 'what a crash leaves behind must not grow the Cookie header for ever.');
     }
 

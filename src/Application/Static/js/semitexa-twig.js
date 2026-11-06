@@ -642,6 +642,7 @@
             }
 
             es.onopen = function () {
+                self._setBindCookie(manifest);
                 emitConnected();
             };
 
@@ -1137,10 +1138,13 @@
     if (typeof document !== 'undefined' && document.addEventListener) {
         var announcesSwap = false;
         if (window.addEventListener) {
-            // Not for a page the back-forward cache keeps: it may come back and
-            // reconnect, and the day above covers it if it does not.
-            window.addEventListener('pagehide', function (ev) {
-                if (!ev.persisted) SemitexaSSR._clearBindCookie(SemitexaSSR._manifest);
+            // On every leave, the back-forward cache too: most plain links end there,
+            // and 200 of them left 170 cookies on every request for a day.
+            window.addEventListener('pagehide', function () {
+                SemitexaSSR._clearBindCookie(SemitexaSSR._manifest);
+            });
+            window.addEventListener('pageshow', function (ev) {
+                if (ev.persisted) SemitexaSSR._setBindCookie(SemitexaSSR._manifest);
             });
         }
         function followSwap() {

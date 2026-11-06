@@ -113,6 +113,7 @@ final class SemitexaTwigRuntimeWiringPresenceTest extends TestCase
         self::assertStringContainsString("window.addEventListener('pagehide'", $this->source);
         self::assertStringContainsString('if (ev.persisted) SemitexaSSR._setBindCookie(', $this->source);
         self::assertStringContainsString('Max-Age=86400', $this->source, 'what a crash leaves behind must not grow the Cookie header for ever.');
+        self::assertMatchesRegularExpression('/setInterval\(function \(\) \{\s*SemitexaSSR\._setBindCookie\(/', $this->source, 'an open tab outlives the day.');
     }
 
     public function testFollowsAShellSwapOnTheSignalTheStreamOwnerUses(): void

@@ -1146,6 +1146,11 @@
             window.addEventListener('pageshow', function (ev) {
                 if (ev.persisted) SemitexaSSR._setBindCookie(SemitexaSSR._manifest);
             });
+            // A connection can hold longer than the cookie's day, and the next
+            // reconnect would then be refused.
+            setInterval(function () {
+                SemitexaSSR._setBindCookie(SemitexaSSR._manifest);
+            }, 3600000);
         }
         function followSwap() {
             SemitexaSSR._clearBindCookie(SemitexaSSR._manifest);

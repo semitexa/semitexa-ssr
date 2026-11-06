@@ -8,13 +8,14 @@ use Semitexa\Core\Attribute\AsPayloadHandler;
 use Semitexa\Core\Attribute\InjectAsMutable;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Contract\TypedHandlerInterface;
-use Semitexa\Core\Log\LoggerInterface;
 use Semitexa\Core\Exception\NotFoundException;
 use Semitexa\Core\Http\Response\ResourceResponse;
+use Semitexa\Core\Log\LoggerInterface;
 use Semitexa\Core\Request;
 use Semitexa\Ssr\Application\Payload\Request\SsrLocaleSwitchPayload;
-use Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator;
 use Semitexa\Ssr\Application\Service\Async\SseServer;
+use Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator;
+use Semitexa\Ssr\Application\Service\Isomorphic\DeferredBindCookie;
 use Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry;
 use Swoole\Coroutine;
 
@@ -73,7 +74,7 @@ final class SsrLocaleSwitchHandler implements TypedHandlerInterface
         if ($entry === null) {
             throw new NotFoundException('Deferred request', $requestId);
         }
-        $bindToken = $this->request->getCookie('semitexa_ssr_bind', '');
+        $bindToken = DeferredBindCookie::tokenIn($this->request->cookies, $requestId);
         if ($bindToken === '' || !hash_equals($entry->bindToken, $bindToken)) {
             throw new NotFoundException('Deferred request', $requestId);
         }

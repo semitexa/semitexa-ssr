@@ -908,9 +908,17 @@
             return handleEl ? handleEl.getAttribute('data-ssr-handle') : '';
         },
 
+        // Named by the request: one name for the origin let a second tab lock the
+        // first out of its stream. Gone with the page, so they stay as few as the tabs.
         _setBindCookie: function (manifest) {
-            if (!manifest || !manifest.bindToken) return;
-            document.cookie = 'semitexa_ssr_bind=' + encodeURIComponent(manifest.bindToken) + '; Path=/; SameSite=Lax';
+            if (!manifest || !manifest.bindToken || !manifest.requestId) return;
+            document.cookie = 'semitexa_ssr_bind_' + manifest.requestId + '='
+                + encodeURIComponent(manifest.bindToken) + '; Path=/; SameSite=Lax';
+        },
+
+        _clearBindCookie: function (manifest) {
+            if (!manifest || !manifest.requestId) return;
+            document.cookie = 'semitexa_ssr_bind_' + manifest.requestId + '=; Path=/; Max-Age=0; SameSite=Lax';
         },
 
         _handleMessage: function (payload) {
@@ -1126,7 +1134,16 @@
     // A platform-ui that does not announce `swapped` yet still sends `committed`.
     if (typeof document !== 'undefined' && document.addEventListener) {
         var announcesSwap = false;
+        if (window.addEventListener) {
+            window.addEventListener('pagehide', function () {
+                SemitexaSSR._clearBindCookie(SemitexaSSR._manifest);
+            });
+            window.addEventListener('pageshow', function (ev) {
+                if (ev.persisted) SemitexaSSR._setBindCookie(SemitexaSSR._manifest);
+            });
+        }
         function followSwap() {
+            SemitexaSSR._clearBindCookie(SemitexaSSR._manifest);
             forgetManifest();
             SemitexaSSR._stopConsuming();
             SemitexaSSR._closeOwnStream();

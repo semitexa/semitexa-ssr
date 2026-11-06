@@ -107,6 +107,13 @@ final class SemitexaTwigRuntimeWiringPresenceTest extends TestCase
         self::assertStringContainsString('sse.takeEarlyFrames(manifest.sessionId).forEach(', $this->source);
     }
 
+    public function testTheBindCookieIsNamedByItsRequestAndLeavesWithThePage(): void
+    {
+        self::assertStringContainsString("'semitexa_ssr_bind_' + manifest.requestId + '='", $this->source);
+        self::assertStringContainsString("window.addEventListener('pagehide'", $this->source);
+        self::assertStringContainsString('if (ev.persisted) SemitexaSSR._setBindCookie(', $this->source);
+    }
+
     public function testFollowsAShellSwapOnTheSignalTheStreamOwnerUses(): void
     {
         // Presence only, like everything here. `committed` waits for the scripts

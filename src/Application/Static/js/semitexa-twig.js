@@ -642,6 +642,7 @@
             }
 
             es.onopen = function () {
+                self._setBindCookie(manifest);
                 emitConnected();
             };
 
@@ -802,6 +803,7 @@
             }, SHARED_STREAM_FALLBACK_MS);
 
             function onConnected() {
+                self._setBindCookie(manifest);
                 self._fireEvent('semitexa:deferred:stream', {
                     phase: 'connected',
                     requestId: manifest.requestId,
@@ -908,9 +910,18 @@
             return handleEl ? handleEl.getAttribute('data-ssr-handle') : '';
         },
 
+        // Named by the request: one name for the origin let a second tab lock the
+        // first out of its stream. Gone with the page, and a day after the last
+        // connection for a page that never got to say goodbye, so they stay few.
         _setBindCookie: function (manifest) {
-            if (!manifest || !manifest.bindToken) return;
-            document.cookie = 'semitexa_ssr_bind=' + encodeURIComponent(manifest.bindToken) + '; Path=/; SameSite=Lax';
+            if (!manifest || !manifest.bindToken || !manifest.requestId) return;
+            document.cookie = 'semitexa_ssr_bind_' + manifest.requestId + '='
+                + encodeURIComponent(manifest.bindToken) + '; Path=/; Max-Age=86400; SameSite=Lax';
+        },
+
+        _clearBindCookie: function (manifest) {
+            if (!manifest || !manifest.requestId) return;
+            document.cookie = 'semitexa_ssr_bind_' + manifest.requestId + '=; Path=/; Max-Age=0; SameSite=Lax';
         },
 
         _handleMessage: function (payload) {
@@ -1126,7 +1137,23 @@
     // A platform-ui that does not announce `swapped` yet still sends `committed`.
     if (typeof document !== 'undefined' && document.addEventListener) {
         var announcesSwap = false;
+        if (window.addEventListener) {
+            // On every leave, the back-forward cache too: most plain links end there,
+            // and 200 of them left 170 cookies on every request for a day.
+            window.addEventListener('pagehide', function () {
+                SemitexaSSR._clearBindCookie(SemitexaSSR._manifest);
+            });
+            window.addEventListener('pageshow', function (ev) {
+                if (ev.persisted) SemitexaSSR._setBindCookie(SemitexaSSR._manifest);
+            });
+            // A connection can hold longer than the cookie's day, and the next
+            // reconnect would then be refused.
+            setInterval(function () {
+                SemitexaSSR._setBindCookie(SemitexaSSR._manifest);
+            }, 3600000);
+        }
         function followSwap() {
+            SemitexaSSR._clearBindCookie(SemitexaSSR._manifest);
             forgetManifest();
             SemitexaSSR._stopConsuming();
             SemitexaSSR._closeOwnStream();

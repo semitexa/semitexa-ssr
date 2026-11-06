@@ -13,6 +13,7 @@ use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Request;
 use Semitexa\Ssr\Application\Payload\Request\SsrFallbackPayload;
 use Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator;
+use Semitexa\Ssr\Application\Service\Isomorphic\DeferredBindCookie;
 use Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry;
 
 #[AsPayloadHandler(payload: SsrFallbackPayload::class, resource: ResourceResponse::class)]
@@ -49,7 +50,7 @@ final class SsrFallbackHandler implements TypedHandlerInterface
         if ($requestId !== '') {
             $entry = DeferredRequestRegistry::consume($requestId);
             if ($entry !== null) {
-                $bindToken = $this->request->getCookie('semitexa_ssr_bind', '');
+                $bindToken = DeferredBindCookie::tokenIn($this->request->cookies, $requestId);
                 if ($bindToken === '' || !hash_equals($entry->bindToken, $bindToken)) {
                     throw new NotFoundException('Deferred request', $requestId);
                 }

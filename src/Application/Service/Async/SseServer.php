@@ -1953,10 +1953,9 @@ final class SseServer implements FeedStreamSinkInterface
 
     private function getSsrBindToken(Request $request): string
     {
-        $cookieName = 'semitexa_ssr_bind';
-        $cookie = is_array($request->cookie) ? $request->cookie : [];
+        $cookies = is_array($request->cookie) ? $request->cookie : [];
 
-        return trim(Row::of($cookie)->string($cookieName));
+        return \Semitexa\Ssr\Application\Service\Isomorphic\DeferredBindCookie::tokenIn($cookies, SseStreamRequest::fromRequest($request)->deferredRequestId);
     }
 
     private function removeSessionWorkerMapping(string $sessionId, Response $response): void

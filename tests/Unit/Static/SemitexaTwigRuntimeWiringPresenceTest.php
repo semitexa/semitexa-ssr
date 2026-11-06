@@ -101,6 +101,12 @@ final class SemitexaTwigRuntimeWiringPresenceTest extends TestCase
         );
     }
 
+    public function testTakesTheFramesTheOwnerKeptBeforeThisRuntimeLoaded(): void
+    {
+        self::assertStringContainsString("typeof sse.takeEarlyFrames === 'function'", $this->source);
+        self::assertStringContainsString('sse.takeEarlyFrames(manifest.sessionId).forEach(', $this->source);
+    }
+
     public function testFollowsAShellSwapOnTheSignalTheStreamOwnerUses(): void
     {
         // Presence only, like everything here. `committed` waits for the scripts

@@ -866,7 +866,22 @@
                 document.removeEventListener('semitexa:ui-sse:connected', onConnected);
                 document.removeEventListener('semitexa:ui-sse:frame', onFrame);
             };
-            earlyFrames.splice(0).forEach(onFrame);
+            // The owner keeps what it sent this session before this runtime loaded;
+            // what is kept here is then a copy of the end of that. One frame that
+            // will not render must not cost the ones behind it.
+            function replay(frame) {
+                try {
+                    onFrame(frame);
+                } catch (e) {
+                    console.error('[semitexa] a deferred frame could not be rendered', e);
+                }
+            }
+            var sse = window.SemitexaUi && window.SemitexaUi.sse;
+            if (sse && typeof sse.takeEarlyFrames === 'function') {
+                earlyFrames.length = 0;
+                sse.takeEarlyFrames(manifest.sessionId).forEach(function (detail) { replay({ detail: detail }); });
+            }
+            earlyFrames.splice(0).forEach(replay);
         },
 
         // Replaced by _consume(). A navigation calls it for the page it leaves: left

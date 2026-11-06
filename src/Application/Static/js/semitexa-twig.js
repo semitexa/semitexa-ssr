@@ -866,6 +866,13 @@
                 document.removeEventListener('semitexa:ui-sse:connected', onConnected);
                 document.removeEventListener('semitexa:ui-sse:frame', onFrame);
             };
+            // The owner keeps what it sent before this runtime loaded; what is
+            // kept here is then a copy of the end of that.
+            var sse = window.SemitexaUi && window.SemitexaUi.sse;
+            if (sse && typeof sse.takeEarlyFrames === 'function') {
+                earlyFrames.length = 0;
+                sse.takeEarlyFrames().forEach(function (detail) { onFrame({ detail: detail }); });
+            }
             earlyFrames.splice(0).forEach(onFrame);
         },
 

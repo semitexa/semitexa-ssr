@@ -30,6 +30,7 @@ final class ApiSurfaceTest extends TestCase
             'Semitexa\Ssr\Application\Service\Http\Response\HtmlSlotResponse::renderTemplate()',
             'Semitexa\Ssr\Application\Service\Http\Response\HtmlSlotResponse::withClientModules()',
             'Semitexa\Ssr\Application\Service\Http\Response\HtmlSlotResponse::withRenderContext()',
+            'Semitexa\Ssr\Application\Service\Seo\Sitemap\NotInSitemap',
             'Semitexa\Ssr\Attribute\AsComponent',
             'Semitexa\Ssr\Attribute\AsDataProvider',
             'Semitexa\Ssr\Attribute\AsDeferred',
@@ -37,8 +38,10 @@ final class ApiSurfaceTest extends TestCase
             'Semitexa\Ssr\Attribute\AsSlotHandler',
             'Semitexa\Ssr\Attribute\AsSlotResource',
             'Semitexa\Ssr\Attribute\AsTwigExtension',
+            'Semitexa\Ssr\Attribute\PublishesScope',
             'Semitexa\Ssr\Attribute\WithTransport',
             'Semitexa\Ssr\Domain\Contract\DataProviderInterface',
+            'Semitexa\Ssr\Domain\Contract\ScopeInvalidatorInterface',
             'Semitexa\Ssr\Domain\Contract\TypedSlotHandlerInterface',
         ], self::marked(dirname(__DIR__, 3) . '/src', 'Semitexa\\Ssr\\'));
     }

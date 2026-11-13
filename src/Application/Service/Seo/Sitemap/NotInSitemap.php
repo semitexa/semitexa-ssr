@@ -26,6 +26,8 @@ use Attribute;
  * #[NotInSitemap]
  * final class PasswordResetPayload {}
  * ```
+ *
+ * @api
  */
 #[Attribute(Attribute::TARGET_CLASS)]
 final class NotInSitemap

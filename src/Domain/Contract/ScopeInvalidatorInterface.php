@@ -14,6 +14,8 @@ namespace Semitexa\Ssr\Domain\Contract;
  * channel for ANY scope string — collection or document). Collaborative-form
  * code touches `formdoc:{formKey}:{recordId}` scopes through this interface
  * without coupling to a "Grid" class name, and tests can substitute a recorder.
+ *
+ * @api
  */
 interface ScopeInvalidatorInterface
 {

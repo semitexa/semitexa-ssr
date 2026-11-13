@@ -57,6 +57,8 @@ use Semitexa\Core\Attribute\Capability;
  * So the publisher says so. What this declares is narrow: the wire exists and
  * fires. It claims nothing about tenancy — the guard's cross-tenant half joins
  * watchers to *resources*, and there is no resource here to scope or exempt.
+ *
+ * @api
  */
 #[Attribute(Attribute::TARGET_CLASS | Attribute::IS_REPEATABLE)]
 final readonly class PublishesScope

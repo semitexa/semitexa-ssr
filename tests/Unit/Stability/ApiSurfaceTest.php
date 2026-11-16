@@ -76,15 +76,23 @@ final class ApiSurfaceTest extends TestCase
             // using that trait only copies it (review, orm#117).
             file_put_contents($dir . '/Outer.php', "<?php\nnamespace {$ns};\n\ntrait Outer\n{\n    use Stamps;\n\n    /** @api Outer's own. */\n    public string \$id = '';\n}\n");
             file_put_contents($dir . '/Nested.php', "<?php\nnamespace {$ns};\n\n/** @api */\nfinal class Nested\n{\n    use Outer;\n}\n");
+            // Two traits with the same compatible static property: PHP gives the class
+            // the LAST trait's docblock; it is still a copy (review, semitexa-api#43).
+            file_put_contents($dir . '/Left.php', "<?php\nnamespace {$ns};\n\ntrait Left\n{\n    /** @api Left */\n    public static string \$tag = '';\n}\n");
+            file_put_contents($dir . '/Right.php', "<?php\nnamespace {$ns};\n\ntrait Right\n{\n    /** @api Right */\n    public static string \$tag = '';\n}\n");
+            file_put_contents($dir . '/Both.php', "<?php\nnamespace {$ns};\n\n/** @api */\nfinal class Both\n{\n    use Left, Right;\n}\n");
             file_put_contents($dir . '/Prose.php', "<?php\nnamespace {$ns};\n\n/**\n * Mark it so:\n *\n *     @api\n */\nfinal class Prose\n{\n}\n");
 
             self::assertSame([
+                "{$ns}\\Both",
+                "{$ns}\\Left::\$tag",
                 "{$ns}\\Model",
                 "{$ns}\\Nested",
                 "{$ns}\\Outer::\$id",
                 "{$ns}\\Override",
                 "{$ns}\\Override::\$id",
                 "{$ns}\\Override::touch()",
+                "{$ns}\\Right::\$tag",
                 "{$ns}\\Stamps",
                 "{$ns}\\Stamps::\$id",
                 "{$ns}\\Stamps::touch()",
@@ -138,7 +146,7 @@ final class ApiSurfaceTest extends TestCase
                 // one is the class's own declaration, and its mark its own promise.
                 $copied = $member instanceof \ReflectionMethod
                     ? $member->getFileName() !== $reflection->getFileName()
-                    : self::fromTrait($reflection, $name) === $member->getDocComment();
+                    : in_array($member->getDocComment(), self::fromTrait($reflection, $name), true);
                 if ($member->getDeclaringClass()->getName() === $class && !$copied && self::isApi($member->getDocComment())) {
                     $found[] = $class . '::' . $name;
                 }
@@ -150,27 +158,31 @@ final class ApiSurfaceTest extends TestCase
     }
 
     /**
-     * The docblock of the property `$name` or constant `NAME` as a trait used here
-     * (or by one of its traits) declares it; null when no trait declares it.
+     * The docblocks of the property `$name` or constant `NAME` as each trait used
+     * here declares it (a trait that does not, through the traits it uses); empty
+     * when no trait does. Every one, not the first: PHP keeps the FIRST trait's
+     * docblock for a compatible instance property and the LAST one's for a static
+     * property (checked on PHP 8.4), so a copy is whichever of them it matches
+     * (review, semitexa-api#43 / authorization#35 / ssr#181).
      *
      * @param \ReflectionClass<object> $class
+     * @return list<string|false>
      */
-    private static function fromTrait(\ReflectionClass $class, string $name): string|false|null
+    private static function fromTrait(\ReflectionClass $class, string $name): array
     {
+        $docs = [];
         // The trait used here first: its reflection already holds what it
         // copied from its own traits, or its own redeclaration over them, which
         // is what this class received (review, orm#117).
         foreach ($class->getTraits() as $trait) {
             if (str_starts_with($name, '$') ? $trait->hasProperty(substr($name, 1)) : $trait->hasConstant($name)) {
-                return str_starts_with($name, '$') ? $trait->getProperty(substr($name, 1))->getDocComment() : ($trait->getReflectionConstant($name) ?: null)?->getDocComment();
+                $docs[] = str_starts_with($name, '$') ? $trait->getProperty(substr($name, 1))->getDocComment() : ($trait->getReflectionConstant($name) ?: null)?->getDocComment() ?? false;
+                continue;
             }
-            $nested = self::fromTrait($trait, $name);
-            if ($nested !== null) {
-                return $nested;
-            }
+            array_push($docs, ...self::fromTrait($trait, $name));
         }
 
-        return null;
+        return $docs;
     }
 
     private static function isApi(string|false $doc): bool

@@ -32,6 +32,8 @@ final class RefusedTemplateDoesNotStopTheWorkerTest extends TestCase
     /** @var array<string, mixed> */
     private array $registrySnapshot = [];
     private string $previousIsomorphic = '';
+    /** The bridge's logger as the previous test left it, restored afterwards rather than reset. */
+    private ?LoggerInterface $previousLogger = null;
     private string $template = '';
     /** @var list<array{string, array<string, mixed>}> */
     private array $errors = [];
@@ -56,6 +58,8 @@ final class RefusedTemplateDoesNotStopTheWorkerTest extends TestCase
         ]);
 
         $errors = &$this->errors;
+        $previous = (new \ReflectionProperty(StaticLoggerBridge::class, 'logger'))->getValue();
+        $this->previousLogger = $previous instanceof LoggerInterface ? $previous : null;
         StaticLoggerBridge::set(new class ($errors) implements LoggerInterface {
             /** @param list<array{string, array<string, mixed>}> $errors */
             public function __construct(private array &$errors) {}
@@ -79,7 +83,11 @@ final class RefusedTemplateDoesNotStopTheWorkerTest extends TestCase
 
     protected function tearDown(): void
     {
-        StaticLoggerBridge::reset();
+        if ($this->previousLogger !== null) {
+            StaticLoggerBridge::set($this->previousLogger);
+        } else {
+            StaticLoggerBridge::reset();
+        }
         foreach ($this->registrySnapshot as $property => $value) {
             (new \ReflectionProperty(DeferredTemplateRegistry::class, $property))->setValue(null, $value);
         }

@@ -604,11 +604,6 @@
             var sseUrl = '/__semitexa_kiss?session_id=' + encodeURIComponent(manifest.sessionId)
                 + '&deferred_request_id=' + encodeURIComponent(manifest.requestId);
 
-            if (typeof EventSource === 'undefined') {
-                self._fallback(manifest);
-                return;
-            }
-
             // Track which slots still need to be rendered so we can fall back if the
             // connection closes before all blocks arrive (e.g. premature 'done').
             var pendingSlots = new Set();
@@ -623,6 +618,12 @@
                 manifest.components.forEach(function (c) {
                     if (c && c.instance_id) pendingComponents.add(c.instance_id);
                 });
+            }
+
+            if (typeof EventSource === 'undefined') {
+                self._fallback(manifest);
+                self._fallbackComponents(manifest, pendingComponents);
+                return;
             }
 
             var es = new EventSource(sseUrl);

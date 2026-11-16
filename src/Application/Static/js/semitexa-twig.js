@@ -28,7 +28,7 @@
     var SHARED_STREAM_FALLBACK_MS = 6000;
 
     // Frames the owner sends while this runtime waits to learn that it has an
-    // owner. A slot would recover through the fallback; a component would not.
+    // owner. Without them a slot or a component waits for the fallback instead.
     var earlyFrames = [];
     var started = false;
     function keepEarlyFrame(ev) {
@@ -604,11 +604,6 @@
             var sseUrl = '/__semitexa_kiss?session_id=' + encodeURIComponent(manifest.sessionId)
                 + '&deferred_request_id=' + encodeURIComponent(manifest.requestId);
 
-            if (typeof EventSource === 'undefined') {
-                self._fallback(manifest);
-                return;
-            }
-
             // Track which slots still need to be rendered so we can fall back if the
             // connection closes before all blocks arrive (e.g. premature 'done').
             var pendingSlots = new Set();
@@ -616,14 +611,19 @@
                 manifest.slots.forEach(function (s) { pendingSlots.add(s.id); });
             }
 
-            // Component instances are tracked separately; they have no XHR fallback
-            // (no slot-style /__semitexa_hug endpoint) — on 'done' we just leave any
-            // unfulfilled placeholder as its skeleton and report via the stream event.
+            // Component instances are tracked separately: their fallback asks HUG by
+            // instance id, since a component has no slot of the page to name.
             var pendingComponents = new Set();
             if (Array.isArray(manifest.components)) {
                 manifest.components.forEach(function (c) {
                     if (c && c.instance_id) pendingComponents.add(c.instance_id);
                 });
+            }
+
+            if (typeof EventSource === 'undefined') {
+                self._fallback(manifest);
+                self._fallbackComponents(manifest, pendingComponents);
+                return;
             }
 
             var es = new EventSource(sseUrl);
@@ -664,6 +664,7 @@
                             };
                             self._fallback(fallbackManifest);
                         }
+                        self._fallbackComponents(manifest, pendingComponents);
                         // Keep connection open if server will push live updates
                         if (!payload.live) {
                             es.close();
@@ -728,6 +729,7 @@
                     sessionId: manifest.sessionId
                 });
                 self._fallback(manifest);
+                self._fallbackComponents(manifest, pendingComponents);
             };
         },
 
@@ -784,6 +786,7 @@
             });
 
             function fallbackPending() {
+                self._fallbackComponents(manifest, pendingComponents);
                 if (pendingSlots.size === 0) return;
                 var missed = [];
                 pendingSlots.forEach(function (id) { missed.push(id); });
@@ -1033,6 +1036,49 @@
             });
         },
 
+        // The deferred components a stream left pending, asked of HUG by instance
+        // id: the props stay on the server, recorded with the page. Asked once per
+        // instance, as a timer and a late 'done' can both come here.
+        _fallbackComponents: function (manifest, pending) {
+            if (!manifest || !manifest.requestId || !pending) return;
+            var self = this;
+            var asked = self._componentsAsked || (self._componentsAsked = {});
+            var ids = [];
+            pending.forEach(function (id) {
+                var key = manifest.requestId + ' ' + id;
+                if (asked[key]) return;
+                asked[key] = true;
+                ids.push(id);
+            });
+            if (ids.length === 0) return;
+
+            fetch('/__semitexa_hug?components=' + encodeURIComponent(ids.join(','))
+                + '&deferred_request_id=' + encodeURIComponent(manifest.requestId))
+                .then(function (resp) { return resp.ok ? resp.json() : null; })
+                .then(function (data) {
+                    if (!data) return;
+                    if (!self._manifest || self._manifest.requestId !== manifest.requestId) return;
+                    ids.forEach(function (id) {
+                        if (typeof data[id] !== 'string') return;
+                        var el = document.querySelector('[data-ssr-component-instance="' + cssEscape(id) + '"]');
+                        // A frame that arrived meanwhile has drawn it, and may have been worked on since.
+                        if (!el || el.getAttribute('data-ssr-loaded') === '1') return;
+                        el.innerHTML = data[id];
+                        el.setAttribute('data-ssr-loaded', '1');
+                        self._fireEvent('semitexa:component:rendered', {
+                            element: el.firstElementChild || el,
+                            componentName: el.getAttribute('data-ssr-deferred-component') || '',
+                            instanceId: id,
+                            mode: 'fallback',
+                            renderTimeMs: 0
+                        });
+                    });
+                })
+                .catch(function () {
+                    // Silent failure — the placeholder stays a skeleton
+                });
+        },
+
         _fallbackSlot: function (slotId) {
             var self = this;
             var el = document.querySelector('[data-ssr-deferred="' + slotId + '"]');
@@ -1109,7 +1155,7 @@
         }
     }
     // An owner already here is consumed at once: its frames are on their way, and
-    // a component has no XHR fallback if they arrive before the listeners do.
+    // missed ones would wait for the fallback if they arrive before the listeners do.
     // With no owner yet the decision waits for DOMContentLoaded, when every deferred
     // and module script has run: this script is `defer` and the owner is a module,
     // so placed first it ran in `interactive`, opened a second stream, and the slot

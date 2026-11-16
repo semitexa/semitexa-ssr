@@ -10,6 +10,7 @@ use PHPUnit\Framework\TestCase;
 use Semitexa\Ssr\Application\Service\Layout\DeferralIntentAudit;
 use Semitexa\Ssr\Domain\Model\DeferralIntentFinding;
 use Semitexa\Ssr\Domain\Model\DeferralIntentKind;
+use Semitexa\Ssr\Domain\Model\DeferredSlotDefinition;
 
 /**
  * Declared deferred, and never deferred — the state of an entire production
@@ -231,5 +232,42 @@ final class DeferralIntentAuditTest extends TestCase
     public function aTreeWithNoSlotsAtAllIsClean(): void
     {
         self::assertSame([], $this->audit->audit([], ['page.html.twig' => '<p>nothing here</p>']));
+    }
+
+    /** tk-live-slot-inert-without-persistent-sse: a refreshed slot with nothing to push it says so. */
+    #[Test]
+    public function aLiveSlotWithPersistentSseOffIsReportedWithWhatToDo(): void
+    {
+        $findings = $this->audit->liveWithoutPush([
+            new DeferredSlotDefinition('Ticker', '@app/ticker.html.twig', 'dashboard', refreshInterval: 5, resourceClass: 'App\Slot\TickerSlot'),
+            new DeferredSlotDefinition('static', '@app/static.html.twig', 'dashboard', resourceClass: 'App\Slot\StaticSlot'),
+        ], persistentDeferredSse: false);
+
+        self::assertSame([[
+            'kind' => 'live_but_never_pushed',
+            'slot' => 'ticker',
+            'origin' => 'App\Slot\TickerSlot',
+            'consequence' => 'renders once and is never refreshed: refreshInterval is 5 s, but SSR_DEFERRED_PERSISTENT_SSE is off, '
+                . 'so the stream closes after the first delivery. Set SSR_DEFERRED_PERSISTENT_SSE=true, or drop refreshInterval.',
+        ]], array_map(static fn (DeferralIntentFinding $f): array => $f->toArray(), $findings));
+    }
+
+    #[Test]
+    public function aLiveSlotWithPersistentSseOnIsClean(): void
+    {
+        self::assertSame([], $this->audit->liveWithoutPush([
+            new DeferredSlotDefinition('ticker', '@app/ticker.html.twig', 'dashboard', refreshInterval: 5),
+        ], persistentDeferredSse: true));
+    }
+
+    #[Test]
+    public function aLiveSlotOnTwoPagesIsOneFindingNamedByItsPageWhenNoResourceDeclaredIt(): void
+    {
+        $findings = $this->audit->liveWithoutPush([
+            new DeferredSlotDefinition('ticker', '@app/ticker.html.twig', 'dashboard', refreshInterval: 5),
+            new DeferredSlotDefinition('ticker', '@app/ticker.html.twig', 'overview', refreshInterval: 5),
+        ], persistentDeferredSse: false);
+
+        self::assertSame(['ticker:handle dashboard'], array_map(static fn (DeferralIntentFinding $f): string => $f->slot . ':' . $f->origin, $findings));
     }
 }

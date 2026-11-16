@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service\Layout;
 
 use Semitexa\Ssr\Domain\Model\DeferralIntentFinding;
+use Semitexa\Ssr\Domain\Model\DeferredSlotDefinition;
 use Semitexa\Ssr\Domain\Model\DeferralIntentKind;
 
 /**
@@ -56,6 +57,40 @@ final class DeferralIntentAudit
 
     /** What Twig EXECUTES: an output tag or a statement tag. Everything else is text it prints. */
     private const TWIG_CODE = '/\{\{.*?\}\}|\{%.*?%\}/s';
+
+    /**
+     * The deferred slots that ask to be refreshed while nothing will push them.
+     *
+     * @param array<DeferredSlotDefinition> $deferredSlots
+     * @return list<DeferralIntentFinding>
+     */
+    public function liveWithoutPush(array $deferredSlots, bool $persistentDeferredSse): array
+    {
+        if ($persistentDeferredSse) {
+            return [];
+        }
+
+        $findings = [];
+        foreach ($deferredSlots as $slot) {
+            $name = strtolower($slot->slotId);
+            if ($slot->refreshInterval <= 0 || isset($findings[$name])) {
+                continue;
+            }
+            $findings[$name] = new DeferralIntentFinding(
+                kind: DeferralIntentKind::LiveButNeverPushed,
+                slot: $name,
+                origin: $slot->resourceClass ?? ('handle ' . $slot->pageHandle),
+                consequence: sprintf(
+                    'renders once and is never refreshed: refreshInterval is %d s, but SSR_DEFERRED_PERSISTENT_SSE is off, '
+                    . 'so the stream closes after the first delivery. Set SSR_DEFERRED_PERSISTENT_SSE=true, or drop refreshInterval.',
+                    $slot->refreshInterval,
+                ),
+            );
+        }
+        ksort($findings);
+
+        return array_values($findings);
+    }
 
     /**
      * @param array<string, string> $declaredDeferred slot name => where it was declared (resource class)

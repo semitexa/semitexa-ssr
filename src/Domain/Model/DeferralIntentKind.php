@@ -33,4 +33,15 @@ enum DeferralIntentKind: string
      * asked for a placeholder and got none.
      */
     case DeferredCallWithoutDeclaration = 'deferred_call_without_declaration';
+
+    /**
+     * `refreshInterval` above zero, and persistent deferred SSE switched off.
+     *
+     * The slot renders once and is never pushed again: live updates ride on a
+     * stream that stays open, and with SSR_DEFERRED_PERSISTENT_SSE=false (the
+     * scaffold default) it closes after the first delivery. Nothing on the page
+     * or in the log says so. Reported 2026-11-16 by an agent that lost a cycle
+     * building a live dashboard on a fresh project.
+     */
+    case LiveButNeverPushed = 'live_but_never_pushed';
 }

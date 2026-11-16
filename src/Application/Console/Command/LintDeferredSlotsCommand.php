@@ -18,6 +18,7 @@ use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
+use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
 /**
@@ -70,10 +71,14 @@ final class LintDeferredSlotsCommand extends Command
             ModuleTemplateRegistry::setModuleRegistry(isset($this->moduleRegistry) ? $this->moduleRegistry : new ModuleRegistry());
             TwigExtensionRegistry::setClassDiscovery(isset($this->classDiscovery) ? $this->classDiscovery : new ClassDiscovery());
 
-            $findings = (new DeferralIntentAudit())->audit(
-                $this->declaredDeferredSlots(),
-                $this->templateSources(),
-            );
+            $audit = new DeferralIntentAudit();
+            $findings = [
+                ...$audit->audit($this->declaredDeferredSlots(), $this->templateSources()),
+                ...$audit->liveWithoutPush(
+                    LayoutSlotRegistry::getAllDeferredSlots(),
+                    IsomorphicConfig::fromEnvironment()->persistentDeferredSse,
+                ),
+            ];
         } catch (\Throwable $e) {
             if ($json) {
                 $output->writeln((string) json_encode([
@@ -113,7 +118,11 @@ final class LintDeferredSlotsCommand extends Command
             ['What', 'Slot', 'Declared in', 'Consequence'],
             array_map(
                 static fn (DeferralIntentFinding $f): array => [
-                    $f->kind === DeferralIntentKind::DeclaredButNeverDeferred ? 'declared, never deferred' : 'deferred, never declared',
+                    match ($f->kind) {
+                        DeferralIntentKind::DeclaredButNeverDeferred => 'declared, never deferred',
+                        DeferralIntentKind::DeferredCallWithoutDeclaration => 'deferred, never declared',
+                        DeferralIntentKind::LiveButNeverPushed => 'live, never pushed',
+                    },
                     $f->slot,
                     $f->origin,
                     $f->consequence,
@@ -122,7 +131,7 @@ final class LintDeferredSlotsCommand extends Command
             )
         );
 
-        $message = sprintf('%d slot(s) where the declaration and the template disagree.', count($findings));
+        $message = sprintf('%d slot(s) whose declaration the page or the configuration does not carry out.', count($findings));
 
         if ($strict) {
             $io->error($message);

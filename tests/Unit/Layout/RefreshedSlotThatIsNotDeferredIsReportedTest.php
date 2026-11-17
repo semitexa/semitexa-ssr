@@ -117,6 +117,34 @@ final class RefreshedSlotThatIsNotDeferredIsReportedTest extends TestCase
         self::assertSame(['456', '123'], array_column(SemanticRenderer::getPageParts(self::HANDLE), 'name'));
     }
 
+    /** The page document expands every slot, or one by name, numeric names included (review, ssr#185). */
+    #[Test]
+    public function the_page_document_expands_a_numeric_slot(): void
+    {
+        LayoutSlotRegistry::register(self::HANDLE, '123', 'numbered.html.twig');
+        $catalog = new ModuleTemplateCatalog();
+        (new \ReflectionProperty(ModuleTemplateCatalog::class, 'twig'))
+            ->setValue($catalog, new \Twig\Environment(new \Twig\Loader\ArrayLoader(['numbered.html.twig' => 'slot one-two-three'])));
+        (new \ReflectionProperty(ModuleTemplateCatalog::class, 'initialized'))->setValue($catalog, true);
+        ModuleTemplateRegistry::setCatalog($catalog);
+
+        foreach (['slots', 'slots.123'] as $expand) {
+            $document = PageDocumentProjector::project(
+                new \stdClass(),
+                new Request('GET', '/dashboard', [], ['_expand' => $expand], [], [], []),
+                self::HANDLE,
+                [],
+            );
+            $slots = $document['slots'] ?? null;
+            self::assertIsArray($slots, $expand);
+            $numbered = $slots[123] ?? null;
+            self::assertIsArray($numbered, $expand);
+            $content = $numbered['content'] ?? null;
+            self::assertIsArray($content, $expand);
+            self::assertSame(['123', 'slot one-two-three'], [$content['slot'] ?? null, $content['html'] ?? null], $expand);
+        }
+    }
+
     #[Test]
     public function the_audit_says_what_happens_and_what_to_do(): void
     {

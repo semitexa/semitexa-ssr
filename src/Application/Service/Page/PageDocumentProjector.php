@@ -37,24 +37,26 @@ final class PageDocumentProjector
         $slots = self::buildSlotIndex($handle, $layoutFrame, $request);
         $mainContent = self::buildMainDocument($resource, $request, $context);
 
+        // The index is keyed by slot name, and a numeric name ('123') is an int key:
+        // buildSlotDocument() takes the string it was.
         if (self::expandAllSlots($expand)) {
-            foreach (array_keys($slots) as $slotName) {
-                $slots[$slotName]['content'] = self::buildSlotDocument(
+            foreach (array_keys($slots) as $slotKey) {
+                $slots[$slotKey]['content'] = self::buildSlotDocument(
                     $resource,
                     $handle,
-                    $slotName,
+                    (string) $slotKey,
                     $context,
                     $layoutFrame,
                     $request,
                 );
             }
         } else {
-            foreach (array_keys($slots) as $slotName) {
-                if (in_array('slots.' . $slotName, $expand, true)) {
-                    $slots[$slotName]['content'] = self::buildSlotDocument(
+            foreach (array_keys($slots) as $slotKey) {
+                if (in_array('slots.' . $slotKey, $expand, true)) {
+                    $slots[$slotKey]['content'] = self::buildSlotDocument(
                         $resource,
                         $handle,
-                        $slotName,
+                        (string) $slotKey,
                         $context,
                         $layoutFrame,
                         $request,

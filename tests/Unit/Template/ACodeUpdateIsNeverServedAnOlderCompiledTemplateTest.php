@@ -7,7 +7,6 @@ namespace Semitexa\Ssr\Tests\Unit\Template;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Core\Support\ProjectRoot;
-use Semitexa\Core\Tests\Support\StaticState;
 use Semitexa\Ssr\Application\Service\Template\ContentKeyedFilesystemLoader;
 use Semitexa\Ssr\Application\Service\Template\ThemeAwareTwigLoader;
 use Twig\Environment;
@@ -28,8 +27,13 @@ final class ACodeUpdateIsNeverServedAnOlderCompiledTemplateTest extends TestCase
 {
     private string $dir = '';
     private string|false $cwd = false;
-    /** @var array{class: class-string, values: array<string, mixed>}|null */
-    private ?array $projectRoot = null;
+    /**
+     * ProjectRoot's resolved root before the test, put back after. Read by reflection,
+     * not core's StaticState: core's tests are not autoloadable where ssr runs alone
+     * (the stack smoke installs packages one by one).
+     */
+    private ?\ReflectionProperty $projectRootRoot = null;
+    private mixed $projectRootBefore = null;
 
     protected function setUp(): void
     {
@@ -43,9 +47,7 @@ final class ACodeUpdateIsNeverServedAnOlderCompiledTemplateTest extends TestCase
         if ($this->cwd !== false) {
             chdir($this->cwd);
         }
-        if ($this->projectRoot !== null) {
-            StaticState::restore($this->projectRoot);
-        }
+        $this->projectRootRoot?->setValue(null, $this->projectRootBefore);
         $entries = new \RecursiveIteratorIterator(
             new \RecursiveDirectoryIterator($this->dir, \FilesystemIterator::SKIP_DOTS),
             \RecursiveIteratorIterator::CHILD_FIRST,
@@ -103,7 +105,8 @@ final class ACodeUpdateIsNeverServedAnOlderCompiledTemplateTest extends TestCase
         mkdir($root . '/src/theme/dark/Guard/templates/partials', 0o777, true);
         file_put_contents($root . '/composer.json', '{}');
         $this->cwd = getcwd();
-        $this->projectRoot = StaticState::snapshot(ProjectRoot::class);
+        $this->projectRootRoot = new \ReflectionProperty(ProjectRoot::class, 'root');
+        $this->projectRootBefore = $this->projectRootRoot->getValue();
         chdir($root);
         ProjectRoot::reset();
         $override = $root . '/src/theme/dark/Guard/templates/partials/path.html.twig';

@@ -49,7 +49,10 @@ final class ThemeAwareTwigLoader implements LoaderInterface
         // Same late-binding shape as the chain resolver: the loader lives for
         // the worker, the tracer is per-environment and optional.
         $this->tracerResolver = $tracerResolver ?? static fn (): ?\Semitexa\Core\Pipeline\RequestTracerInterface => null;
+        $this->contentKey = new TemplateContentKey();
     }
+
+    private readonly TemplateContentKey $contentKey;
 
     public function getSourceContext(string $name): Source
     {
@@ -103,8 +106,9 @@ final class ThemeAwareTwigLoader implements LoaderInterface
         if ($override !== null) {
             // Include absolute path so Twig's cache differentiates between
             // identically-named templates resolved from different themes
-            // across requests.
-            return 'theme-aware:' . $override;
+            // across requests, and what it says, so a changed override that
+            // arrived with an old mtime is compiled again (TemplateContentKey).
+            return 'theme-aware:' . $override . ':' . $this->contentKey->of($override);
         }
         return $this->delegate->getCacheKey($name);
     }

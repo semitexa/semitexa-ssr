@@ -7,9 +7,14 @@ namespace Semitexa\Ssr\Tests\Unit\Layout;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Ssr\Application\Console\Command\LintDeferredSlotsCommand;
+use Semitexa\Ssr\Application\Service\Extension\TwigExtensionCatalog;
+use Semitexa\Ssr\Application\Service\Extension\TwigExtensionRegistry;
 use Semitexa\Ssr\Application\Service\Layout\DeferralIntentAudit;
 use Semitexa\Ssr\Application\Service\Layout\LayoutSlotRegistry;
+use Semitexa\Ssr\Application\Service\Template\ModuleTemplateCatalog;
+use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
 use Semitexa\Ssr\Domain\Model\DeferralIntentFinding;
+use Semitexa\Ssr\Domain\Model\DeferredSlotDefinition;
 use Symfony\Component\Console\Tester\CommandTester;
 
 /**
@@ -23,17 +28,23 @@ final class RefreshedSlotThatIsNotDeferredIsReportedTest extends TestCase
 {
     private const HANDLE = 'refreshed-inline-probe';
 
-    private mixed $snapshot = null;
+    /** @var array<string, mixed> property => what it held before the test */
+    private array $snapshot = [];
 
     protected function setUp(): void
     {
-        // Process-global: snapshot and restore, never reset.
-        $this->snapshot = $this->slots()->getValue();
+        // Process-global: snapshot and restore, never reset. The lint itself sets the
+        // template and extension catalogs' dependencies, so those pointers are kept too.
+        foreach ($this->globals() as $key => $property) {
+            $this->snapshot[$key] = $property->getValue();
+        }
     }
 
     protected function tearDown(): void
     {
-        $this->slots()->setValue(null, $this->snapshot);
+        foreach ($this->globals() as $key => $property) {
+            $property->setValue(null, $this->snapshot[$key]);
+        }
     }
 
     #[Test]
@@ -43,17 +54,51 @@ final class RefreshedSlotThatIsNotDeferredIsReportedTest extends TestCase
         LayoutSlotRegistry::register(self::HANDLE, 'clock', 'clock.html.twig', deferred: true, refreshInterval: 5);
         LayoutSlotRegistry::register(self::HANDLE, 'static', 'static.html.twig');
 
-        $mine = array_values(array_filter(
-            LayoutSlotRegistry::getRefreshedInlineSlots(),
-            static fn (array $slot): bool => $slot['handle'] === self::HANDLE,
-        ));
-
         self::assertSame([[
             'slot' => 'ticker',
             'handle' => self::HANDLE,
             'resourceClass' => 'App\Slot\TickerSlot',
             'refreshInterval' => 5,
-        ]], $mine);
+        ]], $this->mine(self::HANDLE));
+    }
+
+    /**
+     * A numeric name is an int array key. Handed on as one, it broke the strict
+     * audit (strtolower(int)) and the deferred slot descriptors (string slotId),
+     * on the page render path too (review, ssr#185).
+     */
+    #[Test]
+    public function a_numeric_slot_or_handle_name_stays_a_string(): void
+    {
+        LayoutSlotRegistry::register(self::HANDLE, '456', 'inline.html.twig', refreshInterval: 5);
+        LayoutSlotRegistry::register(self::HANDLE, '123', 'deferred.html.twig', deferred: true);
+        LayoutSlotRegistry::register('2024', 'feed', 'feed.html.twig', deferred: true);
+        LayoutSlotRegistry::register('2024', '789', 'year.html.twig', refreshInterval: 30);
+
+        self::assertSame(
+            [['slot' => '456', 'handle' => self::HANDLE, 'resourceClass' => null, 'refreshInterval' => 5]],
+            $this->mine(self::HANDLE),
+        );
+        self::assertSame(
+            [['slot' => '789', 'handle' => '2024', 'resourceClass' => null, 'refreshInterval' => 30]],
+            $this->mine('2024'),
+        );
+        self::assertSame(['123'], array_map(
+            static fn (DeferredSlotDefinition $slot): string => $slot->slotId,
+            LayoutSlotRegistry::getDeferredSlots(self::HANDLE),
+        ));
+        $deferred = array_values(array_filter(
+            LayoutSlotRegistry::getAllDeferredSlots(),
+            static fn (DeferredSlotDefinition $slot): bool => in_array($slot->pageHandle, [self::HANDLE, '2024'], true),
+        ));
+        self::assertSame(
+            [self::HANDLE . ':123', '2024:feed'],
+            array_map(static fn (DeferredSlotDefinition $slot): string => $slot->pageHandle . ':' . $slot->slotId, $deferred),
+        );
+        self::assertSame(['456', '789'], array_map(
+            static fn (DeferralIntentFinding $finding): string => $finding->slot,
+            (new DeferralIntentAudit())->refreshedButNotDeferred([...$this->mine(self::HANDLE), ...$this->mine('2024')]),
+        ));
     }
 
     #[Test]
@@ -87,6 +132,9 @@ final class RefreshedSlotThatIsNotDeferredIsReportedTest extends TestCase
     public function the_lint_reports_it(): void
     {
         LayoutSlotRegistry::register(self::HANDLE, 'probe-ticker', 'ticker.html.twig', refreshInterval: 5, resourceClass: 'App\Slot\ProbeTickerSlot');
+        // The lint wires its own dependencies into these catalogs: let it wire temporary ones.
+        ModuleTemplateRegistry::setCatalog(new ModuleTemplateCatalog());
+        TwigExtensionRegistry::setCatalog(new TwigExtensionCatalog());
 
         $tester = new CommandTester(new LintDeferredSlotsCommand());
         $tester->execute(['--json' => true]);
@@ -108,8 +156,22 @@ final class RefreshedSlotThatIsNotDeferredIsReportedTest extends TestCase
         self::assertFalse($report['clean']);
     }
 
-    private function slots(): \ReflectionProperty
+    /** @return list<array{slot: string, handle: string, resourceClass: ?string, refreshInterval: int}> */
+    private function mine(string $handle): array
     {
-        return new \ReflectionProperty(LayoutSlotRegistry::class, 'slots');
+        return array_values(array_filter(
+            LayoutSlotRegistry::getRefreshedInlineSlots(),
+            static fn (array $slot): bool => $slot['handle'] === $handle,
+        ));
+    }
+
+    /** @return array<string, \ReflectionProperty> */
+    private function globals(): array
+    {
+        return [
+            'slots' => new \ReflectionProperty(LayoutSlotRegistry::class, 'slots'),
+            'templates' => new \ReflectionProperty(ModuleTemplateRegistry::class, 'catalog'),
+            'extensions' => new \ReflectionProperty(TwigExtensionRegistry::class, 'catalog'),
+        ];
     }
 }

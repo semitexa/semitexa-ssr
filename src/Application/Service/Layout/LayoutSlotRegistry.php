@@ -245,7 +245,8 @@ class LayoutSlotRegistry
                     continue;
                 }
                 $result[] = new DeferredSlotDefinition(
-                    slotId: $slotName,
+                    // A numeric name ('123') is an int array key: back to the string it was.
+                    slotId: (string) $slotName,
                     templateName: $entry['template'],
                     pageHandle: $handle,
                     mode: $entry['mode'],
@@ -281,9 +282,10 @@ class LayoutSlotRegistry
                     if ($entry['deferred'] || $entry['refreshInterval'] <= 0) {
                         continue;
                     }
+                    // Array keys: a numeric name or handle ('123') came back an int.
                     $result[] = [
-                        'slot' => $slotName,
-                        'handle' => $handleKey,
+                        'slot' => (string) $slotName,
+                        'handle' => (string) $handleKey,
                         'resourceClass' => $entry['resourceClass'],
                         'refreshInterval' => $entry['refreshInterval'],
                     ];
@@ -310,9 +312,9 @@ class LayoutSlotRegistry
                         continue;
                     }
                     $result[] = new DeferredSlotDefinition(
-                        slotId: $slotName,
+                        slotId: (string) $slotName,
                         templateName: $entry['template'],
-                        pageHandle: $handleKey,
+                        pageHandle: (string) $handleKey,
                         mode: $entry['mode'],
                         priority: $entry['priority'],
                         cacheTtl: $entry['cacheTtl'],

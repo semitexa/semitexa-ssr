@@ -245,7 +245,8 @@ class LayoutSlotRegistry
                     continue;
                 }
                 $result[] = new DeferredSlotDefinition(
-                    slotId: $slotName,
+                    // A numeric name ('123') is an int array key: back to the string it was.
+                    slotId: (string) $slotName,
                     templateName: $entry['template'],
                     pageHandle: $handle,
                     mode: $entry['mode'],
@@ -266,6 +267,36 @@ class LayoutSlotRegistry
     }
 
     /**
+     * The slots that ask to be refreshed (refreshInterval above zero) but are not
+     * deferred. Only a deferred slot is pushed to, so these render once, inline;
+     * lint:deferred-slots reports them (tk-refreshed-slot-not-deferred-is-silent).
+     *
+     * @return list<array{slot: string, handle: string, resourceClass: ?string, refreshInterval: int}>
+     */
+    public static function getRefreshedInlineSlots(): array
+    {
+        $result = [];
+        foreach (self::$slots as $handleKey => $slotMap) {
+            foreach ($slotMap as $slotName => $entries) {
+                foreach ($entries as $entry) {
+                    if ($entry['deferred'] || $entry['refreshInterval'] <= 0) {
+                        continue;
+                    }
+                    // Array keys: a numeric name or handle ('123') came back an int.
+                    $result[] = [
+                        'slot' => (string) $slotName,
+                        'handle' => (string) $handleKey,
+                        'resourceClass' => $entry['resourceClass'],
+                        'refreshInterval' => $entry['refreshInterval'],
+                    ];
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    /**
      * Get all deferred slot definitions across all handles.
      *
      * @return DeferredSlotDefinition[]
@@ -281,9 +312,9 @@ class LayoutSlotRegistry
                         continue;
                     }
                     $result[] = new DeferredSlotDefinition(
-                        slotId: $slotName,
+                        slotId: (string) $slotName,
                         templateName: $entry['template'],
-                        pageHandle: $handleKey,
+                        pageHandle: (string) $handleKey,
                         mode: $entry['mode'],
                         priority: $entry['priority'],
                         cacheTtl: $entry['cacheTtl'],

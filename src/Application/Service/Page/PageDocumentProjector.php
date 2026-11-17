@@ -37,24 +37,26 @@ final class PageDocumentProjector
         $slots = self::buildSlotIndex($handle, $layoutFrame, $request);
         $mainContent = self::buildMainDocument($resource, $request, $context);
 
+        // The index is keyed by slot name, and a numeric name ('123') is an int key:
+        // buildSlotDocument() takes the string it was.
         if (self::expandAllSlots($expand)) {
-            foreach (array_keys($slots) as $slotName) {
-                $slots[$slotName]['content'] = self::buildSlotDocument(
+            foreach (array_keys($slots) as $slotKey) {
+                $slots[$slotKey]['content'] = self::buildSlotDocument(
                     $resource,
                     $handle,
-                    $slotName,
+                    (string) $slotKey,
                     $context,
                     $layoutFrame,
                     $request,
                 );
             }
         } else {
-            foreach (array_keys($slots) as $slotName) {
-                if (in_array('slots.' . $slotName, $expand, true)) {
-                    $slots[$slotName]['content'] = self::buildSlotDocument(
+            foreach (array_keys($slots) as $slotKey) {
+                if (in_array('slots.' . $slotKey, $expand, true)) {
+                    $slots[$slotKey]['content'] = self::buildSlotDocument(
                         $resource,
                         $handle,
-                        $slotName,
+                        (string) $slotKey,
                         $context,
                         $layoutFrame,
                         $request,
@@ -132,7 +134,8 @@ final class PageDocumentProjector
 
         foreach (LayoutSlotRegistry::describeSlotsForPage($handle, $layoutFrame) as $slotName => $meta) {
             $slots[$slotName] = [
-                'iri' => self::buildSlotIri($request, $slotName),
+                // A numeric slot name ('123') is an int array key: TypeError under strict types.
+                'iri' => self::buildSlotIri($request, (string) $slotName),
                 'deferred' => (bool) ($meta['deferred'] ?? false),
             ];
         }

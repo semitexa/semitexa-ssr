@@ -44,4 +44,15 @@ enum DeferralIntentKind: string
      * building a live dashboard on a fresh project.
      */
     case LiveButNeverPushed = 'live_but_never_pushed';
+
+    /**
+     * `refreshInterval` above zero on a slot that is not deferred.
+     *
+     * Live push starts from a page's deferred slots, so a slot that asks to be
+     * refreshed without `deferred: true` never enters that pipeline: it renders
+     * inline once and nothing ever pushes to it, whatever the SSE settings.
+     * Found 2026-11-16 in the review of the deferred-rendering docs, which say
+     * so while the lint above saw deferred slots only.
+     */
+    case RefreshedButNotDeferred = 'refreshed_but_not_deferred';
 }

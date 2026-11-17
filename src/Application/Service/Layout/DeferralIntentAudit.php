@@ -93,6 +93,37 @@ final class DeferralIntentAudit
     }
 
     /**
+     * The slots that ask to be refreshed without being deferred: only a deferred
+     * slot is pushed to, so each renders inline once, whatever the SSE settings.
+     *
+     * @param list<array{slot: string, handle: string, resourceClass: ?string, refreshInterval: int}> $inlineSlots
+     * @return list<DeferralIntentFinding>
+     */
+    public function refreshedButNotDeferred(array $inlineSlots): array
+    {
+        $findings = [];
+        foreach ($inlineSlots as $slot) {
+            $name = strtolower($slot['slot']);
+            if ($slot['refreshInterval'] <= 0 || isset($findings[$name])) {
+                continue;
+            }
+            $findings[$name] = new DeferralIntentFinding(
+                kind: DeferralIntentKind::RefreshedButNotDeferred,
+                slot: $name,
+                origin: $slot['resourceClass'] ?? ('handle ' . $slot['handle']),
+                consequence: sprintf(
+                    'renders inline once and is never refreshed: refreshInterval is %d s, but only a deferred slot is pushed to. '
+                    . 'Declare it deferred: true and render it with layout_slot_deferred(), or drop refreshInterval.',
+                    $slot['refreshInterval'],
+                ),
+            );
+        }
+        ksort($findings);
+
+        return array_values($findings);
+    }
+
+    /**
      * @param array<string, string> $declaredDeferred slot name => where it was declared (resource class)
      * @param array<string, string> $templateSources  template path => its source
      *

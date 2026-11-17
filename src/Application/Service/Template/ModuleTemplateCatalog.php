@@ -185,7 +185,9 @@ final class ModuleTemplateCatalog
 
     private function buildTwigLoader(): void
     {
-        $loader = new FilesystemLoader();
+        // Keyed by content, not by path alone: a deploy that kept old mtimes was
+        // served the templates the old code compiled (tk-twig-cache-outlives-a-code-update).
+        $loader = new ContentKeyedFilesystemLoader();
         $namespaceOwners = [];
 
         // Register each module's template path under every alias it owns. Per-request

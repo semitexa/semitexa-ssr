@@ -6,11 +6,14 @@ namespace Semitexa\Ssr\Tests\Unit\Layout;
 
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+use Semitexa\Core\Request;
 use Semitexa\Ssr\Application\Console\Command\LintDeferredSlotsCommand;
 use Semitexa\Ssr\Application\Service\Extension\TwigExtensionCatalog;
 use Semitexa\Ssr\Application\Service\Extension\TwigExtensionRegistry;
 use Semitexa\Ssr\Application\Service\Layout\DeferralIntentAudit;
 use Semitexa\Ssr\Application\Service\Layout\LayoutSlotRegistry;
+use Semitexa\Ssr\Application\Service\Page\PageDocumentProjector;
+use Semitexa\Ssr\Application\Service\Seo\SemanticRenderer;
 use Semitexa\Ssr\Application\Service\Template\ModuleTemplateCatalog;
 use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
 use Semitexa\Ssr\Domain\Model\DeferralIntentFinding;
@@ -38,6 +41,9 @@ final class RefreshedSlotThatIsNotDeferredIsReportedTest extends TestCase
         foreach ($this->globals() as $key => $property) {
             $this->snapshot[$key] = $property->getValue();
         }
+        // Only this test's slots: a global ('*') slot from discovery or another test would
+        // join getDeferredSlots() and the lint's findings. Restored in tearDown().
+        $this->globals()['slots']->setValue(null, []);
     }
 
     protected function tearDown(): void
@@ -99,6 +105,16 @@ final class RefreshedSlotThatIsNotDeferredIsReportedTest extends TestCase
             static fn (DeferralIntentFinding $finding): string => $finding->slot,
             (new DeferralIntentAudit())->refreshedButNotDeferred([...$this->mine(self::HANDLE), ...$this->mine('2024')]),
         ));
+
+        // The page document's slot index and the JSON-LD page parts read the same keys.
+        $index = (new \ReflectionMethod(PageDocumentProjector::class, 'buildSlotIndex'))
+            ->invoke(null, self::HANDLE, null, new Request('GET', '/dashboard', [], [], [], [], []));
+        self::assertIsArray($index);
+        self::assertSame(['main', 123, 456], array_keys($index)); // describeSlotsForPage() sorts by name
+        $numeric = $index[123] ?? null;
+        self::assertIsArray($numeric);
+        self::assertSame('/dashboard?_format=json&_slot=123', $numeric['iri'] ?? null);
+        self::assertSame(['456', '123'], array_column(SemanticRenderer::getPageParts(self::HANDLE), 'name'));
     }
 
     #[Test]

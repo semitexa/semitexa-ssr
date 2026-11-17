@@ -132,7 +132,8 @@ final class PageDocumentProjector
 
         foreach (LayoutSlotRegistry::describeSlotsForPage($handle, $layoutFrame) as $slotName => $meta) {
             $slots[$slotName] = [
-                'iri' => self::buildSlotIri($request, $slotName),
+                // A numeric slot name ('123') is an int array key: TypeError under strict types.
+                'iri' => self::buildSlotIri($request, (string) $slotName),
                 'deferred' => (bool) ($meta['deferred'] ?? false),
             ];
         }

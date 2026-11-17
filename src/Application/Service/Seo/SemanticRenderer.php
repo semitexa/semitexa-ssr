@@ -55,7 +55,7 @@ final class SemanticRenderer
             foreach ($entries as $entry) {
                 $parts[] = [
                     '@type' => 'WebPageElement',
-                    'name' => $slotName,
+                    'name' => (string) $slotName, // a numeric name is an int array key
                     'template' => $entry['template'],
                 ];
             }

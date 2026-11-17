@@ -78,6 +78,7 @@ final class LintDeferredSlotsCommand extends Command
                     LayoutSlotRegistry::getAllDeferredSlots(),
                     IsomorphicConfig::fromEnvironment()->persistentDeferredSse,
                 ),
+                ...$audit->refreshedButNotDeferred(LayoutSlotRegistry::getRefreshedInlineSlots()),
             ];
         } catch (\Throwable $e) {
             if ($json) {
@@ -122,6 +123,7 @@ final class LintDeferredSlotsCommand extends Command
                         DeferralIntentKind::DeclaredButNeverDeferred => 'declared, never deferred',
                         DeferralIntentKind::DeferredCallWithoutDeclaration => 'deferred, never declared',
                         DeferralIntentKind::LiveButNeverPushed => 'live, never pushed',
+                        DeferralIntentKind::RefreshedButNotDeferred => 'refreshed, never deferred',
                     },
                     $f->slot,
                     $f->origin,

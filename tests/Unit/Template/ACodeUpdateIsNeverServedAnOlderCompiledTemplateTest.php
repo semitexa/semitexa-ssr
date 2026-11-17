@@ -73,6 +73,28 @@ final class ACodeUpdateIsNeverServedAnOlderCompiledTemplateTest extends TestCase
         self::assertSame('newer partial', $this->render(new ContentKeyedFilesystemLoader([$this->dir . '/templates']), 'partial.html.twig'));
     }
 
+    /** Review, ssr#186: within one worker, a rewrite is seen even when nothing else was stat'd since. */
+    #[Test]
+    public function one_loader_sees_a_template_rewritten_between_two_lookups(): void
+    {
+        $template = $this->dir . '/templates/partial.html.twig';
+        file_put_contents($template, 'one');
+        $loader = new ContentKeyedFilesystemLoader([$this->dir . '/templates']);
+
+        $before = $loader->getCacheKey('partial.html.twig');
+        // Rewritten by another process, as a deploy or an editor does: PHP's own
+        // writes clear its stat cache, another process's do not.
+        exec(sprintf('printf %%s %s > %s', escapeshellarg('a longer second version'), escapeshellarg($template)), $ignored, $exit);
+        self::assertSame(0, $exit);
+        $after = $loader->getCacheKey('partial.html.twig');
+
+        // Outside the loader's root, Twig keys a template by its absolute path.
+        self::assertSame(
+            [$template . ':' . hash('xxh128', 'one'), $template . ':' . hash('xxh128', 'a longer second version')],
+            [$before, $after],
+        );
+    }
+
     #[Test]
     public function a_theme_override_deployed_with_an_older_mtime_is_compiled_again(): void
     {

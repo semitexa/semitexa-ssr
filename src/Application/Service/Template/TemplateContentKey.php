@@ -25,6 +25,10 @@ final class TemplateContentKey
 
     public function of(string $path): string
     {
+        // PHP keeps the last stat() of a path: read again with nothing stat'd in
+        // between, a template rewritten in a long-lived worker kept its old stamp,
+        // its old hash and its old compiled class (review, ssr#186).
+        clearstatcache(true, $path);
         $stat = @stat($path);
         if ($stat === false) {
             return '';

@@ -100,9 +100,10 @@ final class LocaleSwitchLinkTest extends TestCase
 
         $visit = $this->browse($link, ['locale' => 'uk']);
         self::assertSame('/evil.example/x', $visit['url']);
-        // The marker is answered with a redirect: at least that hop is checked,
-        // and each is a path on this site: one slash, then not another.
-        self::assertNotSame([], $visit['hops']);
+        // The marker is answered with a redirect, so there are at least two
+        // hops (the link and where it led), and each is a path on this site:
+        // one slash, then not another (review, ssr#188).
+        self::assertGreaterThanOrEqual(2, count($visit['hops']), 'hops: ' . implode(' -> ', $visit['hops']));
         foreach ($visit['hops'] as $hop) {
             self::assertMatchesRegularExpression('#\A/(?!/)#', $hop);
         }

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Extension;
 
+use Semitexa\Core\Locale\LocaleSwitch;
 use Semitexa\Core\Server\SwooleBootstrap;
 use Semitexa\Locale\Configuration\LocaleConfig;
 use Semitexa\Locale\Context\LocaleContextStore;
@@ -58,10 +59,23 @@ final class LocaleTwigExtension
      * The query string is dropped: a language switch is a navigation to the same
      * page, and carrying over filters or pagination from the previous locale is
      * more often wrong than right.
+     *
+     * With URL prefixes on, the link carries `?_locale=<target>`: the locale
+     * phase reads it as the visitor's explicit choice, brings their `locale`
+     * cookie in line and redirects to the page without it. Without the marker
+     * the default language was unreachable for anyone whose cookie named
+     * another one: the bare path is where that cookie redirects FROM.
+     * `locale_url()` stays unmarked: it is an ordinary link, not a choice.
      */
     public function localeSwitchUrl(string $targetLocale): string
     {
-        return self::withLocalePrefix(self::currentPathWithoutLocale(), $targetLocale);
+        $url = self::withLocalePrefix(self::currentPathWithoutLocale(), $targetLocale);
+
+        if (!LocaleContextStore::isUrlPrefixEnabled() || !in_array($targetLocale, self::supportedLocales(), true)) {
+            return $url;
+        }
+
+        return LocaleSwitch::mark($url, $targetLocale);
     }
 
     /**

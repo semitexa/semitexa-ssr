@@ -82,7 +82,10 @@ final class DeferralIntentAudit
                 origin: $slot->resourceClass ?? ('handle ' . $slot->pageHandle),
                 consequence: sprintf(
                     'renders once and is never refreshed: refreshInterval is %d s, but SSR_DEFERRED_PERSISTENT_SSE is off, '
-                    . 'so the stream closes after the first delivery. Set SSR_DEFERRED_PERSISTENT_SSE=true, or drop refreshInterval.',
+                    . 'so the stream closes after the first delivery. Set SSR_DEFERRED_PERSISTENT_SSE=true, or drop refreshInterval. '
+                    // The flag alone still leaves a guest silent: the stream stays open for a signed-in visitor only.
+                    . 'That keeps the stream open for signed-in visitors only while SSR_DEFERRED_PERSISTENT_SSE_REQUIRE_AUTH is on (the default); '
+                    . 'a public page that must stay current serves a feed instead: bin/semitexa ai:ask mechanisms --id=ssr.transport.',
                     $slot->refreshInterval,
                 ),
             );

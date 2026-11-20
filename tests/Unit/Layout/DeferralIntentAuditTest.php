@@ -248,7 +248,9 @@ final class DeferralIntentAuditTest extends TestCase
             'slot' => 'ticker',
             'origin' => 'App\Slot\TickerSlot',
             'consequence' => 'renders once and is never refreshed: refreshInterval is 5 s, but SSR_DEFERRED_PERSISTENT_SSE is off, '
-                . 'so the stream closes after the first delivery. Set SSR_DEFERRED_PERSISTENT_SSE=true, or drop refreshInterval.',
+                . 'so the stream closes after the first delivery. Set SSR_DEFERRED_PERSISTENT_SSE=true, or drop refreshInterval. '
+                . 'That keeps the stream open for signed-in visitors only while SSR_DEFERRED_PERSISTENT_SSE_REQUIRE_AUTH is on (the default); '
+                . 'a public page that must stay current serves a feed instead: bin/semitexa ai:ask mechanisms --id=ssr.transport.',
         ]], array_map(static fn (DeferralIntentFinding $f): array => $f->toArray(), $findings));
     }
 

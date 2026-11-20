@@ -164,6 +164,7 @@ final class SseSessionRegistryTest extends TestCase
             self::assertTrue($registry->wake('sess-1', false));
         });
 
+        self::assertGreaterThanOrEqual(0.04, $waited, 'the wait never parked, so the wake proved nothing');
         self::assertLessThan(0.5, $waited, 'the parked wait slept through the wake');
         self::assertFalse($registry->takeRedisDirty('sess-1'), 'the frame is not in Redis: the loop must not be sent there');
     }

@@ -14,6 +14,9 @@ final class CountingSessionQueue implements SseSessionQueueInterface
 {
     public int $pops = 0;
 
+    /** How many of the next pops fail, as they do with the breaker open or the pool exhausted. */
+    public int $failNextPops = 0;
+
     /** @var array<string, list<string>> */
     public array $frames = [];
 
@@ -42,6 +45,11 @@ final class CountingSessionQueue implements SseSessionQueueInterface
     public function pop(string $sessionId): array
     {
         $this->pops++;
+        if ($this->failNextPops > 0) {
+            $this->failNextPops--;
+
+            return ['ok' => false, 'raw' => null];
+        }
         $frames = $this->frames[$sessionId] ?? [];
         $raw = array_shift($frames);
         $this->frames[$sessionId] = $frames;

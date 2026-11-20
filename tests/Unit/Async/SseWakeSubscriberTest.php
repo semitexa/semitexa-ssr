@@ -59,6 +59,29 @@ final class SseWakeSubscriberTest extends TestCase
     }
 
     #[Test]
+    public function losing_the_subscription_wakes_every_session_once(): void
+    {
+        // A loop parks on the health it read; woken, it reads the new answer.
+        [$subscriber, $registry] = $this->subscriber();
+        $registry->open('sess-1', new \stdClass(), '', '');
+        $registry->open('sess-2', new \stdClass(), '', '');
+        $subscriber->onSubscribed();
+        $registry->takeRedisDirty('sess-1');
+        $registry->takeRedisDirty('sess-2');
+
+        $subscriber->onDropped(new \RuntimeException('Connection reset'), 12.0);
+
+        self::assertTrue($registry->takeRedisDirty('sess-1'));
+        self::assertTrue($registry->takeRedisDirty('sess-2'));
+
+        // A reconnect that fails again was never healthy: its loops already tick.
+        $subscriber->onDropped(new \RuntimeException('Connection refused'), 0.0);
+
+        self::assertFalse($registry->takeRedisDirty('sess-1'));
+        self::assertFalse($registry->takeRedisDirty('sess-2'));
+    }
+
+    #[Test]
     public function a_message_wakes_only_the_session_it_names(): void
     {
         [$subscriber, $registry] = $this->subscriber();

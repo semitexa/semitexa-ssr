@@ -741,8 +741,7 @@ final class SseServer implements FeedStreamSinkInterface
                 break;
             }
 
-            // Every 15 s, not every pass; a null id is "not this pass".
-            \Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry::keepAlive($state->claimKeepAlive(time()) ? $deferredRequestId : null, $bindToken);
+            \Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry::keepAlive($state->claimKeepAlive(time()) ? $deferredRequestId : null, $bindToken); // every 15 s; a null id is "not this pass"
             if (!$this->sessionRegistry()->waitForWork($sessionId, $wakeHealthy ? $state->nextWaitSeconds(time(), self::HEARTBEAT_INTERVAL_SECONDS, SseAuthSessionMap::TOUCH_INTERVAL_SECONDS, $maxAgeSeconds) : self::HELD_OPEN_TICK_SECONDS, $response)) {
                 break; // cancelled (the exit drain): end here, never park again
             }
@@ -1060,6 +1059,7 @@ final class SseServer implements FeedStreamSinkInterface
         while (true) {
             $popped = $queue->pop($sessionId);
             if (!$popped['ok']) {
+                $this->sessionRegistry()->retryRedisSoon($sessionId); // the wake was spent on a pop that failed: ask again in a tick
                 return false;
             }
 

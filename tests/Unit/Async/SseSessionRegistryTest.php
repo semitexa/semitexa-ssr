@@ -119,6 +119,33 @@ final class SseSessionRegistryTest extends TestCase
     }
 
     #[Test]
+    #[RequiresPhpExtension('swoole')]
+    public function a_failed_pop_shortens_the_next_wait_to_a_tick_without_skipping_it(): void
+    {
+        $registry = new SseSessionRegistry();
+        $waited = null;
+
+        Coroutine\run(static function () use ($registry, &$waited): void {
+            $registry->open('sess-1', new \stdClass(), '', '');
+            $registry->takeRedisDirty('sess-1');
+            $registry->retryRedisSoon('sess-1');
+
+            $startedAt = microtime(true);
+            $registry->waitForWork('sess-1', 5.0);
+            $waited = microtime(true) - $startedAt;
+        });
+
+        self::assertSame(0.2, SseSessionRegistry::REDIS_RETRY_SECONDS);
+        self::assertGreaterThanOrEqual(0.15, $waited, 'a retry that skips the wait spins while Redis keeps failing');
+        self::assertLessThan(0.5, $waited, 'the retry waited for the caller\'s deadline');
+        self::assertTrue($registry->takeRedisDirty('sess-1'), 'the next pass must ask Redis again');
+        self::assertFalse($registry->takeRedisDirty('sess-1'));
+
+        $registry->retryRedisSoon('held-by-another-worker');
+        self::assertFalse($registry->takeRedisDirty('held-by-another-worker'), 'nothing is kept for a session not held here');
+    }
+
+    #[Test]
     public function wake_all_reaches_every_session_held_here(): void
     {
         $registry = new SseSessionRegistry();

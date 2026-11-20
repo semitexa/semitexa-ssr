@@ -72,6 +72,19 @@ final class SseSessionRegistry
      */
     private array $redisDirty = [];
 
+    /**
+     * Sessions whose last Redis pop failed. Not the wake flag: that one skips
+     * the wait, and a loop skipping its wait while Redis refuses every pop
+     * would spin. This one shortens the wait to a tick and makes the next
+     * pass ask again.
+     *
+     * @var array<string, true>
+     */
+    private array $redisRetry = [];
+
+    /** How long a session whose pop failed waits before it asks again. */
+    public const REDIS_RETRY_SECONDS = 0.2;
+
     /** @var array<string, list<array<string, mixed>>> frames for a not-yet-connected session. */
     private array $buffers = [];
 
@@ -155,10 +168,24 @@ final class SseSessionRegistry
      */
     public function takeRedisDirty(string $sessionId): bool
     {
-        $dirty = isset($this->redisDirty[$sessionId]);
-        unset($this->redisDirty[$sessionId]);
+        $dirty = isset($this->redisDirty[$sessionId]) || isset($this->redisRetry[$sessionId]);
+        unset($this->redisDirty[$sessionId], $this->redisRetry[$sessionId]);
 
         return $dirty;
+    }
+
+    /**
+     * The session's Redis pop failed (the breaker is open, the pool timed
+     * out). The wake that asked for it is spent and the poll clock has moved,
+     * so without this the frame would wait for the safety poll: the session
+     * asks again after one tick instead, and again each tick while Redis keeps
+     * refusing — the pace every loop had before wakes existed.
+     */
+    public function retryRedisSoon(string $sessionId): void
+    {
+        if (isset($this->sessions[$sessionId])) {
+            $this->redisRetry[$sessionId] = true;
+        }
     }
 
     /** Whether the session's entry is still the one this connection opened (a same-worker reconnect replaces it). */
@@ -234,7 +261,7 @@ final class SseSessionRegistry
             return true; // work is already waiting
         }
         $waker = $this->wakers[$sessionId] ??= new \Swoole\Coroutine\Channel(1);
-        $waker->pop($seconds);
+        $waker->pop(isset($this->redisRetry[$sessionId]) ? min($seconds, self::REDIS_RETRY_SECONDS) : $seconds);
 
         return $waker->errCode !== SWOOLE_CHANNEL_CANCELED;
     }
@@ -522,6 +549,7 @@ final class SseSessionRegistry
             $this->wakers[$sessionId],
             $this->sessions[$sessionId],
             $this->redisDirty[$sessionId],
+            $this->redisRetry[$sessionId],
             $this->queues[$sessionId],
             $this->buffers[$sessionId],
             $this->bufferWarnedAt[$sessionId],

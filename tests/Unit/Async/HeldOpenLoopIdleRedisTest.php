@@ -211,6 +211,105 @@ final class HeldOpenLoopIdleRedisTest extends TestCase
         self::assertTrue($endedOnCancel, 'a loop whose wait was cancelled went round and parked again');
     }
 
+    /**
+     * Review of 44775e9. The wake flag is taken and the poll clock moved before
+     * the pop; a pop that then failed left nothing to bring the loop back, and
+     * the frame waited for the 5 s safety poll.
+     */
+    #[Test]
+    public function a_failed_pop_is_retried_a_tick_later_not_at_the_safety_poll(): void
+    {
+        [$server, $registry, , $queue, $subscriber, $loop] = $this->wiredServer();
+        $subscriber->onSubscribed();
+        $written = [];
+        $response = $this->createStub(Response::class);
+        $response->method('write')->willReturnCallback(static function (string $data) use (&$written): bool {
+            $written[] = $data;
+
+            return true;
+        });
+        $request = $this->createStub(Request::class);
+        $deliveredAfter = null;
+        $pops = null;
+
+        Coroutine\run(function () use ($server, $registry, $queue, $subscriber, $loop, $response, $request, &$written, &$deliveredAfter, &$pops): void {
+            $registry->open('sse_retry', $response, '', '');
+            $ended = new Channel(1);
+            Coroutine::create(static function () use ($server, $loop, $response, $request, $ended): void {
+                $loop->invoke($server, 'sse_retry', $request, $response, '');
+                $ended->push(true);
+            });
+
+            Coroutine::sleep(0.25);
+            $queue->frames['sse_retry'][] = '{"event":"probe","marker":"after-a-failed-pop"}';
+            $queue->failNextPops = 1;
+            $startedAt = microtime(true);
+            $subscriber->onMessage('sse_retry');
+            while (!str_contains(implode('', $written), 'after-a-failed-pop') && microtime(true) - $startedAt < 1.0) {
+                Coroutine::sleep(0.01);
+            }
+            $deliveredAfter = microtime(true) - $startedAt;
+            $pops = $queue->pops;
+
+            $registry->close('sse_retry');
+            $ended->pop(2.0);
+        });
+
+        self::assertStringContainsString('after-a-failed-pop', implode('', $written), 'the frame was still waiting a second after its pop failed');
+        self::assertGreaterThanOrEqual(0.15, $deliveredAfter, 'the retry did not wait its tick: against a Redis that keeps failing this is a spin');
+        self::assertLessThan(0.4, $deliveredAfter);
+        // First pass (empty), the woken pop that failed, then the retry: the frame and the empty pop that ends its drain.
+        self::assertSame(4, $pops);
+    }
+
+    /**
+     * Review of 44775e9. A loop reads the subscriber's health once per pass and
+     * parks on it; one already parked on "healthy" stayed there for up to 5 s
+     * after the subscription dropped, with nothing left that could wake it.
+     */
+    #[Test]
+    public function a_dropped_subscription_sends_a_parked_loop_back_to_its_tick(): void
+    {
+        [$server, $registry, , $queue, $subscriber, $loop] = $this->wiredServer();
+        $subscriber->onSubscribed();
+        $written = [];
+        $response = $this->createStub(Response::class);
+        $response->method('write')->willReturnCallback(static function (string $data) use (&$written): bool {
+            $written[] = $data;
+
+            return true;
+        });
+        $request = $this->createStub(Request::class);
+        $deliveredAfter = null;
+
+        Coroutine\run(function () use ($server, $registry, $queue, $subscriber, $loop, $response, $request, &$written, &$deliveredAfter): void {
+            $registry->open('sse_drop', $response, '', '');
+            $ended = new Channel(1);
+            Coroutine::create(static function () use ($server, $loop, $response, $request, $ended): void {
+                $loop->invoke($server, 'sse_drop', $request, $response, '');
+                $ended->push(true);
+            });
+
+            Coroutine::sleep(0.25);
+            // The loop is parked on "healthy" when the subscription goes.
+            $subscriber->onDropped(new \RuntimeException('Connection reset by peer'), 12.0);
+            // Queued by another worker afterwards: its wake has nobody to reach.
+            $queue->frames['sse_drop'][] = '{"event":"probe","marker":"published-to-nobody"}';
+            $startedAt = microtime(true);
+            while (!str_contains(implode('', $written), 'published-to-nobody') && microtime(true) - $startedAt < 1.0) {
+                Coroutine::sleep(0.01);
+            }
+            $deliveredAfter = microtime(true) - $startedAt;
+
+            $registry->close('sse_drop');
+            $ended->pop(2.0);
+        });
+
+        self::assertFalse($subscriber->isHealthy());
+        self::assertStringContainsString('published-to-nobody', implode('', $written), 'the loop stayed parked on a subscription that was gone');
+        self::assertLessThan(0.4, $deliveredAfter);
+    }
+
     #[Test]
     public function without_a_subscription_the_loop_keeps_its_tick(): void
     {

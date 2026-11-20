@@ -29,7 +29,8 @@ use Semitexa\Core\Support\StandingCoroutines;
  *    it from silence.
  *  - Every (re)subscribe wakes EVERY session ({@see self::onSubscribed()}): a
  *    wake published while nobody listened is gone, and the subscriber cannot
- *    know for whom.
+ *    know for whom. Losing the subscription wakes them too, so a loop parked
+ *    on "healthy" learns it is on its own.
  *  - A wake is a hint, never the frame. The frame is in the Redis list, and a
  *    connection that died without a word (so this still reads as healthy) costs
  *    the loop's safety poll, {@see SseHeldOpenState::REDIS_SAFETY_POLL_SECONDS}.
@@ -150,11 +151,9 @@ final class SseWakeSubscriber
                     }
                 }
             } catch (\Throwable $e) {
-                // Unhealthy BEFORE anything that can yield: from here the loops poll.
-                $this->healthy = false;
                 $this->onDropped($e, (hrtime(true) - $subscribedAt) / 1_000_000_000, self::wasCancelled());
             } finally {
-                $this->healthy = false;
+                $this->markUnhealthy();
                 $this->activeConnection = null;
                 try {
                     $connection->disconnect();
@@ -211,7 +210,8 @@ final class SseWakeSubscriber
      */
     public function onDropped(\Throwable $e, float $uptimeSeconds, bool $cancelled = false): void
     {
-        $this->healthy = false;
+        // First, before anything that can yield: from here the loops poll.
+        $this->markUnhealthy();
         if ($cancelled) {
             $this->latchTeardown();
 
@@ -270,8 +270,25 @@ final class SseWakeSubscriber
     private function latchTeardown(): void
     {
         $this->stopping = true;
-        $this->healthy = false;
+        $this->markUnhealthy();
         $this->alarm->reset();
+    }
+
+    /**
+     * The subscription is gone, and every loop is told. A loop reads health
+     * once per pass and then parks on that answer: one parked for seconds on
+     * "healthy" would sit out the whole gap with nothing able to wake it.
+     * Woken, it makes a pass, reads the new answer and is back on its tick.
+     * Only on the change itself — a reconnect that keeps failing was never
+     * healthy, and its loops are already ticking.
+     */
+    private function markUnhealthy(): void
+    {
+        if (!$this->healthy) {
+            return;
+        }
+        $this->healthy = false;
+        $this->sessions->wakeAll();
     }
 
     /** Was the current coroutine cancelled (the exit drain), read from inside it? */

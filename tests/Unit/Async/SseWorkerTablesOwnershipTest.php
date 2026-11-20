@@ -38,6 +38,28 @@ final class SseWorkerTablesOwnershipTest extends TestCase
         self::assertNull($workerB->supersededAt('sse_s', $new), 'the new connection still owns it');
     }
 
+    /**
+     * tk-idle-sse-stream-polls-redis: the claim says whether it took the session
+     * from another connection, because that connection's loop is parked and has
+     * to be woken to learn it.
+     */
+    #[Test]
+    public function a_claim_reports_whether_it_replaced_another_connection(): void
+    {
+        [$workerA, $workerB] = $this->twoWorkersOnOneTable();
+        $old = new \stdClass();
+        $new = new \stdClass();
+
+        self::assertFalse($workerA->recordOwnership('sse_s', $old), 'nobody held the session');
+        self::assertFalse($workerA->recordOwnership('sse_s', $old), 'a connection claiming again replaces nobody');
+        self::assertTrue($workerB->recordOwnership('sse_s', $new), 'a reconnect on another worker');
+        self::assertTrue($workerA->recordOwnership('sse_s', new \stdClass()), 'a reconnect on the same worker as the row it replaces');
+
+        $workerA->releaseOwnership('sse_s');
+        self::assertFalse($workerA->recordOwnership('sse_s', new \stdClass()), 'a released session has nobody to wake');
+        self::assertFalse((new SseWorkerTables())->recordOwnership('sse_s', new \stdClass()), 'no tables at all');
+    }
+
     #[Test]
     public function a_same_worker_reconnect_supersedes_too(): void
     {

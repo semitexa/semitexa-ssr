@@ -58,6 +58,12 @@ final class SseRuntime
     /** Track R · R5 — populates and reaps the subscription store on connect. */
     public ?ConnectCoordinator $connectCoordinator = null;
 
+    /**
+     * The worker's wake receiver: null without Redis (and in unit tests), and
+     * then every held stream polls on its 0.2 s tick as it always did.
+     */
+    public ?SseWakeSubscriber $wakeSubscriber = null;
+
     /** Builds a multiplexed subscription from a subscribe control. */
     public ?SubscriptionFactoryInterface $subscriptionFactory = null;
 

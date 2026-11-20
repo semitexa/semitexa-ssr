@@ -6,6 +6,8 @@ namespace Semitexa\Ssr\Tests\Unit\Async;
 
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+use Predis\Client;
+use Semitexa\Core\Redis\RedisConnectionPool;
 use Semitexa\Ssr\Application\Service\Async\SseRedisPool;
 use Semitexa\Ssr\Application\Service\Async\SseRedisSessionQueue;
 
@@ -119,6 +121,87 @@ final class SseRedisSessionQueueTest extends TestCase
     {
         $this->expectNotToPerformAssertions();
         $this->queue()->publishInvalidation('   ');
+    }
+
+    /**
+     * tk-idle-sse-stream-polls-redis: the wake is what lets the owning worker's
+     * loop stop polling. Each way a frame enters the list publishes one, after
+     * the frame is in.
+     */
+    #[Test]
+    public function every_push_publishes_a_wake_for_the_session_after_the_frame_is_in(): void
+    {
+        $commands = [];
+        self::assertTrue(self::recordingQueue($commands)->tryPush(' sess-1 ', ['type' => 'ui.patch']));
+        self::assertSame(['RPUSH', 'EXPIRE', 'PUBLISH semitexa_sse_wake sess-1'], $commands);
+
+        $commands = [];
+        self::recordingQueue($commands)->push('sess-2', [['type' => 'ui.patch'], ['type' => 'done']]);
+        self::assertSame(['RPUSH', 'EXPIRE', 'PUBLISH semitexa_sse_wake sess-2'], $commands);
+
+        $commands = [];
+        self::recordingQueue($commands)->pushRaw('sess-3', '{"type":"ui.patch"}');
+        self::assertSame(['RPUSH', 'EXPIRE', 'PUBLISH semitexa_sse_wake sess-3'], $commands);
+    }
+
+    #[Test]
+    public function a_bare_wake_publishes_the_session_id_and_queues_nothing(): void
+    {
+        $commands = [];
+        self::recordingQueue($commands)->publishWake('sess-1');
+        self::assertSame(['PUBLISH semitexa_sse_wake sess-1'], $commands);
+
+        $commands = [];
+        self::recordingQueue($commands)->publishWake('   ');
+        self::assertSame([], $commands, 'a blank session id is refused before any connection');
+    }
+
+    #[Test]
+    public function a_failed_wake_does_not_report_the_push_as_failed(): void
+    {
+        // The frame is in the list. Reporting false would send the same frame
+        // down the fallback path too, and the client would get it twice.
+        $commands = [];
+        self::assertTrue(self::recordingQueue($commands, failPublish: true)->tryPush('sess-1', ['type' => 'ui.patch']));
+        self::assertSame(['RPUSH', 'EXPIRE', 'PUBLISH semitexa_sse_wake sess-1'], $commands);
+    }
+
+    /**
+     * A queue over a client that records its commands and touches no socket.
+     *
+     * @param list<string> $commands
+     */
+    private static function recordingQueue(array &$commands, bool $failPublish = false): SseRedisSessionQueue
+    {
+        $client = new class($commands, $failPublish) extends Client {
+            /** @param list<string> $commands */
+            public function __construct(private array &$commands, private readonly bool $failPublish)
+            {
+            }
+
+            public function __call($commandID, $arguments): int
+            {
+                $name = strtoupper((string) $commandID);
+                if ($name !== 'PUBLISH') {
+                    $this->commands[] = $name;
+
+                    return 1;
+                }
+                $this->commands[] = 'PUBLISH ' . implode(' ', array_map(strval(...), $arguments));
+                if ($this->failPublish) {
+                    throw new \RuntimeException('WRONGTYPE');
+                }
+
+                return 0;
+            }
+        };
+        $redis = new RedisConnectionPool(1, ['host' => '127.0.0.1']);
+        // Outside a coroutine the pool hands out this one client.
+        (new \ReflectionProperty(RedisConnectionPool::class, 'cliFallback'))->setValue($redis, $client);
+        $pool = new SseRedisPool();
+        (new \ReflectionProperty(SseRedisPool::class, 'pool'))->setValue($pool, $redis);
+
+        return new SseRedisSessionQueue($pool);
     }
 
     private function queue(): SseRedisSessionQueue

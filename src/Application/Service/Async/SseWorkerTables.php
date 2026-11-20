@@ -140,11 +140,17 @@ final class SseWorkerTables
      * (its response), the claim also names that connection and when it opened:
      * a reconnect reuses the page's session id, so the previous connection's
      * late teardown must be able to see the session is no longer its own.
+     *
+     * @return bool whether the claim replaced another connection's: that
+     *              connection's loop, on whichever worker, is superseded and the
+     *              caller wakes it so it stands down at once
      */
-    public function recordOwnership(string $sessionId, ?object $connection = null): void
+    public function recordOwnership(string $sessionId, ?object $connection = null): bool
     {
         // Table::set merges columns, so a claim that names no connection clears the token.
         $row = ['worker_id' => $this->currentWorkerId(), 'connection' => '', 'opened_seq' => 0];
+        // This connection's token before the claim renews it: a connection claiming again replaces nobody.
+        $mine = $connection === null ? null : ($this->connections[$connection] ?? null);
         if ($connection !== null) {
             $token = bin2hex(random_bytes(8));
             $this->connections ??= new \WeakMap();
@@ -152,8 +158,16 @@ final class SseWorkerTables
             $row = ['connection' => $token, 'opened_seq' => SseOrder::next()] + $row;
         }
         $key = self::tableKey($sessionId);
+        $replaced = false;
         // Without the lock a claim is still written: a set alone strands nothing.
-        $this->exclusively(fn () => $this->sessionWorker?->set($key, $row));
+        $this->exclusively(function () use ($key, $row, $mine, $connection, &$replaced): void {
+            $previous = $this->sessionWorker?->get($key);
+            $holder = is_array($previous) ? Row::of($previous)->string('connection') : '';
+            $replaced = $connection !== null && $holder !== '' && $holder !== $mine;
+            $this->sessionWorker?->set($key, $row);
+        });
+
+        return $replaced;
     }
 
     /**

@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Tests\Unit\Async;
 
+use PHPUnit\Framework\Attributes\RequiresPhpExtension;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Ssr\Application\Service\Async\SseSessionRegistry;
+use Swoole\Coroutine;
 
 /**
  * Teardown semantics for the per-worker session state.
@@ -61,5 +63,163 @@ final class SseSessionRegistryTest extends TestCase
     {
         $this->expectNotToPerformAssertions();
         (new SseSessionRegistry())->close('never-existed');
+    }
+
+    /**
+     * tk-idle-sse-stream-polls-redis, race 1. The waker used to be created by
+     * the loop's first wait, so a wake before it had nothing to land on; and a
+     * loop that parks for seconds instead of 0.2 s cannot afford to lose one.
+     */
+    #[Test]
+    #[RequiresPhpExtension('swoole')]
+    public function a_wake_before_the_first_wait_is_kept(): void
+    {
+        $registry = new SseSessionRegistry();
+        $waited = null;
+        $woken = null;
+
+        Coroutine\run(static function () use ($registry, &$waited, &$woken): void {
+            $registry->open('sess-1', new \stdClass(), '', '');
+            self::assertTrue($registry->takeRedisDirty('sess-1'), 'a session opens dirty: its first pass asks Redis');
+
+            $woken = $registry->wake('sess-1');
+
+            $startedAt = microtime(true);
+            $registry->waitForWork('sess-1', 1.0);
+            $waited = microtime(true) - $startedAt;
+        });
+
+        self::assertTrue($woken);
+        self::assertLessThan(0.1, $waited, 'the wait parked although a wake had already arrived');
+        self::assertTrue($registry->takeRedisDirty('sess-1'), 'the wake must still be readable after the wait it cut short');
+        self::assertFalse($registry->takeRedisDirty('sess-1'), 'taking the flag clears it');
+    }
+
+    #[Test]
+    #[RequiresPhpExtension('swoole')]
+    public function a_wake_resumes_a_parked_wait(): void
+    {
+        $registry = new SseSessionRegistry();
+        $waited = null;
+
+        Coroutine\run(static function () use ($registry, &$waited): void {
+            $registry->open('sess-1', new \stdClass(), '', '');
+            $registry->takeRedisDirty('sess-1');
+            Coroutine::create(static function () use ($registry, &$waited): void {
+                $startedAt = microtime(true);
+                $registry->waitForWork('sess-1', 2.0);
+                $waited = microtime(true) - $startedAt;
+            });
+            Coroutine::sleep(0.05);
+            $registry->wake('sess-1');
+        });
+
+        self::assertGreaterThanOrEqual(0.04, $waited, 'the wait never parked, so the wake proved nothing');
+        self::assertLessThan(0.5, $waited, 'the parked wait slept through the wake');
+    }
+
+    #[Test]
+    #[RequiresPhpExtension('swoole')]
+    public function a_failed_pop_shortens_the_next_wait_to_a_tick_without_skipping_it(): void
+    {
+        $registry = new SseSessionRegistry();
+        $waited = null;
+
+        Coroutine\run(static function () use ($registry, &$waited): void {
+            $registry->open('sess-1', new \stdClass(), '', '');
+            $registry->takeRedisDirty('sess-1');
+            $registry->retryRedisSoon('sess-1');
+
+            $startedAt = microtime(true);
+            $registry->waitForWork('sess-1', 5.0);
+            $waited = microtime(true) - $startedAt;
+        });
+
+        self::assertSame(0.2, SseSessionRegistry::REDIS_RETRY_SECONDS);
+        self::assertGreaterThanOrEqual(0.15, $waited, 'a retry that skips the wait spins while Redis keeps failing');
+        self::assertLessThan(0.5, $waited, 'the retry waited for the caller\'s deadline');
+        self::assertTrue($registry->takeRedisDirty('sess-1'), 'the next pass must ask Redis again');
+        self::assertFalse($registry->takeRedisDirty('sess-1'));
+
+        $registry->retryRedisSoon('held-by-another-worker');
+        self::assertFalse($registry->takeRedisDirty('held-by-another-worker'), 'nothing is kept for a session not held here');
+    }
+
+    #[Test]
+    #[RequiresPhpExtension('swoole')]
+    public function a_wake_for_a_frame_outside_redis_resumes_the_wait_without_marking_redis(): void
+    {
+        $registry = new SseSessionRegistry();
+        $waited = null;
+
+        Coroutine\run(static function () use ($registry, &$waited): void {
+            $registry->open('sess-1', new \stdClass(), '', '');
+            $registry->takeRedisDirty('sess-1');
+            Coroutine::create(static function () use ($registry, &$waited): void {
+                $startedAt = microtime(true);
+                $registry->waitForWork('sess-1', 2.0);
+                $waited = microtime(true) - $startedAt;
+            });
+            Coroutine::sleep(0.05);
+            self::assertTrue($registry->wake('sess-1', false));
+        });
+
+        self::assertGreaterThanOrEqual(0.04, $waited, 'the wait never parked, so the wake proved nothing');
+        self::assertLessThan(0.5, $waited, 'the parked wait slept through the wake');
+        self::assertFalse($registry->takeRedisDirty('sess-1'), 'the frame is not in Redis: the loop must not be sent there');
+    }
+
+    #[Test]
+    public function wake_all_reaches_every_session_held_here(): void
+    {
+        $registry = new SseSessionRegistry();
+        foreach (['sess-1', 'sess-2', 'sess-3'] as $sessionId) {
+            $registry->open($sessionId, new \stdClass(), '', '');
+            $registry->takeRedisDirty($sessionId);
+        }
+
+        self::assertSame(3, $registry->wakeAll());
+
+        self::assertTrue($registry->takeRedisDirty('sess-1'));
+        self::assertTrue($registry->takeRedisDirty('sess-2'));
+        self::assertTrue($registry->takeRedisDirty('sess-3'));
+    }
+
+    #[Test]
+    public function a_wake_for_a_session_held_elsewhere_leaves_nothing_behind(): void
+    {
+        // Every worker hears every wake. A flag kept for a stranger would never
+        // be taken by any loop and would stay for the worker's whole life.
+        $registry = new SseSessionRegistry();
+
+        self::assertFalse($registry->wake('held-by-another-worker'));
+
+        $registry->open('held-by-another-worker', new \stdClass(), '', '');
+        self::assertTrue($registry->takeRedisDirty('held-by-another-worker'));
+        $registry->close('held-by-another-worker');
+        self::assertFalse($registry->takeRedisDirty('held-by-another-worker'), 'close drops the flag with the session');
+    }
+
+    #[Test]
+    #[RequiresPhpExtension('swoole')]
+    public function a_replaced_connection_does_not_park_on_its_successors_waker(): void
+    {
+        // A same-worker reconnect keeps the session id and its waker. The old
+        // loop, parked there again, would be first in line for the next wake.
+        $registry = new SseSessionRegistry();
+        $old = new \stdClass();
+        $waited = null;
+
+        Coroutine\run(static function () use ($registry, $old, &$waited): void {
+            $registry->open('sess-1', $old, '', '');
+            $registry->open('sess-1', new \stdClass(), '', '');
+            $registry->takeRedisDirty('sess-1');
+
+            $startedAt = microtime(true);
+            $registry->waitForWork('sess-1', 1.0, $old);
+            $waited = microtime(true) - $startedAt;
+        });
+
+        self::assertLessThan(0.1, $waited);
     }
 }

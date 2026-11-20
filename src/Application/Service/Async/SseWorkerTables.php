@@ -140,11 +140,17 @@ final class SseWorkerTables
      * (its response), the claim also names that connection and when it opened:
      * a reconnect reuses the page's session id, so the previous connection's
      * late teardown must be able to see the session is no longer its own.
+     *
+     * @return bool whether the claim replaced another connection's: that
+     *              connection's loop, on whichever worker, is superseded and the
+     *              caller wakes it so it stands down at once
      */
-    public function recordOwnership(string $sessionId, ?object $connection = null): void
+    public function recordOwnership(string $sessionId, ?object $connection = null): bool
     {
         // Table::set merges columns, so a claim that names no connection clears the token.
         $row = ['worker_id' => $this->currentWorkerId(), 'connection' => '', 'opened_seq' => 0];
+        // This connection's token before the claim renews it: a connection claiming again replaces nobody.
+        $mine = $connection === null ? null : ($this->connections[$connection] ?? null);
         if ($connection !== null) {
             $token = bin2hex(random_bytes(8));
             $this->connections ??= new \WeakMap();
@@ -152,8 +158,16 @@ final class SseWorkerTables
             $row = ['connection' => $token, 'opened_seq' => SseOrder::next()] + $row;
         }
         $key = self::tableKey($sessionId);
+        $replaced = false;
         // Without the lock a claim is still written: a set alone strands nothing.
-        $this->exclusively(fn () => $this->sessionWorker?->set($key, $row));
+        $this->exclusively(function () use ($key, $row, $mine, $connection, &$replaced): void {
+            $previous = $this->sessionWorker?->get($key);
+            $holder = is_array($previous) ? Row::of($previous)->string('connection') : '';
+            $replaced = $connection !== null && $holder !== '' && $holder !== $mine;
+            $this->sessionWorker?->set($key, $row);
+        });
+
+        return $replaced;
     }
 
     /**
@@ -300,8 +314,56 @@ final class SseWorkerTables
             'worker_id' => $targetWorkerId,
             'payload' => $payload,
         ]);
+        // After the row, so a reader that sees the signal move finds the frame.
+        $this->deliver->incr(self::DELIVERY_SIGNAL_PREFIX . $targetWorkerId, 'worker_id', 1);
 
         return true;
+    }
+
+    /**
+     * One row per worker in the deliver table, whose `worker_id` column is
+     * not a worker but a counter: bumped by every {@see queueForWorker()} for
+     * that worker. It has no session, so no drain reads it as a frame.
+     *
+     * WHY: this path is taken exactly when Redis refused the frame, so no wake
+     * can be published for it, and the target's loop may be parked for seconds
+     * on a subscription that still reads healthy. The target reads this one
+     * cell on a timer and looks at the table only when it moved — an idle
+     * worker never scans, and no stream does any work of its own.
+     */
+    private const DELIVERY_SIGNAL_PREFIX = 'sig_';
+
+    /** This worker's delivery counter: it moved when a frame was parked here since the last read. */
+    public function deliverySignal(): int
+    {
+        $value = $this->deliver?->get(self::DELIVERY_SIGNAL_PREFIX . $this->currentWorkerId(), 'worker_id');
+
+        return is_int($value) ? $value : 0;
+    }
+
+    /**
+     * The sessions that have a frame parked for this worker — one table scan,
+     * made only after {@see deliverySignal()} moved.
+     *
+     * @return list<string>
+     */
+    public function sessionsWithDeliveries(): array
+    {
+        $workerId = $this->currentWorkerId();
+        $sessions = [];
+        foreach ($this->deliver ?? [] as $row) {
+            $values = is_array($row) ? Row::of($row) : null;
+            $sessionId = trim($values?->string('session_id') ?? '');
+            if ($values !== null && $sessionId !== '' && $values->int('worker_id', -1) === $workerId) {
+                $sessions[$sessionId] = true;
+            }
+        }
+
+        // Sorted: the table iterates in hash order, and the keys are uniqid()s.
+        $ids = array_map(strval(...), array_keys($sessions));
+        sort($ids);
+
+        return $ids;
     }
 
     /**

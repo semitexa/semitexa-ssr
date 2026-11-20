@@ -11,11 +11,11 @@ use Semitexa\Core\Container\SemitexaContainer;
 use Semitexa\Core\Pipeline\ReRun\ReRunContext;
 use Semitexa\Core\Pipeline\ReRun\ReRunnerInterface;
 use Semitexa\Core\Pipeline\RequestTracerInterface;
-use Semitexa\Core\Redis\RedisConnectionPool;
 use Semitexa\Core\Server\SseFrame;
 use Semitexa\Core\Server\SseTransportInterface;
 use Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
+use Semitexa\Ssr\Domain\Contract\SseSessionQueueInterface;
 use Semitexa\Ssr\Domain\Contract\SubscriptionFactoryInterface;
 use Semitexa\Ssr\Domain\Model\SubscriptionRecord;
 use Predis\Client;
@@ -100,8 +100,8 @@ final class SseServer implements FeedStreamSinkInterface
     private const HEARTBEAT_INTERVAL_SECONDS = SseTransportModePolicy::HEARTBEAT_INTERVAL_SECONDS;
 
     /**
-     * Drain-loop tick. Short enough that a queued frame leaves promptly, long
-     * enough that an idle connection is not a busy-wait.
+     * Drain-loop tick while no {@see SseWakeSubscriber} is subscribed (no Redis,
+     * a reconnect): short enough that a queued frame leaves promptly.
      */
     private const HELD_OPEN_TICK_SECONDS = 0.2;
 
@@ -196,7 +196,7 @@ final class SseServer implements FeedStreamSinkInterface
 
     /** `ep-slay-sse-god-class` — the extracted Redis pool + session-queue store. */
     private ?SseRedisPool $redisPoolResolver = null;
-    private ?SseRedisSessionQueue $redisSessionQueue = null;
+    private ?SseSessionQueueInterface $redisSessionQueue = null;
 
     /** `ep-slay-sse-god-class` — the extracted user<->session index. */
     private ?SseAuthSessionMap $authSessionMap = null;
@@ -358,7 +358,10 @@ final class SseServer implements FeedStreamSinkInterface
 
         // Claimed before the auth mapping, so a previous connection's teardown
         // in between already sees it is superseded and leaves that mapping alone.
-        $this->workerTables()->recordOwnership($sessionId, $response);
+        if ($this->workerTables()->recordOwnership($sessionId, $response)) {
+            $this->redisSessionQueue()->publishWake($sessionId); // the connection this one replaced stands down now, on whichever worker
+        }
+        $this->sessionRegistry()->wake($sessionId); // as does a predecessor parked on this worker's waker
         $authenticatedUserId = $this->resolveAuthenticatedUserId($request);
         $this->authSessionMap()->opened($sessionId, $authenticatedUserId, $response);
         // After: a guest open clears the previous mapping, liveness key included.
@@ -564,6 +567,7 @@ final class SseServer implements FeedStreamSinkInterface
             return;
         }
 
+        $this->runtime()->wakeSubscriber?->ensureRunning();
         $this->runHeldOpenLoop($sessionId, $request, $response, $authenticatedUserId);
 
         $close();
@@ -684,7 +688,8 @@ final class SseServer implements FeedStreamSinkInterface
      * copy. Kiss is byte-unchanged: {@see handleSse()} still computes the same
      * pre-loop state and calls this with it. The loop does NOT close the session;
      * the caller owns {@see closeSession()} (so a caller can run teardown hooks
-     * around it). It ends when the worker drains: see HeldOpenLoopStandsDownOnDrainTest.
+     * around it). It ends when the worker drains: see HeldOpenLoopStandsDownOnDrainTest;
+     * with a live {@see SseWakeSubscriber} it parks until woken or due: HeldOpenLoopIdleRedisTest.
      */
     private function runHeldOpenLoop(
         string $sessionId,
@@ -697,6 +702,8 @@ final class SseServer implements FeedStreamSinkInterface
         \Semitexa\Core\Server\AfterResponse::holdOpen();
         $state = new SseHeldOpenState($authenticatedUserId, time());
         $maxAgeSeconds = $this->maxConnectionAgeSeconds();
+        $deferredRequestId = SseStreamRequest::fromRequest($request)->deferredRequestId; // read once, as is the token
+        $bindToken = $this->getSsrBindToken($request);
 
         // A reconnect takes the session over: from then on its frames are the new connection's.
         while (!$state->isClosed() && !\Semitexa\Core\Lifecycle\WorkerDrainSignal::isDraining() && $this->sessionRegistry()->isOpenWith($sessionId, $response) && $this->workerTables()->supersededAt($sessionId, $response) === null) {
@@ -713,8 +720,13 @@ final class SseServer implements FeedStreamSinkInterface
                 $this->drainCrossWorkerTable($sessionId, $response, $state);
             }
 
-            if (!$state->isClosed() && $this->drainRedisQueueForSession($sessionId, $response)) {
-                $state->close();
+            $wakeHealthy = $this->runtime()->wakeSubscriber?->isHealthy() ?? false;
+            // The wake flag is taken BEFORE the pop: one landing during it stays set for the wait below.
+            if (!$state->isClosed() && $state->claimRedisPoll(time(), $this->sessionRegistry()->takeRedisDirty($sessionId), $wakeHealthy)) {
+                // Asked again: a wake is also how a superseded loop is told, and Redis then holds the new connection's frames.
+                if ($this->workerTables()->supersededAt($sessionId, $response) !== null || $this->drainRedisQueueForSession($sessionId, $response)) {
+                    $state->close();
+                }
             }
 
             if ($state->isClosed()) {
@@ -729,8 +741,10 @@ final class SseServer implements FeedStreamSinkInterface
                 break;
             }
 
-            \Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry::keepAlive(SseStreamRequest::fromRequest($request)->deferredRequestId, $this->getSsrBindToken($request));
-            $this->sessionRegistry()->waitForWork($sessionId, self::HELD_OPEN_TICK_SECONDS);
+            \Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry::keepAlive($state->claimKeepAlive(time()) ? $deferredRequestId : null, $bindToken); // every 15 s; a null id is "not this pass"
+            if (!$this->sessionRegistry()->waitForWork($sessionId, $wakeHealthy ? $state->nextWaitSeconds(time(), self::HEARTBEAT_INTERVAL_SECONDS, SseAuthSessionMap::TOUCH_INTERVAL_SECONDS, $maxAgeSeconds) : self::HELD_OPEN_TICK_SECONDS, $response)) {
+                break; // cancelled (the exit drain): end here, never park again
+            }
         }
         \Semitexa\Core\Server\InFlightRequests::tearDownAfterDrain(); // left for the drain: the teardown after this is spared, not cut
     }
@@ -777,7 +791,7 @@ final class SseServer implements FeedStreamSinkInterface
                 // in-flight payload (already shifted off the queue) to
                 // Redis so the reconnecting subscriber drains it; any
                 // remaining queue items are flushed by closeSession.
-                $this->requeueToRedis($sessionId, [$data]);
+                $this->redisSessionQueue()->push($sessionId, [$data]);
                 $state->close();
 
                 return;
@@ -957,7 +971,10 @@ final class SseServer implements FeedStreamSinkInterface
 
         $this->beginSseResponse($response, $sessionId);
         $this->sessionRegistry()->ensureQueue($sessionId);
-        $this->workerTables()->recordOwnership($sessionId, $response);
+        if ($this->workerTables()->recordOwnership($sessionId, $response)) {
+            $this->redisSessionQueue()->publishWake($sessionId); // the connection this one replaced stands down now, on whichever worker
+        }
+        $this->sessionRegistry()->wake($sessionId); // as does a predecessor parked on this worker's waker
         $this->touchActiveSession($sessionId);
 
         // Stream Lifecycle · Axis 1(b) Phase 2 — the server-authoritative stream
@@ -1004,6 +1021,7 @@ final class SseServer implements FeedStreamSinkInterface
         }
 
         try {
+            $this->runtime()->wakeSubscriber?->ensureRunning();
             $this->runHeldOpenLoop($sessionId, $request, $response, '');
         } finally {
             if ($coordinator !== null && $record !== null && $context !== null) {
@@ -1041,6 +1059,7 @@ final class SseServer implements FeedStreamSinkInterface
         while (true) {
             $popped = $queue->pop($sessionId);
             if (!$popped['ok']) {
+                $this->sessionRegistry()->retryRedisSoon($sessionId); // the wake was spent on a pop that failed: ask again in a tick
                 return false;
             }
 
@@ -1132,21 +1151,6 @@ final class SseServer implements FeedStreamSinkInterface
      * @param list<mixed> $queue
      * @return list<string>
      */
-    /**
-     * Durability hook: push undelivered in-memory payloads onto the
-     * existing Redis session queue so a reconnecting subscriber (possibly
-     * on another worker) drains them via drainRedisQueueForSession().
-     * Mirrors the enqueue path in deliver(). No-op without a Redis pool —
-     * in the single-server / in-memory fallback the payloads are dropped,
-     * matching the pre-existing best-effort guarantee.
-     *
-     * @param list<mixed> $payloads
-     */
-    private function requeueToRedis(string $sessionId, array $payloads): void
-    {
-        $this->redisSessionQueue()->push($sessionId, $payloads);
-    }
-
     /**
      * Build the SSE wire frame for one payload as a portable {@see SseFrame}.
      *
@@ -1323,7 +1327,7 @@ final class SseServer implements FeedStreamSinkInterface
             return true;
         }
 
-        $pool = $this->getRedisPool();
+        $pool = $this->redisPool()->get();
         if ($pool !== null) {
             try {
                 $isActive = $pool->withConnection(function ($redis) use ($sessionId): bool {
@@ -1692,6 +1696,13 @@ final class SseServer implements FeedStreamSinkInterface
     public function shutdownInvalidationSubscriber(): void
     {
         $this->runtime()->connectCoordinator?->shutdown();
+        $this->runtime()->wakeSubscriber?->stop();
+    }
+
+    /** Wired per worker by WireSseWakeSubscriberListener; it connects with the first held stream. Unwired, streams keep the tick. */
+    public function wireWakeSubscriber(RedisSubscribeConnectionFactory $connectionFactory): void
+    {
+        $this->runtime()->wakeSubscriber ??= new SseWakeSubscriber($this->sessionRegistry(), $connectionFactory, null, $this->workerTables());
     }
 
     /**
@@ -1858,19 +1869,14 @@ final class SseServer implements FeedStreamSinkInterface
             $this->removeSessionWorkerMapping($sessionId, $response);
             $this->unregisterAuthenticatedSession($sessionId, $response);
         }
-        $this->releaseIpConnection($sessionId, $response);
+        $this->connectionLimiter()->release($sessionId, $response);
         if ($ownsLocalState) {
-            $this->requeueToRedis($sessionId, $handOff); // an empty hand-off never reaches Redis
+            $this->redisSessionQueue()->push($sessionId, $handOff); // an empty hand-off never reaches Redis
             // The requeue can yield on Redis: a same-worker reconnect landing meanwhile owns the entry and the coroutines it starts.
             $this->sessionRegistry()->closeUnlessReplaced($sessionId, $response);
         }
         $this->sessionCoroutines()->forget($sessionId, $this->workerTables()->supersededAt($sessionId, $response) ?? $nowSupersededAt);
         @$response->end();
-    }
-
-    private function releaseIpConnection(string $sessionId, Response $response): void
-    {
-        $this->connectionLimiter()->release($sessionId, $response);
     }
 
     private function resolveClientIp(Request $request): string
@@ -2026,11 +2032,6 @@ final class SseServer implements FeedStreamSinkInterface
         $this->redisSessionQueue()->publishInvalidation($channel);
     }
 
-    private function getRedisPool(): ?RedisConnectionPool
-    {
-        return $this->redisPool()->get();
-    }
-
     private function isSameOriginRequest(Request $request): bool
     {
         return $this->requestGuard()->isSameOriginRequest($request);
@@ -2069,7 +2070,7 @@ final class SseServer implements FeedStreamSinkInterface
         return $this->redisPoolResolver ??= new SseRedisPool();
     }
 
-    private function redisSessionQueue(): SseRedisSessionQueue
+    private function redisSessionQueue(): SseSessionQueueInterface
     {
         return $this->redisSessionQueue ??= new SseRedisSessionQueue($this->redisPool());
     }

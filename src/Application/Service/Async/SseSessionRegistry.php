@@ -62,6 +62,29 @@ final class SseSessionRegistry
     /** @var array<string, \Swoole\Coroutine\Channel> sessionId => the held-open loop's wake-up */
     private array $wakers = [];
 
+    /**
+     * Sessions a wake arrived for since their loop last asked Redis. A flag
+     * beside the waker, because a wake has to survive the moments the loop is
+     * not parked: it is set here and taken by the loop BEFORE its pop, so one
+     * landing during the pop is still there afterwards.
+     *
+     * @var array<string, true>
+     */
+    private array $redisDirty = [];
+
+    /**
+     * Sessions whose last Redis pop failed. Not the wake flag: that one skips
+     * the wait, and a loop skipping its wait while Redis refuses every pop
+     * would spin. This one shortens the wait to a tick and makes the next
+     * pass ask again.
+     *
+     * @var array<string, true>
+     */
+    private array $redisRetry = [];
+
+    /** How long a session whose pop failed waits before it asks again. */
+    public const REDIS_RETRY_SECONDS = 0.2;
+
     /** @var array<string, list<array<string, mixed>>> frames for a not-yet-connected session. */
     private array $buffers = [];
 
@@ -92,6 +115,83 @@ final class SseSessionRegistry
             'tenant_id' => $tenantId,
             'tenant_blob' => $tenantBlob,
         ];
+        // The waker exists from here, not from the loop's first wait, and the
+        // session starts dirty: whatever is published between this line and
+        // the first park is kept. A same-worker reconnect keeps the channel
+        // its predecessor is parked on, so a wake still reaches that loop.
+        if (class_exists(\Swoole\Coroutine\Channel::class, false) && \Swoole\Coroutine::getCid() > 0) {
+            $this->wakers[$sessionId] ??= new \Swoole\Coroutine\Channel(1);
+        }
+        $this->redisDirty[$sessionId] = true;
+    }
+
+    /**
+     * Another worker queued something in Redis for this session, or took the
+     * session over: its loop here, if there is one, goes round now. A session
+     * this worker does not hold is not remembered — every worker hears every
+     * wake, and a flag per stranger would grow for the worker's whole life.
+     *
+     * `$redis` false is a wake for a frame that is NOT in Redis (the shared
+     * deliver table, read on every pass): the loop goes round without asking
+     * a Redis that has just refused that very frame.
+     */
+    public function wake(string $sessionId, bool $redis = true): bool
+    {
+        if (!isset($this->sessions[$sessionId])) {
+            return false;
+        }
+        if ($redis) {
+            $this->redisDirty[$sessionId] = true;
+        }
+        $waker = $this->wakers[$sessionId] ?? null;
+        if ($waker !== null && $waker->isEmpty()) {
+            $waker->push(true, 0.001);
+        }
+
+        return true;
+    }
+
+    /**
+     * Wake every session held here: the subscriber just (re)subscribed, and
+     * what was published while it was not listening is unknown.
+     *
+     * @return int how many sessions were woken
+     */
+    public function wakeAll(): int
+    {
+        $woken = 0;
+        foreach (array_keys($this->sessions) as $sessionId) {
+            $woken += $this->wake((string) $sessionId) ? 1 : 0;
+        }
+
+        return $woken;
+    }
+
+    /**
+     * Read the session's wake flag and clear it — in that order and before the
+     * Redis pop, never after: cleared afterwards, a wake that landed while the
+     * pop was in flight would be wiped with the frame still in the list.
+     */
+    public function takeRedisDirty(string $sessionId): bool
+    {
+        $dirty = isset($this->redisDirty[$sessionId]) || isset($this->redisRetry[$sessionId]);
+        unset($this->redisDirty[$sessionId], $this->redisRetry[$sessionId]);
+
+        return $dirty;
+    }
+
+    /**
+     * The session's Redis pop failed (the breaker is open, the pool timed
+     * out). The wake that asked for it is spent and the poll clock has moved,
+     * so without this the frame would wait for the safety poll: the session
+     * asks again after one tick instead, and again each tick while Redis keeps
+     * refusing — the pace every loop had before wakes existed.
+     */
+    public function retryRedisSoon(string $sessionId): void
+    {
+        if (isset($this->sessions[$sessionId])) {
+            $this->redisRetry[$sessionId] = true;
+        }
     }
 
     /** Whether the session's entry is still the one this connection opened (a same-worker reconnect replaces it). */
@@ -141,24 +241,35 @@ final class SseSessionRegistry
     }
 
     /**
-     * The held-open loop's pause between ticks — cut short the moment a frame
-     * is queued for the session on this worker (tk-ls-kiss-wakeup). The loop
-     * used to sleep its whole tick, so a frame queued right after a tick (a
-     * deferred block, an answer to a click) waited up to that long for nothing.
-     * Frames from another worker still arrive on the next tick.
+     * The held-open loop's pause — cut short the moment a frame is queued for
+     * the session on this worker (tk-ls-kiss-wakeup) or a wake arrives for it
+     * from another one (tk-idle-sse-stream-polls-redis).
+     *
+     * With `$connection`, a loop whose session entry was replaced by a
+     * same-worker reconnect does not park at all: the waker is the new
+     * connection's now, and a superseded loop parked on it would swallow the
+     * wake meant for its successor.
+     *
+     * @return bool false when the wait was cancelled (the worker's exit drain):
+     *              the caller ends its loop instead of waiting again
      */
-    public function waitForWork(string $sessionId, float $seconds): void
+    public function waitForWork(string $sessionId, float $seconds, mixed $connection = null): bool
     {
         if (!class_exists(\Swoole\Coroutine\Channel::class, false) || \Swoole\Coroutine::getCid() < 0) {
             usleep((int) ($seconds * 1_000_000));
 
-            return;
+            return true;
         }
-        if (($this->queues[$sessionId] ?? []) !== []) {
-            return; // work is already waiting
+        if ($connection !== null && !$this->isOpenWith($sessionId, $connection)) {
+            return true;
         }
-        $this->wakers[$sessionId] ??= new \Swoole\Coroutine\Channel(1);
-        $this->wakers[$sessionId]->pop($seconds);
+        if (($this->queues[$sessionId] ?? []) !== [] || isset($this->redisDirty[$sessionId])) {
+            return true; // work is already waiting
+        }
+        $waker = $this->wakers[$sessionId] ??= new \Swoole\Coroutine\Channel(1);
+        $waker->pop(isset($this->redisRetry[$sessionId]) ? min($seconds, self::REDIS_RETRY_SECONDS) : $seconds);
+
+        return $waker->errCode !== SWOOLE_CHANNEL_CANCELED;
     }
 
     /**
@@ -439,16 +550,21 @@ final class SseSessionRegistry
      */
     public function close(string $sessionId): void
     {
-        if (isset($this->wakers[$sessionId])) {
-            $this->wakers[$sessionId]->close();
-        }
+        $waker = $this->wakers[$sessionId] ?? null;
         unset(
             $this->wakers[$sessionId],
             $this->sessions[$sessionId],
+            $this->redisDirty[$sessionId],
+            $this->redisRetry[$sessionId],
             $this->queues[$sessionId],
             $this->buffers[$sessionId],
             $this->bufferWarnedAt[$sessionId],
             $this->demoProducers[$sessionId],
         );
+        // Last, with the entry already gone: closing the channel resumes a loop
+        // parked on it at once, inside this call. Resumed while the session
+        // still read as open, it went round, found the closed channel, and span
+        // on it without yielding until something else in its pass did.
+        $waker?->close();
     }
 }

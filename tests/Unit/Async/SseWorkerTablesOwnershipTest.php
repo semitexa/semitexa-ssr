@@ -38,6 +38,66 @@ final class SseWorkerTablesOwnershipTest extends TestCase
         self::assertNull($workerB->supersededAt('sse_s', $new), 'the new connection still owns it');
     }
 
+    /**
+     * tk-idle-sse-stream-polls-redis: the claim says whether it took the session
+     * from another connection, because that connection's loop is parked and has
+     * to be woken to learn it.
+     */
+    #[Test]
+    public function a_claim_reports_whether_it_replaced_another_connection(): void
+    {
+        [$workerA, $workerB] = $this->twoWorkersOnOneTable();
+        $old = new \stdClass();
+        $new = new \stdClass();
+
+        self::assertFalse($workerA->recordOwnership('sse_s', $old), 'nobody held the session');
+        self::assertFalse($workerA->recordOwnership('sse_s', $old), 'a connection claiming again replaces nobody');
+        self::assertTrue($workerB->recordOwnership('sse_s', $new), 'a reconnect on another worker');
+        self::assertTrue($workerA->recordOwnership('sse_s', new \stdClass()), 'a reconnect on the same worker as the row it replaces');
+
+        $workerA->releaseOwnership('sse_s');
+        self::assertFalse($workerA->recordOwnership('sse_s', new \stdClass()), 'a released session has nobody to wake');
+        self::assertFalse((new SseWorkerTables())->recordOwnership('sse_s', new \stdClass()), 'no tables at all');
+    }
+
+    /**
+     * Review of semitexa-ssr#190: the worker a frame is parked for must be able
+     * to learn it without scanning the table on every tick.
+     */
+    #[Test]
+    public function parking_a_frame_moves_only_the_target_workers_signal_and_names_its_session(): void
+    {
+        $deliver = new Table(16);
+        $deliver->column('session_id', Table::TYPE_STRING, 32);
+        $deliver->column('worker_id', Table::TYPE_INT, 4);
+        $deliver->column('payload', Table::TYPE_STRING, 64);
+        $deliver->create();
+        [$a, $b] = $this->twoWorkersOnOneTable();
+        $sessions = (new \ReflectionProperty(SseWorkerTables::class, 'sessionWorker'))->getValue($a);
+        self::assertInstanceOf(Table::class, $sessions);
+        $a->setTables($sessions, $deliver);
+        $b->setTables($sessions, $deliver);
+        $a->setServer($this->serverWithWorkerId(0));
+        $b->setServer($this->serverWithWorkerId(1));
+
+        self::assertSame(0, $a->deliverySignal());
+        self::assertSame([], $a->sessionsWithDeliveries());
+
+        self::assertTrue($b->queueForWorker('sse_one', 0, ['n' => 1]));
+        self::assertTrue($b->queueForWorker('sse_one', 0, ['n' => 2]));
+        self::assertTrue($b->queueForWorker('sse_two', 0, ['n' => 3]));
+        self::assertTrue($a->queueForWorker('sse_three', 1, ['n' => 4]));
+
+        self::assertSame(3, $a->deliverySignal());
+        self::assertSame(1, $b->deliverySignal());
+        self::assertSame(['sse_one', 'sse_two'], $a->sessionsWithDeliveries());
+        self::assertSame(['sse_three'], $b->sessionsWithDeliveries());
+        // The signal rows are not frames: each drain still reads exactly its own.
+        self::assertCount(2, $a->readDeliveriesFor(0, 'sse_one'));
+        self::assertCount(1, $b->readDeliveriesFor(1, 'sse_three'));
+        self::assertSame([], $b->readDeliveriesFor(1, 'sse_one'));
+    }
+
     #[Test]
     public function a_same_worker_reconnect_supersedes_too(): void
     {

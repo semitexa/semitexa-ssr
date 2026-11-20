@@ -8,6 +8,7 @@ use Predis\Client;
 use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Core\Redis\RedisCircuitBreaker;
 use Semitexa\Core\Redis\RedisUnavailableException;
+use Semitexa\Ssr\Domain\Contract\SseSessionQueueInterface;
 
 /**
  * The Redis-backed durability store for a session's undelivered SSE frames.
@@ -30,9 +31,19 @@ use Semitexa\Core\Redis\RedisUnavailableException;
  * losing it must never take a live stream down with it. The one asymmetry worth
  * knowing: a failed pop returns "stop draining" rather than "queue empty", so a
  * Redis outage mid-drain ends the drain instead of spinning on the error.
+ *
+ * Every push is followed by a **wake**: the session id published on
+ * {@see self::WAKE_CHANNEL}, which the owning worker's {@see SseWakeSubscriber}
+ * turns into an immediate pop. It is what lets an idle stream stop asking Redis
+ * five times a second whether anything arrived (tk-idle-sse-stream-polls-redis).
+ * The wake is lossy and the frame is not: a publish that fails leaves the frame
+ * in the list, where the loop's safety poll finds it.
  */
-final class SseRedisSessionQueue
+final class SseRedisSessionQueue implements SseSessionQueueInterface
 {
+    /** One channel for every session: the payload is the session id. */
+    public const WAKE_CHANNEL = 'semitexa_sse_wake';
+
     private const KEY_PREFIX = 'semitexa_sse_queue:';
     private const TTL_SECONDS = 7200;
 
@@ -123,6 +134,7 @@ final class SseRedisSessionQueue
                 $queueKey = self::key($sessionId);
                 $redis->rpush($queueKey, [$payload]);
                 $redis->expire($queueKey, self::TTL_SECONDS);
+                self::wake($redis, $sessionId);
             });
         } catch (\Throwable $e) {
             self::reportFailure('Redis SSE enqueue failed', $e, ['session_id' => $sessionId]);
@@ -131,6 +143,47 @@ final class SseRedisSessionQueue
         }
 
         return true;
+    }
+
+    /**
+     * Wake the session's loop with nothing queued — a newer connection took the
+     * session over, and the one it replaced should notice now rather than at
+     * its next safety poll.
+     */
+    public function publishWake(string $sessionId): void
+    {
+        $sessionId = trim($sessionId);
+        $pool = $sessionId === '' ? null : $this->pool->get();
+        if ($pool === null) {
+            return;
+        }
+
+        try {
+            $pool->withConnection(static function ($redis) use ($sessionId): void {
+                /** @var Client $redis */
+                self::wake($redis, $sessionId);
+            });
+        } catch (\Throwable $e) {
+            self::reportFailure('Redis SSE wake publish failed', $e, ['session_id' => $sessionId]);
+        }
+    }
+
+    /**
+     * Publish the wake that follows a push, on the connection that made it.
+     *
+     * Never throws. The frame is already in the list when this runs, so a
+     * failure here must not read as a failed push: {@see self::tryPush()} would
+     * report false, the caller would queue the same frame on the fallback path
+     * as well, and the client would get it twice. A lost wake costs the safety
+     * poll's interval and nothing else.
+     */
+    private static function wake(Client $redis, string $sessionId): void
+    {
+        try {
+            $redis->publish(self::WAKE_CHANNEL, trim($sessionId));
+        } catch (\Throwable $e) {
+            self::reportFailure('Redis SSE wake publish failed', $e, ['session_id' => $sessionId]);
+        }
     }
 
     /**
@@ -219,6 +272,7 @@ final class SseRedisSessionQueue
                 $queueKey = self::key($sessionId);
                 $redis->rpush($queueKey, $encoded);
                 $redis->expire($queueKey, self::TTL_SECONDS);
+                self::wake($redis, $sessionId);
             });
         } catch (\Throwable $e) {
             self::reportFailure($errorMessage, $e, $logContext + ['session_id' => $sessionId]);

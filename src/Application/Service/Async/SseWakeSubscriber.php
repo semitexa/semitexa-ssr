@@ -46,8 +46,15 @@ use Semitexa\Core\Support\StandingCoroutines;
  */
 final class SseWakeSubscriber
 {
-    /** @see LivePubSubChannelController — the same guard against a lone parked coroutine reading as a deadlock. */
-    private const KEEPALIVE_INTERVAL_MS = 1000;
+    /**
+     * The loop's timer. Its existence is the guard {@see LivePubSubChannelController}
+     * describes (a lone parked coroutine must not read as a deadlock); its
+     * work, each tick, is {@see self::wakeTableDeliveries()}.
+     */
+    private const TICK_INTERVAL_MS = 200;
+
+    /** The delivery signal as last read; null until the first tick, which therefore looks once. */
+    private ?int $seenDeliverySignal = null;
 
     private bool $running = false;
 
@@ -65,6 +72,7 @@ final class SseWakeSubscriber
         private readonly SseSessionRegistry $sessions,
         private readonly RedisSubscribeConnectionFactory $connectionFactory,
         ?ReconnectAlarmPolicy $alarm = null,
+        private readonly ?SseWorkerTables $tables = null,
     ) {
         $this->alarm = $alarm ?? new ReconnectAlarmPolicy();
     }
@@ -102,8 +110,12 @@ final class SseWakeSubscriber
 
         $this->running = true;
         if (class_exists(\Swoole\Timer::class, false)) {
-            $this->keepAliveTimerId = \Swoole\Timer::tick(self::KEEPALIVE_INTERVAL_MS, static function (): void {
-                // Empty on purpose: a pending timer keeps the reactor non-empty.
+            $this->keepAliveTimerId = \Swoole\Timer::tick(self::TICK_INTERVAL_MS, function (): void {
+                try {
+                    $this->wakeTableDeliveries();
+                } catch (\Throwable $e) {
+                    StaticLoggerBridge::error('ssr', 'SSE deliver-table wake failed', ['exception' => $e::class, 'message' => $e->getMessage()]);
+                }
             });
         }
         \Swoole\Coroutine::create(function (): void {
@@ -192,6 +204,35 @@ final class SseWakeSubscriber
         }
         $this->healthy = true;
         $this->sessions->wakeAll();
+    }
+
+    /**
+     * Wake the sessions another worker parked a frame for in the shared deliver
+     * table — the path a frame takes when Redis refused it, so nothing was
+     * published and a loop parked on a healthy-looking subscription would not
+     * look for seconds (review of semitexa-ssr#190).
+     *
+     * Called every tick, and almost always one table cell read: the table is
+     * scanned only when this worker's delivery signal moved. The wake does not
+     * mark Redis dirty; the frame is not there.
+     *
+     * @return int how many sessions were woken
+     */
+    public function wakeTableDeliveries(): int
+    {
+        $signal = $this->tables?->deliverySignal();
+        if ($this->tables === null || $signal === $this->seenDeliverySignal) {
+            return 0;
+        }
+        // Recorded before the scan: a frame parked during it moves the signal again.
+        $this->seenDeliverySignal = $signal;
+
+        $woken = 0;
+        foreach ($this->tables->sessionsWithDeliveries() as $sessionId) {
+            $woken += $this->sessions->wake($sessionId, false) ? 1 : 0;
+        }
+
+        return $woken;
     }
 
     /** A wake arrived: the session's loop, if this worker holds it, goes round now. */

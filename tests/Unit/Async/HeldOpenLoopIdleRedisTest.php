@@ -44,6 +44,9 @@ final class HeldOpenLoopIdleRedisTest extends TestCase
     /** @var array<string, mixed> */
     private array $saved = [];
 
+    /** Worker 1's view of the tables {@see wiredServer()} gives worker 0. */
+    private SseWorkerTables $otherWorker;
+
     protected function setUp(): void
     {
         foreach (self::SLOTS as $name) {
@@ -310,6 +313,70 @@ final class HeldOpenLoopIdleRedisTest extends TestCase
         self::assertLessThan(0.4, $deliveredAfter);
     }
 
+    /**
+     * Review of semitexa-ssr#190. When Redis refuses a frame, deliver() parks
+     * it in the shared table for the owning worker and can publish no wake. The
+     * owner's loop, parked on a subscription that still reads healthy, found it
+     * at the 5 s safety poll; the tick used to find it in 0.2 s.
+     */
+    #[Test]
+    public function a_frame_parked_in_the_deliver_table_reaches_a_parked_loop_on_the_next_tick(): void
+    {
+        [$server, $registry, , $queue, $subscriber, $loop] = $this->wiredServer();
+        $subscriber->onSubscribed();
+        $written = [];
+        $response = $this->createStub(Response::class);
+        $response->method('write')->willReturnCallback(static function (string $data) use (&$written): bool {
+            $written[] = $data;
+
+            return true;
+        });
+        $request = $this->createStub(Request::class);
+        $other = $this->otherWorker;
+        $idleTicks = null;
+        $woken = null;
+        $deliveredAfter = null;
+        $pops = null;
+        $again = null;
+
+        Coroutine\run(function () use ($server, $registry, $queue, $subscriber, $loop, $response, $request, $other, &$written, &$idleTicks, &$woken, &$deliveredAfter, &$pops, &$again): void {
+            $registry->open('sse_table', $response, '', '');
+            $registry->open('sse_bystander', new \stdClass(), '', '');
+            $registry->takeRedisDirty('sse_bystander');
+            $ended = new Channel(1);
+            Coroutine::create(static function () use ($server, $loop, $response, $request, $ended): void {
+                $loop->invoke($server, 'sse_table', $request, $response, '');
+                $ended->push(true);
+            });
+
+            Coroutine::sleep(0.25);
+            // The worker's 0.2 s tick with nothing parked: a cell read, nobody woken.
+            $idleTicks = $subscriber->wakeTableDeliveries() + $subscriber->wakeTableDeliveries();
+
+            // Worker 1 could not reach Redis and parks the frame for worker 0.
+            self::assertTrue($other->queueForWorker('sse_table', 0, ['event' => 'probe', 'marker' => 'parked-in-the-table']));
+            $startedAt = microtime(true);
+            $woken = $subscriber->wakeTableDeliveries();
+            while (!str_contains(implode('', $written), 'parked-in-the-table') && microtime(true) - $startedAt < 1.0) {
+                Coroutine::sleep(0.005);
+            }
+            $deliveredAfter = microtime(true) - $startedAt;
+            $pops = $queue->pops;
+            $again = $subscriber->wakeTableDeliveries();
+
+            $registry->close('sse_table');
+            $ended->pop(2.0);
+        });
+
+        self::assertSame(0, $idleTicks, 'a tick with nothing parked woke somebody');
+        self::assertSame(1, $woken, 'only the session with a parked frame is woken');
+        self::assertStringContainsString('parked-in-the-table', implode('', $written), 'the frame was still in the table a second later');
+        self::assertLessThan(0.05, $deliveredAfter);
+        self::assertSame(1, $pops, 'a frame that is not in Redis must not cost a Redis pop');
+        self::assertFalse($registry->takeRedisDirty('sse_bystander'), 'a session with nothing parked was touched');
+        self::assertSame(0, $again, 'the same signal was acted on twice');
+    }
+
     #[Test]
     public function without_a_subscription_the_loop_keeps_its_tick(): void
     {
@@ -351,6 +418,14 @@ final class HeldOpenLoopIdleRedisTest extends TestCase
         self::assertLessThan(0.4, $deliveredAfter, 'with no wake subscription the loop parked past its 0.2 s tick');
     }
 
+    private function workerServer(int $workerId): \Swoole\Http\Server
+    {
+        $server = $this->createStub(\Swoole\Http\Server::class);
+        $server->method('getWorkerId')->willReturn($workerId);
+
+        return $server;
+    }
+
     /** @return array{SseServer, SseSessionRegistry, SseWorkerTables, CountingSessionQueue, SseWakeSubscriber, \ReflectionMethod} */
     private function wiredServer(): array
     {
@@ -361,14 +436,20 @@ final class HeldOpenLoopIdleRedisTest extends TestCase
         $sessions->column('opened_seq', Table::TYPE_INT, 8);
         $sessions->create();
         $deliver = new Table(8);
-        $deliver->column('payload', Table::TYPE_STRING, 64);
+        $deliver->column('session_id', Table::TYPE_STRING, 32);
+        $deliver->column('worker_id', Table::TYPE_INT, 4);
+        $deliver->column('payload', Table::TYPE_STRING, 128);
         $deliver->create();
         $tables = new SseWorkerTables();
         $tables->setTables($sessions, $deliver);
+        $tables->setServer($this->workerServer(0));
+        $this->otherWorker = new SseWorkerTables();
+        $this->otherWorker->setTables($sessions, $deliver);
+        $this->otherWorker->setServer($this->workerServer(1));
         $registry = new SseSessionRegistry();
         $queue = new CountingSessionQueue();
         // Never asked for a connection: the receiver is driven through its seams.
-        $subscriber = new SseWakeSubscriber($registry, new RedisSubscribeConnectionFactory(['scheme' => 'tcp', 'host' => '127.0.0.1', 'port' => 1, 'password' => '']));
+        $subscriber = new SseWakeSubscriber($registry, new RedisSubscribeConnectionFactory(['scheme' => 'tcp', 'host' => '127.0.0.1', 'port' => 1, 'password' => '']), null, $tables);
         $runtime = new SseRuntime();
         $runtime->wakeSubscriber = $subscriber;
         // The bare transport: the default one keeps a replay ring in Redis.

@@ -1702,7 +1702,7 @@ final class SseServer implements FeedStreamSinkInterface
     /** Wired per worker by WireSseWakeSubscriberListener; it connects with the first held stream. Unwired, streams keep the tick. */
     public function wireWakeSubscriber(RedisSubscribeConnectionFactory $connectionFactory): void
     {
-        $this->runtime()->wakeSubscriber ??= new SseWakeSubscriber($this->sessionRegistry(), $connectionFactory);
+        $this->runtime()->wakeSubscriber ??= new SseWakeSubscriber($this->sessionRegistry(), $connectionFactory, null, $this->workerTables());
     }
 
     /**

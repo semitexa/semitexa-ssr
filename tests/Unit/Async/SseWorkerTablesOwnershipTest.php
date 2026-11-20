@@ -60,6 +60,44 @@ final class SseWorkerTablesOwnershipTest extends TestCase
         self::assertFalse((new SseWorkerTables())->recordOwnership('sse_s', new \stdClass()), 'no tables at all');
     }
 
+    /**
+     * Review of semitexa-ssr#190: the worker a frame is parked for must be able
+     * to learn it without scanning the table on every tick.
+     */
+    #[Test]
+    public function parking_a_frame_moves_only_the_target_workers_signal_and_names_its_session(): void
+    {
+        $deliver = new Table(16);
+        $deliver->column('session_id', Table::TYPE_STRING, 32);
+        $deliver->column('worker_id', Table::TYPE_INT, 4);
+        $deliver->column('payload', Table::TYPE_STRING, 64);
+        $deliver->create();
+        [$a, $b] = $this->twoWorkersOnOneTable();
+        $sessions = (new \ReflectionProperty(SseWorkerTables::class, 'sessionWorker'))->getValue($a);
+        self::assertInstanceOf(Table::class, $sessions);
+        $a->setTables($sessions, $deliver);
+        $b->setTables($sessions, $deliver);
+        $a->setServer($this->serverWithWorkerId(0));
+        $b->setServer($this->serverWithWorkerId(1));
+
+        self::assertSame(0, $a->deliverySignal());
+        self::assertSame([], $a->sessionsWithDeliveries());
+
+        self::assertTrue($b->queueForWorker('sse_one', 0, ['n' => 1]));
+        self::assertTrue($b->queueForWorker('sse_one', 0, ['n' => 2]));
+        self::assertTrue($b->queueForWorker('sse_two', 0, ['n' => 3]));
+        self::assertTrue($a->queueForWorker('sse_three', 1, ['n' => 4]));
+
+        self::assertSame(3, $a->deliverySignal());
+        self::assertSame(1, $b->deliverySignal());
+        self::assertSame(['sse_one', 'sse_two'], $a->sessionsWithDeliveries());
+        self::assertSame(['sse_three'], $b->sessionsWithDeliveries());
+        // The signal rows are not frames: each drain still reads exactly its own.
+        self::assertCount(2, $a->readDeliveriesFor(0, 'sse_one'));
+        self::assertCount(1, $b->readDeliveriesFor(1, 'sse_three'));
+        self::assertSame([], $b->readDeliveriesFor(1, 'sse_one'));
+    }
+
     #[Test]
     public function a_same_worker_reconnect_supersedes_too(): void
     {

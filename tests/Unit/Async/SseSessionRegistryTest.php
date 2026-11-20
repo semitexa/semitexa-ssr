@@ -146,6 +146,29 @@ final class SseSessionRegistryTest extends TestCase
     }
 
     #[Test]
+    #[RequiresPhpExtension('swoole')]
+    public function a_wake_for_a_frame_outside_redis_resumes_the_wait_without_marking_redis(): void
+    {
+        $registry = new SseSessionRegistry();
+        $waited = null;
+
+        Coroutine\run(static function () use ($registry, &$waited): void {
+            $registry->open('sess-1', new \stdClass(), '', '');
+            $registry->takeRedisDirty('sess-1');
+            Coroutine::create(static function () use ($registry, &$waited): void {
+                $startedAt = microtime(true);
+                $registry->waitForWork('sess-1', 2.0);
+                $waited = microtime(true) - $startedAt;
+            });
+            Coroutine::sleep(0.05);
+            self::assertTrue($registry->wake('sess-1', false));
+        });
+
+        self::assertLessThan(0.5, $waited, 'the parked wait slept through the wake');
+        self::assertFalse($registry->takeRedisDirty('sess-1'), 'the frame is not in Redis: the loop must not be sent there');
+    }
+
+    #[Test]
     public function wake_all_reaches_every_session_held_here(): void
     {
         $registry = new SseSessionRegistry();

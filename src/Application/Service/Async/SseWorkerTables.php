@@ -314,8 +314,56 @@ final class SseWorkerTables
             'worker_id' => $targetWorkerId,
             'payload' => $payload,
         ]);
+        // After the row, so a reader that sees the signal move finds the frame.
+        $this->deliver->incr(self::DELIVERY_SIGNAL_PREFIX . $targetWorkerId, 'worker_id', 1);
 
         return true;
+    }
+
+    /**
+     * One row per worker in the deliver table, whose `worker_id` column is
+     * not a worker but a counter: bumped by every {@see queueForWorker()} for
+     * that worker. It has no session, so no drain reads it as a frame.
+     *
+     * WHY: this path is taken exactly when Redis refused the frame, so no wake
+     * can be published for it, and the target's loop may be parked for seconds
+     * on a subscription that still reads healthy. The target reads this one
+     * cell on a timer and looks at the table only when it moved — an idle
+     * worker never scans, and no stream does any work of its own.
+     */
+    private const DELIVERY_SIGNAL_PREFIX = 'sig_';
+
+    /** This worker's delivery counter: it moved when a frame was parked here since the last read. */
+    public function deliverySignal(): int
+    {
+        $value = $this->deliver?->get(self::DELIVERY_SIGNAL_PREFIX . $this->currentWorkerId(), 'worker_id');
+
+        return is_int($value) ? $value : 0;
+    }
+
+    /**
+     * The sessions that have a frame parked for this worker — one table scan,
+     * made only after {@see deliverySignal()} moved.
+     *
+     * @return list<string>
+     */
+    public function sessionsWithDeliveries(): array
+    {
+        $workerId = $this->currentWorkerId();
+        $sessions = [];
+        foreach ($this->deliver ?? [] as $row) {
+            $values = is_array($row) ? Row::of($row) : null;
+            $sessionId = trim($values?->string('session_id') ?? '');
+            if ($values !== null && $sessionId !== '' && $values->int('worker_id', -1) === $workerId) {
+                $sessions[$sessionId] = true;
+            }
+        }
+
+        // Sorted: the table iterates in hash order, and the keys are uniqid()s.
+        $ids = array_map(strval(...), array_keys($sessions));
+        sort($ids);
+
+        return $ids;
     }
 
     /**

@@ -130,13 +130,19 @@ final class SseSessionRegistry
      * session over: its loop here, if there is one, goes round now. A session
      * this worker does not hold is not remembered — every worker hears every
      * wake, and a flag per stranger would grow for the worker's whole life.
+     *
+     * `$redis` false is a wake for a frame that is NOT in Redis (the shared
+     * deliver table, read on every pass): the loop goes round without asking
+     * a Redis that has just refused that very frame.
      */
-    public function wake(string $sessionId): bool
+    public function wake(string $sessionId, bool $redis = true): bool
     {
         if (!isset($this->sessions[$sessionId])) {
             return false;
         }
-        $this->redisDirty[$sessionId] = true;
+        if ($redis) {
+            $this->redisDirty[$sessionId] = true;
+        }
         $waker = $this->wakers[$sessionId] ?? null;
         if ($waker !== null && $waker->isEmpty()) {
             $waker->push(true, 0.001);

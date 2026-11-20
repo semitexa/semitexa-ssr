@@ -44,6 +44,12 @@ final class HeldOpenLoopIdleRedisTest extends TestCase
     /** @var array<string, mixed> */
     private array $saved = [];
 
+    /** The drain signal as this class found it: process-wide state, restored and not reset. */
+    private bool $wasDraining = false;
+
+    /** @var array<int, true> the in-flight request set as this class found it */
+    private array $inFlightBefore = [];
+
     /** Worker 1's view of the tables {@see wiredServer()} gives worker 0. */
     private SseWorkerTables $otherWorker;
 
@@ -52,12 +58,18 @@ final class HeldOpenLoopIdleRedisTest extends TestCase
         foreach (self::SLOTS as $name) {
             $this->saved[$name] = (new \ReflectionProperty(SseServer::class, $name))->getValue(AsyncResourceSseServer::instance());
         }
+        // Snapshot first, then the state these tests need: a worker that is not draining.
+        $this->wasDraining = WorkerDrainSignal::isDraining();
+        /** @var array<int, true> $inFlight */
+        $inFlight = (new \ReflectionProperty(InFlightRequests::class, 'cids'))->getValue();
+        $this->inFlightBefore = $inFlight;
+        WorkerDrainSignal::reset();
     }
 
     protected function tearDown(): void
     {
-        WorkerDrainSignal::reset();
-        InFlightRequests::reset();
+        $this->wasDraining ? WorkerDrainSignal::begin() : WorkerDrainSignal::reset();
+        (new \ReflectionProperty(InFlightRequests::class, 'cids'))->setValue(null, $this->inFlightBefore);
         foreach ($this->saved as $name => $value) {
             (new \ReflectionProperty(SseServer::class, $name))->setValue(AsyncResourceSseServer::instance(), $value);
         }

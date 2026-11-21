@@ -54,6 +54,12 @@ final class HeldOpenLoopIdleRedisTest extends TestCase
     /** @var array<int, true> the in-flight request set as this class found it */
     private array $inFlightBefore = [];
 
+    /** What {@see DeferredRequestRegistry} held when this class found it: process-wide, restored and not reset. */
+    private const REGISTRY_STATE = ['table', 'deliveredLock', 'contextColumnSize', 'snapshotColumnSize'];
+
+    /** @var array<string, mixed> */
+    private array $registryBefore = [];
+
     /** Worker 1's view of the tables {@see wiredServer()} gives worker 0. */
     private SseWorkerTables $otherWorker;
 
@@ -71,12 +77,14 @@ final class HeldOpenLoopIdleRedisTest extends TestCase
         $inFlight = (new \ReflectionProperty(InFlightRequests::class, 'cids'))->getValue();
         $this->inFlightBefore = $inFlight;
         WorkerDrainSignal::reset();
+        $this->registryBefore = self::registryState();
     }
 
     protected function tearDown(): void
     {
         $this->wasDraining ? WorkerDrainSignal::begin() : WorkerDrainSignal::reset();
         (new \ReflectionProperty(InFlightRequests::class, 'cids'))->setValue(null, $this->inFlightBefore);
+        self::restoreRegistry($this->registryBefore);
         foreach ($this->saved as $name => $value) {
             (new \ReflectionProperty(SseServer::class, $name))->setValue(AsyncResourceSseServer::instance(), $value);
         }
@@ -587,9 +595,8 @@ final class HeldOpenLoopIdleRedisTest extends TestCase
         $noCookie->get = ['deferred_request_id' => 'dr_not_mine'];
         $noCookie->cookie = [];
 
-        DeferredRequestRegistry::reset();
         try {
-            DeferredRequestRegistry::initialize(new IsomorphicConfig(enabled: true, deferredContextSize: 8192, requestSnapshotSize: 4096));
+            self::freshRegistry();
             DeferredRequestRegistry::store('dr_held', 'page', [], ['slot'], 'token', 'en');
             DeferredRequestRegistry::store('dr_not_mine', 'page', [], ['slot'], 'token', 'en');
             $table = DeferredRequestRegistry::getTable();
@@ -626,8 +633,65 @@ final class HeldOpenLoopIdleRedisTest extends TestCase
             self::assertNotNull(DeferredRequestRegistry::consume('dr_held'), 'the held stream did not renew its page\'s deferred request: a reconnect past the TTL is refused for ever');
             self::assertNull(DeferredRequestRegistry::consume('dr_not_mine'), 'a stream without the page\'s bind cookie renewed a request that is not its own');
         } finally {
-            DeferredRequestRegistry::reset();
+            self::restoreRegistry($this->registryBefore);
         }
+    }
+
+    /**
+     * Review of semitexa-ssr#193. The test above replaced the process-wide
+     * registry and left it reset: whatever the process held before was gone.
+     */
+    #[Test]
+    public function the_deferred_registry_a_test_replaced_is_put_back_as_it_was_found(): void
+    {
+        // What "the process held before" looks like: a table with a page's request in it.
+        self::freshRegistry();
+        DeferredRequestRegistry::store('dr_before', 'page', [], ['slot'], 'token', 'en');
+        $before = self::registryState();
+        $tableBefore = DeferredRequestRegistry::getTable();
+
+        // What the test above does to it.
+        self::freshRegistry();
+        DeferredRequestRegistry::store('dr_of_the_test', 'page', [], ['slot'], 'token', 'en');
+        self::assertNotSame($tableBefore, DeferredRequestRegistry::getTable(), 'the test wrote into the table it found');
+        self::assertNull(DeferredRequestRegistry::consume('dr_before'));
+
+        self::restoreRegistry($before);
+
+        self::assertSame($tableBefore, DeferredRequestRegistry::getTable(), 'the registry was left on the test\'s table, or with none');
+        self::assertNotNull(DeferredRequestRegistry::consume('dr_before'), 'what the registry held before the test is gone');
+        self::assertNull(DeferredRequestRegistry::consume('dr_of_the_test'), 'the test\'s request leaked into the registry it restored');
+        self::assertSame($before, self::registryState());
+    }
+
+    /** @return array<string, mixed> */
+    private static function registryState(): array
+    {
+        $state = [];
+        foreach (self::REGISTRY_STATE as $name) {
+            $state[$name] = (new \ReflectionProperty(DeferredRequestRegistry::class, $name))->getValue();
+        }
+
+        return $state;
+    }
+
+    /** @param array<string, mixed> $state */
+    private static function restoreRegistry(array $state): void
+    {
+        foreach ($state as $name => $value) {
+            (new \ReflectionProperty(DeferredRequestRegistry::class, $name))->setValue(null, $value);
+        }
+    }
+
+    /**
+     * A registry table of the test's own. Not reset(): that also clears the
+     * GC timer, which a restore of the fields could not arm again; the timer
+     * is left as it is and collects from whichever table is current.
+     */
+    private static function freshRegistry(): void
+    {
+        (new \ReflectionProperty(DeferredRequestRegistry::class, 'table'))->setValue(null, null);
+        DeferredRequestRegistry::initialize(new IsomorphicConfig(enabled: true, deferredContextSize: 8192, requestSnapshotSize: 4096));
     }
 
     #[Test]

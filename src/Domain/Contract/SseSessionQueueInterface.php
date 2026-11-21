@@ -49,8 +49,12 @@ interface SseSessionQueueInterface
      * Tell whichever worker holds the session's socket to look at it now: a
      * frame was queued for it, or a newer connection took the session over.
      * Lossy by design — the frame is in the queue either way.
+     *
+     * @return bool whether the session was marked pending. The publish itself
+     *         may still have been lost; an unmarked session is one no sweep
+     *         will find, and a caller that depends on the mark tries again.
      */
-    public function publishWake(string $sessionId): void;
+    public function publishWake(string $sessionId): bool;
 
     /**
      * The sessions something was queued for (or a wake was published for)

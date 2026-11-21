@@ -151,12 +151,25 @@ final class SseRedisSessionQueueTest extends TestCase
     {
         // The takeover wake: lost, the replaced connection's loop is found by the sweep.
         $commands = [];
-        self::recordingQueue($commands)->publishWake('sess-1');
+        self::assertTrue(self::recordingQueue($commands)->publishWake('sess-1'));
         self::assertSame(['SADD sess-1', 'EXPIRE', 'PUBLISH semitexa_sse_wake sess-1'], $commands);
 
         $commands = [];
-        self::recordingQueue($commands)->publishWake('   ');
+        self::assertFalse(self::recordingQueue($commands)->publishWake('   '));
         self::assertSame([], $commands, 'a blank session id is refused before any connection');
+    }
+
+    #[Test]
+    public function a_bare_wake_reports_whether_the_session_was_marked(): void
+    {
+        // The sweep restores a mark with this and retries on false: the mark
+        // is what a later sweep finds, the publish is only the fast path.
+        $commands = [];
+        self::assertFalse(self::recordingQueue($commands, failCommand: 'SADD')->publishWake('sess-1'), 'an unmarked session was reported marked');
+        self::assertFalse($this->queue()->publishWake('sess-1'), 'no Redis at all');
+
+        $commands = [];
+        self::assertTrue(self::recordingQueue($commands, failPublish: true)->publishWake('sess-1'), 'the mark is in: a lost publish is not a failed restore');
     }
 
     #[Test]

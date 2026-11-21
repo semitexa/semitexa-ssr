@@ -219,6 +219,21 @@ final class SseSessionRegistryTest extends TestCase
     }
 
     #[Test]
+    public function wake_all_with_a_filter_reaches_only_the_sessions_it_accepts(): void
+    {
+        $registry = new SseSessionRegistry();
+        $registry->open('sess-1', new \stdClass(), '', '');
+        $registry->open('sess-2', new \stdClass(), '', '');
+        $registry->takeRedisDirty('sess-1');
+        $registry->takeRedisDirty('sess-2');
+
+        self::assertSame(1, $registry->wakeAll(static fn (string $sessionId): bool => $sessionId === 'sess-2'));
+
+        self::assertFalse($registry->takeRedisDirty('sess-1'));
+        self::assertTrue($registry->takeRedisDirty('sess-2'));
+    }
+
+    #[Test]
     public function a_wake_for_a_session_held_elsewhere_leaves_nothing_behind(): void
     {
         // Every worker hears every wake. A flag kept for a stranger would never

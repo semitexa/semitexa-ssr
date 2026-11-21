@@ -32,6 +32,9 @@ final class CountingSessionQueue implements SseSessionQueueInterface
     /** Runs inside {@see clearPending()}, before the marks go: what another worker did while the removal was in flight. */
     public ?\Closure $duringClearPending = null;
 
+    /** How many of the next wakes fail before they mark anything, as with the breaker open. */
+    public int $failNextWakes = 0;
+
     /** The pending set cannot be read, as with the breaker open. */
     public bool $failPendingRead = false;
 
@@ -69,13 +72,20 @@ final class CountingSessionQueue implements SseSessionQueueInterface
         return ['ok' => true, 'raw' => $raw];
     }
 
-    public function publishWake(string $sessionId): void
+    public function publishWake(string $sessionId): bool
     {
+        if ($this->failNextWakes > 0) {
+            $this->failNextWakes--;
+
+            return false;
+        }
         $this->wakes[] = $sessionId;
         // As the store does: a wake marks its session pending first.
         if (!in_array($sessionId, $this->pending, true)) {
             $this->pending[] = $sessionId;
         }
+
+        return true;
     }
 
     public function pendingSessions(): ?array

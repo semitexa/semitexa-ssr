@@ -165,12 +165,12 @@ final class SseRedisSessionQueue implements SseSessionQueueInterface
      * session over, and the one it replaced should notice now. Marked pending
      * as a push is, so a lost wake costs that loop one sweep interval too.
      */
-    public function publishWake(string $sessionId): void
+    public function publishWake(string $sessionId): bool
     {
         $sessionId = trim($sessionId);
         $pool = $sessionId === '' ? null : $this->pool->get();
         if ($pool === null) {
-            return;
+            return false;
         }
 
         try {
@@ -181,7 +181,11 @@ final class SseRedisSessionQueue implements SseSessionQueueInterface
             });
         } catch (\Throwable $e) {
             self::reportFailure('Redis SSE wake publish failed', $e, ['session_id' => $sessionId]);
+
+            return false;
         }
+
+        return true;
     }
 
     /**

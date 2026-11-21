@@ -91,6 +91,98 @@ final class SsePendingSweepTest extends TestCase
         self::assertTrue($registry->takeRedisDirty('sess-2'));
     }
 
+    /**
+     * Follow-up review of semitexa-ssr#192. Putting the mark back is Redis
+     * I/O too and can be refused; the mark was then gone for good, and a frame
+     * whose own wake was lost waited for the session's next wake, which an
+     * idle stream may never get.
+     */
+    #[Test]
+    public function a_mark_that_could_not_be_put_back_is_put_back_by_the_next_sweep(): void
+    {
+        [$sweep, $registry, $queue, $tables, $otherWorker] = $this->sweep();
+        $old = new \stdClass();
+        $registry->open('sess-1', $old, '', '');
+        $tables->recordOwnership('sess-1', $old);
+        $queue->pending = ['sess-1'];
+        $queue->duringClearPending = static function () use ($otherWorker): void {
+            $otherWorker->recordOwnership('sess-1', new \stdClass());
+        };
+        $queue->failNextWakes = 2;
+
+        $sweep->run();
+        self::assertSame([], $queue->pending, 'the refused restore did mark the session: the test proves nothing');
+        $queue->duringClearPending = null;
+
+        $sweep->run();
+        self::assertSame([], $queue->pending, 'the second refusal did mark the session');
+
+        $sweep->run();
+        self::assertSame(['sess-1'], $queue->pending, 'a mark that could not be put back was never put back');
+        self::assertSame(['sess-1'], $queue->wakes, 'the new holder was not told once the restore went through');
+
+        // Restored, it is the new holder's: this worker neither takes it again nor keeps retrying.
+        $sweep->run();
+        self::assertSame(['sess-1'], $queue->pending);
+        self::assertSame(['sess-1'], $queue->wakes, 'a restore that went through was repeated');
+    }
+
+    #[Test]
+    public function a_session_that_came_back_before_its_mark_could_be_restored_is_woken_instead(): void
+    {
+        [$sweep, $registry, $queue, $tables, $otherWorker] = $this->sweep();
+        $old = new \stdClass();
+        $registry->open('sess-1', $old, '', '');
+        $tables->recordOwnership('sess-1', $old);
+        $queue->pending = ['sess-1'];
+        $queue->duringClearPending = static function () use ($otherWorker): void {
+            $otherWorker->recordOwnership('sess-1', new \stdClass());
+        };
+        $queue->failNextWakes = 1;
+        $sweep->run();
+        $queue->duringClearPending = null;
+        $registry->takeRedisDirty('sess-1');
+
+        // The page reconnects here again before the next sweep.
+        $back = new \stdClass();
+        $registry->open('sess-1', $back, '', '');
+        $tables->recordOwnership('sess-1', $back);
+        $registry->takeRedisDirty('sess-1');
+
+        $sweep->run();
+
+        self::assertTrue($registry->takeRedisDirty('sess-1'), 'the session whose mark was lost is held here again and was not told to ask Redis');
+        self::assertSame([], $queue->wakes, 'a mark was published for a session this worker holds');
+    }
+
+    /**
+     * Review of semitexa-ssr#192. A takeover marks the session so that the
+     * replaced connection's worker finds it if the wake was lost; but the new
+     * holder's sweep, running first, took that mark, and the replaced loop
+     * stayed until its heartbeat.
+     */
+    #[Test]
+    public function a_replaced_connection_stands_down_even_when_the_new_holder_swept_the_takeover_mark_first(): void
+    {
+        [$sweep, $registry, $queue, $tables, $otherWorker] = $this->sweep();
+        $old = new \stdClass();
+        $registry->open('sess-1', $old, '', '');
+        $registry->open('sess-mine', new \stdClass(), '', '');
+        $tables->recordOwnership('sess-1', $old);
+        $tables->recordOwnership('sess-mine', new \stdClass());
+        $registry->takeRedisDirty('sess-1');
+        $registry->takeRedisDirty('sess-mine');
+        // The page reconnected on worker 1, whose sweep has already taken the takeover's mark.
+        self::assertTrue($otherWorker->recordOwnership('sess-1', new \stdClass()));
+        $queue->pending = [];
+
+        self::assertSame(1, $sweep->run());
+
+        self::assertTrue($registry->takeRedisDirty('sess-1'), 'the replaced connection\'s loop was left parked until its heartbeat');
+        self::assertFalse($registry->takeRedisDirty('sess-mine'), 'a session this worker still owns was woken with nothing pending');
+        self::assertSame([], $queue->wakes, 'nothing here needs a mark');
+    }
+
     #[Test]
     public function a_set_that_cannot_be_read_wakes_every_session(): void
     {

@@ -56,7 +56,9 @@ final class TimedSlotProvider implements DataProviderInterface
         self::$peak = max(self::$peak, ++self::$running);
         try {
             $seconds = (self::$waits[$slot] ?? 0) / 1000;
-            if (Coroutine::getCid() > 0) {
+            if ($seconds <= 0) {
+                // No wait asked for: Coroutine::sleep() refuses less than a millisecond.
+            } elseif (Coroutine::getCid() > 0) {
                 Coroutine::sleep($seconds);
             } else {
                 usleep((int) ($seconds * 1_000_000));

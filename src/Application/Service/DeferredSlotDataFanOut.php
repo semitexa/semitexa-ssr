@@ -4,9 +4,12 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service;
 
+use Semitexa\Core\Lifecycle\CurrentRequestStore;
 use Semitexa\Core\Support\Row;
+use Semitexa\Core\Tenant\DefaultTenantContextStore;
 use Semitexa\Ssr\Application\Service\Async\SseServer;
 use Semitexa\Ssr\Application\Service\Async\SseSessionCoroutines;
+use Semitexa\Ssr\Application\Service\UiEvent\UiSseSessionState;
 use Swoole\Coroutine;
 use Swoole\Coroutine\Channel;
 
@@ -19,8 +22,14 @@ use Swoole\Coroutine\Channel;
  * Each runs in a coroutine made as the stream's own are
  * ({@see SseServer::createSessionCoroutine()}), which carries the request's
  * context into it: what the container injects, and the tenant, signed-in user
- * and locale the stores keep beside it. At most {@see MAX_AT_ONCE} run at a
- * time for one request; the rest wait their turn.
+ * and locale the stores keep beside it. The stream's coroutines get the rest
+ * from {@see KissVisitor::establish()}, which authenticates again; here the
+ * route pipeline already has, so what it left in this coroutine alone is
+ * handed over as it is ({@see adopt()}): the request, the tenant of core's own
+ * store, the page's UI SSE session. Other coroutine-local state (memo caches,
+ * what a provider queues for after the response) is not shared, as it is not
+ * on the stream. At most {@see MAX_AT_ONCE} run at a time for one request; the
+ * rest wait their turn.
  *
  * Only the resolving is spread out. What is done with the answers (the Twig
  * render, in the slots' order) stays with the caller, in its own coroutine.
@@ -28,7 +37,16 @@ use Swoole\Coroutine\Channel;
  */
 final class DeferredSlotDataFanOut
 {
-    /** How many of one request's slots resolve at the same time. */
+    /**
+     * How many of one request's slots resolve at the same time.
+     *
+     * Per request, not per worker, though two such requests can want more
+     * database connections (16) than the pool holds (DB_POOL_SIZE, 10): a
+     * query takes a connection for its own duration and one that finds the
+     * pool empty waits for the next returned (ConnectionPool::pop(), 10 s
+     * before it gives up), so a slot past the pool's size resolves later, not
+     * never. It is the wait any request has on a busy worker.
+     */
     public const MAX_AT_ONCE = 8;
 
     /**
@@ -106,11 +124,13 @@ final class DeferredSlotDataFanOut
         $finished = new Channel($workers);
         // Tracked like a stream's coroutines, under a name no stream has.
         $owner = 'hug-slots-' . SseSessionCoroutines::currentCid();
+        $adopt = self::adopt();
 
         $started = 0;
         for ($i = 0; $i < $workers; $i++) {
-            $spawned = $this->sseServer->createSessionCoroutine(static function () use (&$waiting, &$answers, $resolves, $finished): void {
+            $spawned = $this->sseServer->createSessionCoroutine(static function () use (&$waiting, &$answers, $resolves, $finished, $adopt): void {
                 try {
+                    $adopt();
                     while (($index = array_shift($waiting)) !== null) {
                         $answers[$index] = $resolves[$index]();
                     }
@@ -131,6 +151,39 @@ final class DeferredSlotDataFanOut
         }
 
         return $answers;
+    }
+
+    /**
+     * What the route pipeline left in the request's coroutine that
+     * {@see \Semitexa\Core\Lifecycle\CarriedContext} does not name, read now
+     * and put into the coroutine the returned closure runs in. Without the
+     * request there, a policy that reads it saw "no request" and decided as
+     * for none (OsAuthPolicy::isRequired() answered false), and the RBAC
+     * decision cache emptied itself on every call.
+     *
+     * Nothing to take back afterwards: a new coroutine's context starts empty
+     * and goes with it, and the request's own coroutine is not written to.
+     *
+     * @return \Closure(): void
+     */
+    private static function adopt(): \Closure
+    {
+        $request = CurrentRequestStore::get();
+        // Core's store; semitexa/tenancy's own names its keys to CarriedContext.
+        $tenant = (new DefaultTenantContextStore())->tryGet();
+        $uiSseSession = UiSseSessionState::current();
+
+        return static function () use ($request, $tenant, $uiSseSession): void {
+            if ($request !== null) {
+                CurrentRequestStore::set($request);
+            }
+            if ($tenant !== null) {
+                (new DefaultTenantContextStore())->set($tenant);
+            }
+            if ($uiSseSession !== null) {
+                UiSseSessionState::restore($uiSseSession);
+            }
+        };
     }
 
     /**

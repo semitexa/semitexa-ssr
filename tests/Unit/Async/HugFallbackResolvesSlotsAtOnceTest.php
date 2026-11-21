@@ -10,8 +10,12 @@ use PHPUnit\Framework\TestCase;
 use Semitexa\Core\Auth\GuestAuthContext;
 use Semitexa\Core\Container\ExecutionContext;
 use Semitexa\Core\Container\SemitexaContainer;
+use Semitexa\Core\Lifecycle\CurrentRequestStore;
 use Semitexa\Core\Log\LoggerInterface;
+use Semitexa\Core\Request;
 use Semitexa\Core\Support\Row;
+use Semitexa\Core\Tenant\DefaultTenantContext;
+use Semitexa\Core\Tenant\DefaultTenantContextStore;
 use Semitexa\Locale\Context\LocaleContextStore;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
 use Semitexa\Ssr\Application\Service\Async\SseServer;
@@ -23,6 +27,7 @@ use Semitexa\Ssr\Application\Service\KissVisitor;
 use Semitexa\Ssr\Application\Service\Layout\LayoutSlotRegistry;
 use Semitexa\Ssr\Application\Service\Template\ModuleTemplateCatalog;
 use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
+use Semitexa\Ssr\Application\Service\UiEvent\UiSseSessionState;
 use Semitexa\Ssr\Tests\Unit\Async\Fixture\TimedSlotProvider;
 use Swoole\Coroutine;
 use Twig\Environment;
@@ -55,6 +60,8 @@ final class HugFallbackResolvesSlotsAtOnceTest extends TestCase
 
     private SemitexaContainer $container;
 
+    private SseSessionCoroutines $tracker;
+
     protected function setUp(): void
     {
         $this->slots = (new \ReflectionProperty(LayoutSlotRegistry::class, 'slots'))->getValue();
@@ -72,7 +79,8 @@ final class HugFallbackResolvesSlotsAtOnceTest extends TestCase
 
         // The stream's coroutines carry this container's context, as a worker's do.
         $this->container = new SemitexaContainer();
-        (new \ReflectionProperty(SseServer::class, 'sessionCoroutines'))->setValue(AsyncResourceSseServer::instance(), new SseSessionCoroutines($this->container));
+        $this->tracker = new SseSessionCoroutines($this->container);
+        (new \ReflectionProperty(SseServer::class, 'sessionCoroutines'))->setValue(AsyncResourceSseServer::instance(), $this->tracker);
         TimedSlotProvider::reset();
     }
 
@@ -235,35 +243,191 @@ final class HugFallbackResolvesSlotsAtOnceTest extends TestCase
     }
 
     /**
+     * The route pipeline leaves more in the request's coroutine than the
+     * carried stores name: the request itself (PreHydrationAuthGate), the
+     * tenant of core's own store, the page's UI SSE session. A policy reading
+     * "no request" inside a slot decided as for none, and failed open.
+     */
+    #[Test]
+    public function each_slot_resolves_with_the_requests_own_request_tenant_and_ui_session(): void
+    {
+        $this->probeSlots(['a_one' => 50, 'b_two' => 50]);
+        $request = new Request('GET', '/__semitexa_hug', [], ['slots' => 'a_one,b_two'], [], [], []);
+        $tenant = new DefaultTenantContext();
+        TimedSlotProvider::$look = static fn (): array => [
+            'request' => CurrentRequestStore::get(),
+            'tenant' => (new DefaultTenantContextStore())->tryGet(),
+            'ui_session' => UiSseSessionState::current(),
+        ];
+        $tracker = $this->tracker;
+        $parent = null;
+        $coroutinesBefore = null;
+        /** @var array<string, mixed> $left */
+        $left = [];
+
+        $this->renderInCoroutine(
+            static function () use ($request, $tenant, &$parent, &$coroutinesBefore): void {
+                $parent = Coroutine::getCid();
+                CurrentRequestStore::set($request);
+                (new DefaultTenantContextStore())->set($tenant);
+                UiSseSessionState::setForTesting('sse_probe_page');
+                $coroutinesBefore = self::coroutinesRunning();
+            },
+            static function () use ($tracker, &$parent, &$left): void {
+                // The last resolving coroutine wakes this one from inside its own ending: let it end.
+                Coroutine::sleep(0.01);
+                $left = [
+                    'request' => CurrentRequestStore::get(),
+                    'tenant' => (new DefaultTenantContextStore())->tryGet(),
+                    'ui_session' => UiSseSessionState::current(),
+                    'coroutines' => self::coroutinesRunning(),
+                    'tracked' => $tracker->hasAny('hug-slots-' . Row::asInt($parent)),
+                ];
+            },
+        );
+
+        self::assertCount(2, TimedSlotProvider::$ranIn, 'not every slot resolved');
+        self::assertNotContains($parent, TimedSlotProvider::$ranIn, 'a slot resolved in the request\'s own coroutine: nothing had to be handed over');
+        foreach (['a_one', 'b_two'] as $slot) {
+            $saw = TimedSlotProvider::$saw[$slot] ?? [];
+            self::assertSame($request, $saw['request'] ?? null, $slot . ' resolved with no request, or another one');
+            self::assertSame($tenant, $saw['tenant'] ?? null, $slot . ' resolved outside the request\'s tenant');
+            self::assertSame('sse_probe_page', $saw['ui_session'] ?? null, $slot . ' resolved outside the page\'s UI SSE session');
+        }
+        // And the request's own coroutine is as it was, with nothing still running for it.
+        self::assertSame($request, $left['request'] ?? null);
+        self::assertSame($tenant, $left['tenant'] ?? null);
+        self::assertSame('sse_probe_page', $left['ui_session'] ?? null);
+        self::assertGreaterThan(0, $coroutinesBefore, 'no coroutine was counted before the render: the count after proves nothing');
+        self::assertSame($coroutinesBefore, $left['coroutines'] ?? null, 'a slot\'s coroutine outlived the answer');
+        self::assertFalse($left['tracked'] ?? null, 'a slot\'s coroutine is still tracked after the answer');
+    }
+
+    /**
+     * The cap is per request, so two such requests on one worker can want more
+     * database connections (16) than the pool holds (DB_POOL_SIZE 10). A query
+     * that finds the pool empty waits for a connection to come back
+     * (ConnectionPool::pop()), so the slots past the pool's size resolve later,
+     * not never. Pinned with a pool that waits the same way.
+     */
+    #[Test]
+    public function two_requests_wanting_more_connections_than_the_pool_holds_lose_no_slot(): void
+    {
+        $first = [];
+        $second = [];
+        foreach (range(1, 8) as $n) {
+            $first['one_' . $n] = 0;
+            $second['two_' . $n] = 0;
+        }
+        $this->probeSlots($first, 'hug_probe_one');
+        $this->probeSlots($second, 'hug_probe_two');
+        $orchestrator = $this->orchestrator();
+        /** @var array<string, array<string, string>> $rendered */
+        $rendered = [];
+        $lent = 0;
+        $mostLent = 0;
+        $waited = 0;
+
+        Coroutine\run(static function () use ($orchestrator, &$rendered, &$lent, &$mostLent, &$waited): void {
+            $pool = new Coroutine\Channel(10);
+            foreach (range(1, 10) as $connection) {
+                $pool->push($connection);
+            }
+            TimedSlotProvider::$look = static function () use ($pool, &$lent, &$mostLent, &$waited): array {
+                $waited += $pool->isEmpty() ? 1 : 0;
+                $connection = $pool->pop(5.0);
+                if ($connection === false) {
+                    throw new \RuntimeException('no connection came back in time');
+                }
+                $mostLent = max($mostLent, ++$lent);
+                Coroutine::sleep(0.05); // the query
+                $lent--;
+                $pool->push($connection);
+
+                return [];
+            };
+            $done = new Coroutine\Channel(2);
+            foreach (['hug_probe_one', 'hug_probe_two'] as $page) {
+                Coroutine::create(static function () use ($orchestrator, $page, $done, &$rendered): void {
+                    $rendered[$page] = $orchestrator->renderDeferredBlocksSync($page, []);
+                    $done->push(true);
+                });
+            }
+            $done->pop(10.0);
+            $done->pop(10.0);
+        });
+
+        self::assertSame(array_keys($first), array_keys($rendered['hug_probe_one'] ?? []), 'a slot of the first request was dropped');
+        self::assertSame(array_keys($second), array_keys($rendered['hug_probe_two'] ?? []), 'a slot of the second request was dropped');
+        self::assertSame(10, $mostLent, 'the pool was never empty: the probe proves nothing');
+        self::assertSame(6, $waited, 'sixteen slots over ten connections: six wait for one to come back');
+    }
+
+    /** The server's own limit is set on the server, where Coroutine::getOptions() does not show it. */
+    #[Test]
+    public function the_limit_of_the_environment_counts_when_swoole_names_none(): void
+    {
+        $before = getenv('SWOOLE_MAX_COROUTINE');
+        $fitsUnder = null;
+        $fitsAt = null;
+
+        try {
+            Coroutine\run(static function () use (&$fitsUnder, &$fitsAt): void {
+                $running = self::coroutinesRunning();
+                putenv('SWOOLE_MAX_COROUTINE=' . ($running + 3 + DeferredSlotDataFanOut::HEADROOM - 1));
+                $fitsUnder = DeferredSlotDataFanOut::fits(3);
+                putenv('SWOOLE_MAX_COROUTINE=' . ($running + 3 + DeferredSlotDataFanOut::HEADROOM));
+                $fitsAt = DeferredSlotDataFanOut::fits(3);
+            });
+        } finally {
+            putenv($before === false ? 'SWOOLE_MAX_COROUTINE' : 'SWOOLE_MAX_COROUTINE=' . $before);
+        }
+
+        self::assertFalse($fitsUnder, 'one coroutine short of the room the slots need, and they were still spread out');
+        self::assertTrue($fitsAt);
+    }
+
+    private static function coroutinesRunning(): int
+    {
+        $stats = Coroutine::stats();
+
+        return Row::asInt(is_array($stats) ? ($stats['coroutine_num'] ?? 0) : 0);
+    }
+
+    /**
      * @param (\Closure(): void)|null $before run in the request's coroutine, ahead of the render
+     * @param (\Closure(): void)|null $after run there too, once the render has answered
      * @return array{array<string, string>, float} what was rendered, and how long it took, ms
      */
-    private function renderInCoroutine(?\Closure $before = null): array
+    private function renderInCoroutine(?\Closure $before = null, ?\Closure $after = null): array
     {
         $orchestrator = $this->orchestrator();
         $rendered = [];
         $ms = 0.0;
-        Coroutine\run(static function () use ($orchestrator, $before, &$rendered, &$ms): void {
+        Coroutine\run(static function () use ($orchestrator, $before, $after, &$rendered, &$ms): void {
             if ($before !== null) {
                 $before();
             }
             $startedAt = hrtime(true);
             $rendered = $orchestrator->renderDeferredBlocksSync(self::PAGE, []);
             $ms = (hrtime(true) - $startedAt) / 1_000_000;
+            if ($after !== null) {
+                $after();
+            }
         });
 
         return [$rendered, $ms];
     }
 
     /** @param array<string, int> $waits slot id => how long its data takes, ms; in the page's slot order */
-    private function probeSlots(array $waits): void
+    private function probeSlots(array $waits, string $page = self::PAGE): void
     {
         $priority = 0;
         foreach ($waits as $slot => $ms) {
-            LayoutSlotRegistry::register(handle: self::PAGE, slot: $slot, template: 'hug-probe.twig', priority: ++$priority, deferred: true);
+            LayoutSlotRegistry::register(handle: $page, slot: $slot, template: 'hug-probe.twig', priority: ++$priority, deferred: true);
             DataProviderRegistry::register($slot, TimedSlotProvider::class);
         }
-        TimedSlotProvider::$waits = $waits;
+        TimedSlotProvider::$waits += $waits;
     }
 
     private function orchestrator(): DeferredBlockOrchestrator

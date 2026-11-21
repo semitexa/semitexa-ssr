@@ -472,45 +472,45 @@ final class DeferredBlockOrchestrator
     }
 
     /**
-     * Synchronous render of specified slots (for XHR fallback).
-     * Always returns server-rendered HTML regardless of slot mode.
+     * Render of specified slots within one request (the HUG fallback of a refused stream).
+     * Always returns server-rendered HTML regardless of slot mode. A slot that fails is left out.
+     *
+     * Inside a coroutine the slots' data resolves at once ({@see DeferredSlotDataFanOut}),
+     * so the request waits for its slowest slot, not their sum. Twig renders here, one slot
+     * after another in their order: its environment is shared, not known to be coroutine-safe.
      *
      * @param list<string> $slotNames
      * @param array<mixed> $pageContext
      * @return array<string, string> slot_id => rendered HTML
      */
-    public function renderDeferredBlocksSync(
-        string $pageHandle,
-        array $slotNames,
-        array $pageContext = [],
-        ?string $locale = null,
-    ): array {
-        $allSlots = $this->getDeferredSlots($pageHandle);
-        $result = [];
-
-        foreach ($allSlots as $slot) {
-            if ($slotNames !== [] && !in_array($slot->slotId, $slotNames, true)) {
-                continue;
-            }
-
+    public function renderDeferredBlocksSync(string $pageHandle, array $slotNames, array $pageContext = [], ?string $locale = null): array
+    {
+        $slots = array_values(array_filter(
+            $this->getDeferredSlots($pageHandle),
+            static fn (DeferredSlotDefinition $slot): bool => $slotNames === [] || in_array($slot->slotId, $slotNames, true),
+        ));
+        // Read here: the Swoole request belongs to this coroutine, not to the ones the data resolves in.
+        $requestSnapshot = DeferredRequestRegistry::snapshotFromCurrentSwooleRequest();
+        // One slot's step, data or render: its failure is logged and is that slot's alone.
+        $step = fn (DeferredSlotDefinition $slot, \Closure $work): \Closure => function () use ($slot, $work, $pageContext, $locale): mixed {
             try {
                 $this->applyLocale($locale);
                 $this->applyUiSseSessionFromContext($pageContext);
-                $data = $this->resolveSlotData(
-                    $slot,
-                    $pageHandle,
-                    $pageContext,
-                    DeferredRequestRegistry::snapshotFromCurrentSwooleRequest(),
-                );
-                $twig = ModuleTemplateRegistry::getTwig();
-                $result[$slot->slotId] = $twig->render($slot->templateName, $data);
+                return $work();
             } catch (\Throwable $e) {
                 SseSessionCoroutines::rethrowIfCancellation($e);
-                $this->logger->error('Deferred block sync render failed', [
-                    'slot_id' => $slot->slotId,
-                    'exception' => $e::class,
-                    'message' => $e->getMessage(),
-                ]);
+                $this->logger->error('Deferred block sync render failed', ['slot_id' => $slot->slotId, 'exception' => $e::class, 'message' => $e->getMessage()]);
+
+                return null;
+            }
+        };
+        $resolve = fn (DeferredSlotDefinition $slot): \Closure => $step($slot, fn (): array => $this->resolveSlotData($slot, $pageHandle, $pageContext, $requestSnapshot));
+        $result = [];
+        foreach ((new DeferredSlotDataFanOut($this->sseServer))->answers(array_map($resolve, $slots)) as $index => $data) {
+            $slot = $slots[$index];
+            $html = is_array($data) ? $step($slot, static fn (): string => ModuleTemplateRegistry::getTwig()->render($slot->templateName, $data))() : null;
+            if (is_string($html)) {
+                $result[$slot->slotId] = $html;
             }
         }
 

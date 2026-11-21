@@ -52,5 +52,22 @@ interface SseSessionQueueInterface
      */
     public function publishWake(string $sessionId): void;
 
+    /**
+     * The sessions something was queued for (or a wake was published for)
+     * lately — every push adds its session, whether or not its wake arrived.
+     * Read by each worker's sweep, which wakes the ones it holds.
+     *
+     * @return list<string>|null null when the store could not be read: the
+     *         caller knows nothing, which is not the same as "nobody is pending"
+     */
+    public function pendingSessions(): ?array;
+
+    /**
+     * Drop sessions from the pending set, once the caller is about to wake them.
+     *
+     * @param list<string> $sessionIds
+     */
+    public function clearPending(array $sessionIds): void;
+
     public function publishInvalidation(string $channel): void;
 }

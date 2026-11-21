@@ -146,8 +146,9 @@ final class SseHeldOpenStateTest extends TestCase
         // it and something would have, so it has no reason to ask.
         $state = new SseHeldOpenState('user-1', self::T0);
 
-        self::assertFalse($state->isRedisPollDue(self::T0, dirty: false, wakeHealthy: true));
-        self::assertFalse($state->isRedisPollDue(self::T0 + 4, dirty: false, wakeHealthy: true));
+        self::assertFalse($state->isRedisPollDue(dirty: false, wakeHealthy: true));
+        // However long ago it last asked: the answer no longer has a clock in it.
+        self::assertSame(1.0, $state->nextWaitSeconds(self::T0 + 19, 20, 30, 0));
     }
 
     #[Test]
@@ -155,7 +156,7 @@ final class SseHeldOpenStateTest extends TestCase
     {
         $state = new SseHeldOpenState('user-1', self::T0);
 
-        self::assertTrue($state->isRedisPollDue(self::T0, dirty: true, wakeHealthy: true));
+        self::assertTrue($state->isRedisPollDue(dirty: true, wakeHealthy: true));
     }
 
     #[Test]
@@ -165,24 +166,20 @@ final class SseHeldOpenStateTest extends TestCase
         // keeps the per-tick poll it always had.
         $state = new SseHeldOpenState('user-1', self::T0);
 
-        self::assertTrue($state->isRedisPollDue(self::T0, dirty: false, wakeHealthy: false));
+        self::assertTrue($state->isRedisPollDue(dirty: false, wakeHealthy: false));
     }
 
     #[Test]
-    public function the_safety_poll_comes_due_five_seconds_after_the_last_one(): void
+    public function an_idle_stream_has_no_redis_deadline_of_its_own(): void
     {
-        // A wake is a publish and can be lost; the frame stays in the list, and
-        // this is the most a lost wake costs.
+        // verify:accept-test-change replaces the_safety_poll_comes_due_five_seconds_after_the_last_one: the per-stream safety poll it pinned is removed (tk-idle-sse-stream-polls-redis); its guarantee, a lost wake costs at most 5 s, is now SsePendingSweepTest's and HeldOpenLoopIdleRedisTest::a_frame_whose_wake_was_lost_is_delivered_by_the_workers_next_sweep
+        // The 5 s per-stream safety poll is gone: a lost wake is caught by the
+        // worker's one sweep of the pending set, so a clean session parks until
+        // its heartbeat however long ago it last asked Redis.
         $state = new SseHeldOpenState('user-1', self::T0);
 
-        self::assertSame(5, SseHeldOpenState::REDIS_SAFETY_POLL_SECONDS);
-        self::assertFalse($state->isRedisPollDue(self::T0 + 4, dirty: false, wakeHealthy: true));
-        self::assertTrue($state->isRedisPollDue(self::T0 + 5, dirty: false, wakeHealthy: true));
-
-        $state->markRedisPolled(self::T0 + 5);
-
-        self::assertFalse($state->isRedisPollDue(self::T0 + 9, dirty: false, wakeHealthy: true));
-        self::assertTrue($state->isRedisPollDue(self::T0 + 10, dirty: false, wakeHealthy: true));
+        self::assertSame(20.0, $state->nextWaitSeconds(self::T0, 20, 30, 0));
+        self::assertSame(14.0, $state->nextWaitSeconds(self::T0 + 6, 20, 30, 0));
     }
 
     #[Test]
@@ -199,19 +196,17 @@ final class SseHeldOpenStateTest extends TestCase
     }
 
     #[Test]
-    public function claiming_a_due_poll_or_renewal_marks_it_made(): void
+    public function claiming_a_due_renewal_marks_it_made(): void
     {
+        // verify:accept-test-change was claiming_a_due_poll_or_renewal_marks_it_made: its four claimRedisPoll() assertions went with the method, which only moved the safety poll's clock; the renewal half is kept and extended
         // The loop's one call: asked twice in the same second, only the first is due.
         $state = new SseHeldOpenState('user-1', self::T0);
-
-        self::assertFalse($state->claimRedisPoll(self::T0 + 4, dirty: false, wakeHealthy: true));
-        self::assertTrue($state->claimRedisPoll(self::T0 + 5, dirty: false, wakeHealthy: true));
-        self::assertFalse($state->claimRedisPoll(self::T0 + 5, dirty: false, wakeHealthy: true));
-        self::assertTrue($state->claimRedisPoll(self::T0 + 5, dirty: true, wakeHealthy: true), 'a wake is due whenever it comes');
 
         self::assertTrue($state->claimKeepAlive(self::T0));
         self::assertFalse($state->claimKeepAlive(self::T0 + 14));
         self::assertTrue($state->claimKeepAlive(self::T0 + 15));
+        // An idle stream passes once per heartbeat (20 s): due every time, well inside the 120 s TTL.
+        self::assertTrue($state->claimKeepAlive(self::T0 + 35));
     }
 
     #[Test]
@@ -219,32 +214,51 @@ final class SseHeldOpenStateTest extends TestCase
     {
         $state = new SseHeldOpenState('user-1', self::T0);
 
-        // Fresh: heartbeat at +20, auth at +30, safety poll at +5, no age cap.
-        self::assertSame(5.0, $state->nextWaitSeconds(self::T0, 20, 30, 0));
-        self::assertSame(3.0, $state->nextWaitSeconds(self::T0 + 2, 20, 30, 0));
-
-        // The heartbeat is nearest once the poll has just run.
-        $state->markRedisPolled(self::T0 + 18);
+        // Fresh: heartbeat at +20, auth at +30, no age cap.
+        self::assertSame(20.0, $state->nextWaitSeconds(self::T0, 20, 30, 0));
         self::assertSame(2.0, $state->nextWaitSeconds(self::T0 + 18, 20, 30, 0));
 
         // Then the auth refresh.
         $state->markWritten(self::T0 + 28);
-        $state->markRedisPolled(self::T0 + 28);
         self::assertSame(2.0, $state->nextWaitSeconds(self::T0 + 28, 20, 30, 0));
         $state->markAuthTouched('user-1', self::T0 + 30);
-        self::assertSame(3.0, $state->nextWaitSeconds(self::T0 + 30, 20, 30, 0));
+        self::assertSame(18.0, $state->nextWaitSeconds(self::T0 + 30, 20, 30, 0));
+        // And the heartbeat again: an idle stream alternates between the two and nothing else.
+        self::assertSame(8.0, $state->nextWaitSeconds(self::T0 + 40, 20, 30, 0));
+    }
+
+    #[Test]
+    public function a_table_row_left_unwritten_is_read_again_a_tick_later_and_once(): void
+    {
+        // The deliver table is scanned only when something says so; a failed
+        // write says so for the next pass, one tick away and not in a spin.
+        $state = new SseHeldOpenState('user-1', self::T0);
+
+        self::assertFalse($state->takeTableRetry());
+        self::assertSame(20.0, $state->nextWaitSeconds(self::T0, 20, 30, 0));
+
+        self::assertTrue($state->recordTableWrite(true, self::T0 + 3), 'a frame that is out is reported out');
+        self::assertSame(self::T0 + 3, $state->lastWriteAt(), 'a table frame that reached the client is a write: the heartbeat is measured from it');
+        self::assertFalse($state->takeTableRetry());
+
+        self::assertFalse($state->recordTableWrite(false, self::T0 + 4));
+        self::assertSame(self::T0 + 3, $state->lastWriteAt());
+
+        self::assertSame(0.2, $state->nextWaitSeconds(self::T0, 20, 30, 0), 'the row waited for the heartbeat');
+        self::assertTrue($state->takeTableRetry());
+        self::assertFalse($state->takeTableRetry());
+        self::assertSame(20.0, $state->nextWaitSeconds(self::T0 + 3, 20, 30, 0));
     }
 
     #[Test]
     public function the_age_cap_is_a_wait_deadline_too(): void
     {
         $state = new SseHeldOpenState('user-1', self::T0);
-        $state->markRedisPolled(self::T0 + 57);
         $state->markWritten(self::T0 + 57);
         $state->markAuthTouched('user-1', self::T0 + 57);
 
         self::assertSame(3.0, $state->nextWaitSeconds(self::T0 + 57, 20, 30, 60), 'a capped connection must wake to be closed on time');
-        self::assertSame(5.0, $state->nextWaitSeconds(self::T0 + 57, 20, 30, 0), 'a cap of zero is no deadline');
+        self::assertSame(20.0, $state->nextWaitSeconds(self::T0 + 57, 20, 30, 0), 'a cap of zero is no deadline');
     }
 
     #[Test]
@@ -252,7 +266,7 @@ final class SseHeldOpenStateTest extends TestCase
     {
         $state = new SseHeldOpenState('user-1', self::T0);
 
-        self::assertSame(0.2, $state->nextWaitSeconds(self::T0 + 5, 20, 30, 0));
+        self::assertSame(0.2, $state->nextWaitSeconds(self::T0 + 20, 20, 30, 0));
         self::assertSame(0.2, $state->nextWaitSeconds(self::T0 + 500, 20, 30, 0));
     }
 }

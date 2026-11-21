@@ -73,6 +73,16 @@ final class SseSessionRegistry
     private array $redisDirty = [];
 
     /**
+     * Sessions with a frame parked for them in the shared deliver table (or
+     * that may have one: a session opens marked). The loop scans that table
+     * only for a marked session while the wake subscriber is healthy; the
+     * subscriber's timer marks it when this worker's delivery signal moves.
+     *
+     * @var array<string, true>
+     */
+    private array $tableDirty = [];
+
+    /**
      * Sessions whose last Redis pop failed. Not the wake flag: that one skips
      * the wait, and a loop skipping its wait while Redis refuses every pop
      * would spin. This one shortens the wait to a tick and makes the next
@@ -123,6 +133,9 @@ final class SseSessionRegistry
             $this->wakers[$sessionId] ??= new \Swoole\Coroutine\Channel(1);
         }
         $this->redisDirty[$sessionId] = true;
+        // And table-marked: a frame parked for this worker before the entry
+        // existed woke nobody, and its signal has already been read.
+        $this->tableDirty[$sessionId] = true;
     }
 
     /**
@@ -142,6 +155,8 @@ final class SseSessionRegistry
         }
         if ($redis) {
             $this->redisDirty[$sessionId] = true;
+        } else {
+            $this->tableDirty[$sessionId] = true;
         }
         $waker = $this->wakers[$sessionId] ?? null;
         if ($waker !== null && $waker->isEmpty()) {
@@ -181,9 +196,26 @@ final class SseSessionRegistry
     }
 
     /**
+     * Read the session's deliver-table mark and clear it, before the scan it
+     * allows (as {@see self::takeRedisDirty()}). Only for the connection that
+     * holds the entry: a loop a same-worker reconnect replaced must not spend
+     * the mark its successor opened with.
+     */
+    public function takeTableDirty(string $sessionId, mixed $connection): bool
+    {
+        $dirty = isset($this->tableDirty[$sessionId]) && $this->isOpenWith($sessionId, $connection);
+        if (!$dirty) {
+            return false;
+        }
+        unset($this->tableDirty[$sessionId]);
+
+        return $dirty;
+    }
+
+    /**
      * The session's Redis pop failed (the breaker is open, the pool timed
      * out). The wake that asked for it is spent and the poll clock has moved,
-     * so without this the frame would wait for the safety poll: the session
+     * so without this nothing would bring the loop back to it: the session
      * asks again after one tick instead, and again each tick while Redis keeps
      * refusing — the pace every loop had before wakes existed.
      */
@@ -556,6 +588,7 @@ final class SseSessionRegistry
             $this->sessions[$sessionId],
             $this->redisDirty[$sessionId],
             $this->redisRetry[$sessionId],
+            $this->tableDirty[$sessionId],
             $this->queues[$sessionId],
             $this->buffers[$sessionId],
             $this->bufferWarnedAt[$sessionId],

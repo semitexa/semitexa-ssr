@@ -11,6 +11,7 @@ use Semitexa\Core\Lifecycle\WorkerDrainSignal;
 use Semitexa\Core\Server\InFlightRequests;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
 use Semitexa\Ssr\Application\Service\Async\RedisSubscribeConnectionFactory;
+use Semitexa\Ssr\Application\Service\Async\SsePendingSweep;
 use Semitexa\Ssr\Application\Service\Async\SseRuntime;
 use Semitexa\Ssr\Application\Service\Async\SseServer;
 use Semitexa\Ssr\Application\Service\Async\SseSessionRegistry;
@@ -52,6 +53,9 @@ final class HeldOpenLoopIdleRedisTest extends TestCase
 
     /** Worker 1's view of the tables {@see wiredServer()} gives worker 0. */
     private SseWorkerTables $otherWorker;
+
+    /** The deliver table of {@see wiredServer()}; its `scans` counts the full iterations made of it. */
+    private Table $deliverTable;
 
     protected function setUp(): void
     {
@@ -103,6 +107,115 @@ final class HeldOpenLoopIdleRedisTest extends TestCase
         // The one pop is the loop's first pass: a session opens dirty, so whatever
         // was queued between its connect-time drain and the loop is picked up.
         self::assertSame(1, $popsWhileIdle, 'an idle stream with a live wake subscriber polled Redis on its tick (five times a second before the fix)');
+    }
+
+    /**
+     * The second cut. What was left of the idle cost was the 5 s safety poll
+     * each stream made for itself: with 1000 streams, 200 passes a second, each
+     * a pop and a scan of the whole deliver table. Six seconds cross that old
+     * deadline; the heartbeat (20 s) is the stream's next pass.
+     */
+    #[Test]
+    public function an_idle_stream_makes_no_redis_pop_and_no_table_scan_between_heartbeats(): void
+    {
+        [$server, $registry, , $queue, $subscriber, $loop] = $this->wiredServer();
+        $subscriber->onSubscribed();
+        $written = [];
+        $response = $this->createStub(Response::class);
+        $response->method('write')->willReturnCallback(static function (string $data) use (&$written): bool {
+            $written[] = $data;
+
+            return true;
+        });
+        $request = $this->createStub(Request::class);
+        $deliver = $this->deliverTable;
+        $pops = null;
+        $scans = null;
+
+        Coroutine\run(function () use ($server, $registry, $queue, $loop, $response, $request, $deliver, &$pops, &$scans): void {
+            $registry->open('sse_quiet', $response, '', '');
+            $ended = new Channel(1);
+            Coroutine::create(static function () use ($server, $loop, $response, $request, $ended): void {
+                $loop->invoke($server, 'sse_quiet', $request, $response, '');
+                $ended->push(true);
+            });
+
+            Coroutine::sleep(6.2);
+            $pops = $queue->pops;
+            $scans = $deliver->scans ?? null;
+
+            $registry->close('sse_quiet');
+            $ended->pop(2.0);
+        });
+
+        // Both are the loop's first pass: a session opens marked for Redis and
+        // for the table, so what arrived before its loop is picked up.
+        self::assertSame(1, $pops, 'an idle stream asked Redis again before its heartbeat (the 5 s per-stream safety poll)');
+        self::assertSame(1, $scans, 'an idle stream scanned the deliver table again before its heartbeat');
+        self::assertSame([], $written, 'nothing is due on the wire inside the heartbeat interval');
+    }
+
+    /**
+     * What replaced that poll. A wake is a publish and can be lost; the push
+     * also left the session id in the pending set, and the worker's sweep,
+     * one read for all its streams, finds it there.
+     */
+    #[Test]
+    public function a_frame_whose_wake_was_lost_is_delivered_by_the_workers_next_sweep(): void
+    {
+        [$server, $registry, $tables, $queue, , $loop] = $this->wiredServer();
+        // A short interval in place of the 5 s; the subscriber drives it as its 0.2 s timer does.
+        $sweep = new SsePendingSweep($registry, $queue, $tables, 0.3);
+        $subscriber = new SseWakeSubscriber($registry, new RedisSubscribeConnectionFactory(['scheme' => 'tcp', 'host' => '127.0.0.1', 'port' => 1, 'password' => '']), null, $tables, $sweep);
+        $runtime = (new \ReflectionProperty(SseServer::class, 'runtime'))->getValue($server);
+        self::assertInstanceOf(SseRuntime::class, $runtime);
+        $runtime->wakeSubscriber = $subscriber;
+        $subscriber->onSubscribed();
+        $written = [];
+        $response = $this->createStub(Response::class);
+        $response->method('write')->willReturnCallback(static function (string $data) use (&$written): bool {
+            $written[] = $data;
+
+            return true;
+        });
+        $request = $this->createStub(Request::class);
+        $deliveredAfter = null;
+        $pops = null;
+
+        Coroutine\run(function () use ($server, $registry, $queue, $subscriber, $loop, $response, $request, &$written, &$deliveredAfter, &$pops): void {
+            $registry->open('sse_lost', $response, '', '');
+            $registry->open('sse_bystander', new \stdClass(), '', '');
+            $registry->takeRedisDirty('sse_bystander');
+            $ended = new Channel(1);
+            Coroutine::create(static function () use ($server, $loop, $response, $request, $ended): void {
+                $loop->invoke($server, 'sse_lost', $request, $response, '');
+                $ended->push(true);
+            });
+
+            Coroutine::sleep(0.25);
+            $subscriber->sweepPendingIfDue(); // a sweep with nothing pending: the next is an interval away
+            // Another worker's push: the frame, the pending mark — and a PUBLISH nobody heard.
+            $queue->frames['sse_lost'][] = '{"event":"probe","marker":"its-wake-was-lost"}';
+            $queue->pending = ['sse_lost', 'held-by-another-worker'];
+            $startedAt = microtime(true);
+            while (!str_contains(implode('', $written), 'its-wake-was-lost') && microtime(true) - $startedAt < 2.0) {
+                $subscriber->sweepPendingIfDue();
+                Coroutine::sleep(0.02);
+            }
+            $deliveredAfter = microtime(true) - $startedAt;
+            $pops = $queue->pops;
+
+            $registry->close('sse_lost');
+            $ended->pop(2.0);
+        });
+
+        self::assertStringContainsString('its-wake-was-lost', implode('', $written), 'a frame whose wake was lost was never delivered');
+        self::assertGreaterThanOrEqual(0.2, $deliveredAfter, 'the frame left before a sweep was due: something else polled for it');
+        self::assertLessThan(0.5, $deliveredAfter, 'the frame waited longer than one sweep interval');
+        // First pass (empty), then the swept pass: the frame and the empty pop that ends its drain.
+        self::assertSame(3, $pops);
+        self::assertSame(['held-by-another-worker'], $queue->pending, 'the sweep took a mark that was not this worker\'s, or left its own');
+        self::assertFalse($registry->takeRedisDirty('sse_bystander'), 'the sweep woke a session nothing was queued for');
     }
 
     #[Test]
@@ -389,6 +502,65 @@ final class HeldOpenLoopIdleRedisTest extends TestCase
         self::assertSame(0, $again, 'the same signal was acted on twice');
     }
 
+    /**
+     * A row is deleted only once its frame is out. With the loop no longer
+     * passing every few seconds, a refused write has to bring it back itself.
+     */
+    #[Test]
+    public function a_table_frame_the_socket_refused_is_written_again_a_tick_later(): void
+    {
+        [$server, $registry, , , $subscriber, $loop] = $this->wiredServer();
+        $subscriber->onSubscribed();
+        $written = [];
+        $refuse = 1;
+        $response = $this->createStub(Response::class);
+        $response->method('write')->willReturnCallback(static function (string $data) use (&$written, &$refuse): bool {
+            if ($refuse > 0) {
+                $refuse--;
+
+                return false;
+            }
+            $written[] = $data;
+
+            return true;
+        });
+        $request = $this->createStub(Request::class);
+        $other = $this->otherWorker;
+        $deliver = $this->deliverTable;
+        $deliveredAfter = null;
+        $scans = null;
+
+        Coroutine\run(function () use ($server, $registry, $subscriber, $loop, $response, $request, $other, $deliver, &$written, &$deliveredAfter, &$scans): void {
+            $registry->open('sse_refused', $response, '', '');
+            $ended = new Channel(1);
+            Coroutine::create(static function () use ($server, $loop, $response, $request, $ended): void {
+                $loop->invoke($server, 'sse_refused', $request, $response, '');
+                $ended->push(true);
+            });
+
+            Coroutine::sleep(0.25);
+            self::assertTrue($other->queueForWorker('sse_refused', 0, ['event' => 'probe', 'marker' => 'refused-once']));
+            $startedAt = microtime(true);
+            $subscriber->wakeTableDeliveries();
+            while (!str_contains(implode('', $written), 'refused-once') && microtime(true) - $startedAt < 2.0) {
+                Coroutine::sleep(0.01);
+            }
+            $deliveredAfter = microtime(true) - $startedAt;
+            Coroutine::sleep(0.5);
+            $scans = $deliver->scans ?? null;
+
+            $registry->close('sse_refused');
+            $ended->pop(2.0);
+        });
+
+        self::assertStringContainsString('refused-once', implode('', $written), 'the row the socket refused was left in the table until the heartbeat');
+        self::assertGreaterThanOrEqual(0.15, $deliveredAfter, 'the retry did not wait its tick: against a socket that keeps refusing this is a spin');
+        self::assertLessThan(0.5, $deliveredAfter);
+        self::assertSame(1, substr_count(implode('', $written), 'refused-once'), 'the frame was written twice');
+        // The first pass, the subscriber's own scan for whom to wake, the refused pass and the retry.
+        self::assertSame(4, $scans, 'the loop went on scanning the table after the row was out');
+    }
+
     #[Test]
     public function without_a_subscription_the_loop_keeps_its_tick(): void
     {
@@ -447,7 +619,16 @@ final class HeldOpenLoopIdleRedisTest extends TestCase
         $sessions->column('connection', Table::TYPE_STRING, 16);
         $sessions->column('opened_seq', Table::TYPE_INT, 8);
         $sessions->create();
-        $deliver = new Table(8);
+        $deliver = new class(8) extends Table {
+            public int $scans = 0;
+
+            public function rewind(): void
+            {
+                $this->scans++;
+                parent::rewind();
+            }
+        };
+        $this->deliverTable = $deliver;
         $deliver->column('session_id', Table::TYPE_STRING, 32);
         $deliver->column('worker_id', Table::TYPE_INT, 4);
         $deliver->column('payload', Table::TYPE_STRING, 128);

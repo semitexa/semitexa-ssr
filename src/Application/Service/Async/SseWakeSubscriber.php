@@ -33,7 +33,8 @@ use Semitexa\Core\Support\StandingCoroutines;
  *    on "healthy" learns it is on its own.
  *  - A wake is a hint, never the frame. The frame is in the Redis list, and a
  *    connection that died without a word (so this still reads as healthy) costs
- *    the loop's safety poll, {@see SseHeldOpenState::REDIS_SAFETY_POLL_SECONDS}.
+ *    one sweep of the pending set, {@see SsePendingSweep::INTERVAL_SECONDS},
+ *    which this class's timer drives while it is healthy.
  *
  * DEDICATED connection, exactly like {@see ResourceInvalidationSubscriber} and
  * for the same reason: a blocking SUBSCRIBE on the size-1 {@see SseRedisPool}
@@ -49,7 +50,8 @@ final class SseWakeSubscriber
     /**
      * The loop's timer. Its existence is the guard {@see LivePubSubChannelController}
      * describes (a lone parked coroutine must not read as a deadlock); its
-     * work, each tick, is {@see self::wakeTableDeliveries()}.
+     * work, each tick, is {@see self::wakeTableDeliveries()} and, when its
+     * interval has passed, the {@see SsePendingSweep}.
      */
     private const TICK_INTERVAL_MS = 200;
 
@@ -73,6 +75,7 @@ final class SseWakeSubscriber
         private readonly RedisSubscribeConnectionFactory $connectionFactory,
         ?ReconnectAlarmPolicy $alarm = null,
         private readonly ?SseWorkerTables $tables = null,
+        private readonly ?SsePendingSweep $sweep = null,
     ) {
         $this->alarm = $alarm ?? new ReconnectAlarmPolicy();
     }
@@ -113,6 +116,7 @@ final class SseWakeSubscriber
             $this->keepAliveTimerId = \Swoole\Timer::tick(self::TICK_INTERVAL_MS, function (): void {
                 try {
                     $this->wakeTableDeliveries();
+                    $this->sweepPendingIfDue();
                 } catch (\Throwable $e) {
                     StaticLoggerBridge::error('ssr', 'SSE deliver-table wake failed', ['exception' => $e::class, 'message' => $e->getMessage()]);
                 }
@@ -214,7 +218,8 @@ final class SseWakeSubscriber
      *
      * Called every tick, and almost always one table cell read: the table is
      * scanned only when this worker's delivery signal moved. The wake does not
-     * mark Redis dirty; the frame is not there.
+     * mark Redis dirty; the frame is not there. It marks the table instead:
+     * a loop reads the table only when told to, or when nothing is healthy.
      *
      * @return int how many sessions were woken
      */
@@ -233,6 +238,17 @@ final class SseWakeSubscriber
         }
 
         return $woken;
+    }
+
+    /**
+     * The lost-wake net, on the same timer: only while the subscription reads
+     * healthy, because that is when the loops are parked and trusting it.
+     *
+     * @return int how many sessions were woken
+     */
+    public function sweepPendingIfDue(): int
+    {
+        return $this->healthy && $this->sweep !== null ? $this->sweep->runIfDue() : 0;
     }
 
     /** A wake arrived: the session's loop, if this worker holds it, goes round now. */

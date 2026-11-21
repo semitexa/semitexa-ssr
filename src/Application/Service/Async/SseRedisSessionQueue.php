@@ -37,7 +37,10 @@ use Semitexa\Ssr\Domain\Contract\SseSessionQueueInterface;
  * turns into an immediate pop. It is what lets an idle stream stop asking Redis
  * five times a second whether anything arrived (tk-idle-sse-stream-polls-redis).
  * The wake is lossy and the frame is not: a publish that fails leaves the frame
- * in the list, where the loop's safety poll finds it.
+ * in the list, and the session's id in the **pending set** every push adds it
+ * to before the wake. Each worker reads that set once every few seconds
+ * ({@see SsePendingSweep}) and wakes the sessions it holds, so a lost wake costs
+ * one sweep interval and no stream has to ask on its own.
  */
 final class SseRedisSessionQueue implements SseSessionQueueInterface
 {
@@ -46,6 +49,17 @@ final class SseRedisSessionQueue implements SseSessionQueueInterface
 
     private const KEY_PREFIX = 'semitexa_sse_queue:';
     private const TTL_SECONDS = 7200;
+
+    /**
+     * The pending set is one Redis set per time bucket, because a set member
+     * cannot expire on its own: a session nobody holds any more (its frames
+     * wait for a reconnect, which drains at connect time) would stay in a
+     * single set for ever. A bucket's key expires as a whole, two spans after
+     * its last add, and a sweep reads the current bucket and the one before.
+     */
+    public const PENDING_BUCKET_SECONDS = 300;
+
+    private const PENDING_KEY_PREFIX = 'semitexa_sse_pending:';
 
     public function __construct(
         private readonly SseRedisPool $pool,
@@ -134,6 +148,7 @@ final class SseRedisSessionQueue implements SseSessionQueueInterface
                 $queueKey = self::key($sessionId);
                 $redis->rpush($queueKey, [$payload]);
                 $redis->expire($queueKey, self::TTL_SECONDS);
+                self::markPending($redis, $sessionId);
                 self::wake($redis, $sessionId);
             });
         } catch (\Throwable $e) {
@@ -147,8 +162,8 @@ final class SseRedisSessionQueue implements SseSessionQueueInterface
 
     /**
      * Wake the session's loop with nothing queued — a newer connection took the
-     * session over, and the one it replaced should notice now rather than at
-     * its next safety poll.
+     * session over, and the one it replaced should notice now. Marked pending
+     * as a push is, so a lost wake costs that loop one sweep interval too.
      */
     public function publishWake(string $sessionId): void
     {
@@ -161,6 +176,7 @@ final class SseRedisSessionQueue implements SseSessionQueueInterface
         try {
             $pool->withConnection(static function ($redis) use ($sessionId): void {
                 /** @var Client $redis */
+                self::markPending($redis, $sessionId);
                 self::wake($redis, $sessionId);
             });
         } catch (\Throwable $e) {
@@ -174,8 +190,8 @@ final class SseRedisSessionQueue implements SseSessionQueueInterface
      * Never throws. The frame is already in the list when this runs, so a
      * failure here must not read as a failed push: {@see self::tryPush()} would
      * report false, the caller would queue the same frame on the fallback path
-     * as well, and the client would get it twice. A lost wake costs the safety
-     * poll's interval and nothing else.
+     * as well, and the client would get it twice. A lost wake costs one
+     * sweep interval ({@see SsePendingSweep}) and nothing else.
      */
     private static function wake(Client $redis, string $sessionId): void
     {
@@ -183,6 +199,86 @@ final class SseRedisSessionQueue implements SseSessionQueueInterface
             $redis->publish(self::WAKE_CHANNEL, trim($sessionId));
         } catch (\Throwable $e) {
             self::reportFailure('Redis SSE wake publish failed', $e, ['session_id' => $sessionId]);
+        }
+    }
+
+    private static function pendingKey(int $bucket): string
+    {
+        return self::PENDING_KEY_PREFIX . $bucket;
+    }
+
+    /**
+     * Add the session to the pending set — after the frame is in the list and
+     * before the wake, in that order: a sweep that takes the mark then finds
+     * the frame, whenever it runs.
+     *
+     * Throws, unlike {@see self::wake()}. An unmarked frame whose wake is also
+     * lost would have nothing left to find it, so a push that could not mark
+     * reports failure and {@see self::tryPush()}'s caller takes the fallback
+     * path: at worst the frame arrives twice, never not at all.
+     */
+    private static function markPending(Client $redis, string $sessionId): void
+    {
+        $key = self::pendingKey(intdiv(time(), self::PENDING_BUCKET_SECONDS));
+        $redis->sadd($key, [trim($sessionId)]);
+        $redis->expire($key, 2 * self::PENDING_BUCKET_SECONDS);
+    }
+
+    /** @return list<string> the keys a sweep reads: the current bucket and the one before */
+    private static function pendingKeys(): array
+    {
+        $bucket = intdiv(time(), self::PENDING_BUCKET_SECONDS);
+
+        return [self::pendingKey($bucket), self::pendingKey($bucket - 1)];
+    }
+
+    public function pendingSessions(): ?array
+    {
+        $pool = $this->pool->get();
+        if ($pool === null) {
+            return null;
+        }
+
+        try {
+            /** @var list<string> $sessions */
+            $sessions = $pool->withConnection(static function ($redis): array {
+                /** @var Client $redis */
+                $found = [];
+                foreach (self::pendingKeys() as $key) {
+                    foreach ($redis->smembers($key) as $sessionId) {
+                        $found[(string) $sessionId] = true;
+                    }
+                }
+
+                return array_map(strval(...), array_keys($found));
+            });
+        } catch (\Throwable $e) {
+            self::reportFailure('Redis SSE pending-set read failed', $e);
+
+            return null;
+        }
+
+        return $sessions;
+    }
+
+    public function clearPending(array $sessionIds): void
+    {
+        $pool = $sessionIds === [] ? null : $this->pool->get();
+        if ($pool === null) {
+            return;
+        }
+
+        try {
+            $pool->withConnection(static function ($redis) use ($sessionIds): void {
+                /** @var Client $redis */
+                $keys = self::pendingKeys();
+                foreach ($keys as $key) {
+                    $redis->srem($key, $sessionIds);
+                }
+            });
+        } catch (\Throwable $e) {
+            // The marks stay: the next sweep wakes these sessions once more.
+            self::reportFailure('Redis SSE pending-set clear failed', $e, ['count' => count($sessionIds)]);
         }
     }
 
@@ -272,6 +368,7 @@ final class SseRedisSessionQueue implements SseSessionQueueInterface
                 $queueKey = self::key($sessionId);
                 $redis->rpush($queueKey, $encoded);
                 $redis->expire($queueKey, self::TTL_SECONDS);
+                self::markPending($redis, $sessionId);
                 self::wake($redis, $sessionId);
             });
         } catch (\Throwable $e) {

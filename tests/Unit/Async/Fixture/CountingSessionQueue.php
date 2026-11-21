@@ -23,6 +23,15 @@ final class CountingSessionQueue implements SseSessionQueueInterface
     /** @var list<string> */
     public array $wakes = [];
 
+    /** @var list<string> what a push by another worker left in the pending set */
+    public array $pending = [];
+
+    /** How often the pending set was read. */
+    public int $pendingReads = 0;
+
+    /** The pending set cannot be read, as with the breaker open. */
+    public bool $failPendingRead = false;
+
     public function isAvailable(): bool
     {
         return true;
@@ -60,6 +69,18 @@ final class CountingSessionQueue implements SseSessionQueueInterface
     public function publishWake(string $sessionId): void
     {
         $this->wakes[] = $sessionId;
+    }
+
+    public function pendingSessions(): ?array
+    {
+        $this->pendingReads++;
+
+        return $this->failPendingRead ? null : $this->pending;
+    }
+
+    public function clearPending(array $sessionIds): void
+    {
+        $this->pending = array_values(array_diff($this->pending, $sessionIds));
     }
 
     public function publishInvalidation(string $channel): void

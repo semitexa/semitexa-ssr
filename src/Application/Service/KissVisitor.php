@@ -10,6 +10,7 @@ use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Auth\AuthBootstrapperFactoryInterface;
 use Semitexa\Core\Auth\AuthBootstrapperInterface;
 use Semitexa\Core\Container\RequestScopedContainer;
+use Semitexa\Core\Container\SemitexaContainer;
 use Semitexa\Core\Log\LoggerInterface;
 use Semitexa\Core\Pipeline\RouteExecutor;
 use Semitexa\Core\Request;
@@ -48,6 +49,17 @@ final class KissVisitor
         $swooleRequest = $current[0] ?? null;
 
         return $swooleRequest instanceof \Swoole\Http\Request ? RequestFactory::fromSwoole($swooleRequest) : null;
+    }
+
+    /**
+     * The session of the execution running in this coroutine, when it has one:
+     * a request's own, in its coroutine and in one its context was carried into.
+     */
+    public function currentSession(): ?SessionInterface
+    {
+        $container = isset($this->container) ? $this->container : null;
+
+        return $container instanceof SemitexaContainer ? $container->captureExecutionContext()->session : null;
     }
 
     public function establish(?Request $visitor): void

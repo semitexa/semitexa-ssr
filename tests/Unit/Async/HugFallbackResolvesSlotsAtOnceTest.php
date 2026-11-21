@@ -10,13 +10,18 @@ use PHPUnit\Framework\TestCase;
 use Semitexa\Core\Auth\GuestAuthContext;
 use Semitexa\Core\Container\ExecutionContext;
 use Semitexa\Core\Container\SemitexaContainer;
+use Semitexa\Core\Csrf\CsrfField;
+use Semitexa\Core\Csrf\CsrfToken;
 use Semitexa\Core\Lifecycle\CurrentRequestStore;
 use Semitexa\Core\Log\LoggerInterface;
 use Semitexa\Core\Request;
+use Semitexa\Core\Server\AfterResponse;
+use Semitexa\Core\Session\SessionInterface;
 use Semitexa\Core\Support\Row;
 use Semitexa\Core\Tenant\DefaultTenantContext;
 use Semitexa\Core\Tenant\DefaultTenantContextStore;
 use Semitexa\Locale\Context\LocaleContextStore;
+use Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
 use Semitexa\Ssr\Application\Service\Async\SseServer;
 use Semitexa\Ssr\Application\Service\Async\SseSessionCoroutines;
@@ -32,6 +37,7 @@ use Semitexa\Ssr\Tests\Unit\Async\Fixture\TimedSlotProvider;
 use Swoole\Coroutine;
 use Twig\Environment;
 use Twig\Loader\ArrayLoader;
+use Twig\TwigFunction;
 
 /**
  * tk-hug-fallback-renders-slots-in-sequence. A page whose stream is refused
@@ -73,7 +79,14 @@ final class HugFallbackResolvesSlotsAtOnceTest extends TestCase
 
         // A catalog of its own, with one template every probe slot renders.
         $fresh = new ModuleTemplateCatalog();
-        (new \ReflectionProperty(ModuleTemplateCatalog::class, 'twig'))->setValue($fresh, new Environment(new ArrayLoader(['hug-probe.twig' => '<b>{{ label }}</b>'])));
+        $twig = new Environment(new ArrayLoader([
+            'hug-probe.twig' => '<b>{{ label }}</b>',
+            // What the request's own coroutine holds when a slot's template renders.
+            'hug-state.twig' => '{{ probe_ui_session() }}|{{ probe_inline_css() }}',
+        ]));
+        $twig->addFunction(new TwigFunction('probe_ui_session', static fn (): string => UiSseSessionState::current() ?? 'none'));
+        $twig->addFunction(new TwigFunction('probe_inline_css', static fn (): string => implode(',', array_column(AssetCollectorStore::get()->takeRawInlineCss(), 'key'))));
+        (new \ReflectionProperty(ModuleTemplateCatalog::class, 'twig'))->setValue($fresh, $twig);
         (new \ReflectionProperty(ModuleTemplateCatalog::class, 'initialized'))->setValue($fresh, true);
         ModuleTemplateRegistry::setCatalog($fresh);
 
@@ -139,17 +152,14 @@ final class HugFallbackResolvesSlotsAtOnceTest extends TestCase
         $parent = null;
         $localeBefore = null;
 
-        try {
-            $this->renderInCoroutine(static function () use ($container, $auth, &$parent, &$localeBefore): void {
-                $parent = Coroutine::getCid();
-                $localeBefore = LocaleContextStore::getLocale();
-                // What the route pipeline has established by the time the handler runs.
-                $container->setExecutionContext(new ExecutionContext(authContext: $auth));
-                LocaleContextStore::setLocale('uk');
-            });
-        } finally {
-            LocaleContextStore::clearFallback();
-        }
+        // Set inside the request's coroutine: it goes with it, and the process keeps the locale it had.
+        $this->renderInCoroutine(static function () use ($container, $auth, &$parent, &$localeBefore): void {
+            $parent = Coroutine::getCid();
+            $localeBefore = LocaleContextStore::getLocale();
+            // What the route pipeline has established by the time the handler runs.
+            $container->setExecutionContext(new ExecutionContext(authContext: $auth));
+            LocaleContextStore::setLocale('uk');
+        });
 
         self::assertNotSame('', $localeBefore, 'no locale was read before the probe one was set');
         self::assertNotSame('uk', $localeBefore, 'the probe locale is the default one: seeing it proves nothing');
@@ -304,6 +314,90 @@ final class HugFallbackResolvesSlotsAtOnceTest extends TestCase
     }
 
     /**
+     * What a provider writes for the request to read afterwards must land in
+     * the request's own: a slot's assets were required in a collector that
+     * went with its coroutine, and a UI SSE session a provider minted stayed
+     * there too — each provider minted its own and the template saw none.
+     */
+    #[Test]
+    public function what_a_provider_requires_and_the_session_it_mints_are_there_when_the_templates_render(): void
+    {
+        $this->probeSlots(['a_one' => 30, 'b_two' => 60], template: 'hug-state.twig');
+        TimedSlotProvider::$look = static function (): array {
+            AssetCollectorStore::get()->inlineCss('probe:' . SseSessionCoroutines::currentCid(), '.probe{}');
+
+            return ['minted' => UiSseSessionState::mintIfAbsent()];
+        };
+        $parent = null;
+        $sessionBefore = 'unread';
+
+        [$rendered] = $this->renderInCoroutine(static function () use (&$parent, &$sessionBefore): void {
+            $parent = Coroutine::getCid();
+            $sessionBefore = UiSseSessionState::current();
+        });
+
+        self::assertNull($sessionBefore, 'the request had a UI SSE session before any provider ran: minting proves nothing');
+        self::assertCount(2, array_unique(TimedSlotProvider::$ranIn), 'the slots did not resolve each in a coroutine of its own');
+        self::assertNotContains($parent, TimedSlotProvider::$ranIn);
+        $minted = Row::asString(TimedSlotProvider::$saw['a_one']['minted'] ?? '');
+        self::assertStringStartsWith('sse_', $minted);
+        self::assertSame($minted, TimedSlotProvider::$saw['b_two']['minted'] ?? null, 'two providers of one request minted a UI SSE session each');
+        // The first template takes what both slots asked for; the second finds the session still there.
+        $css = 'probe:' . TimedSlotProvider::$ranIn['a_one'] . ',probe:' . TimedSlotProvider::$ranIn['b_two'];
+        self::assertSame(['a_one' => $minted . '|' . $css, 'b_two' => $minted . '|'], $rendered);
+    }
+
+    /** The CSRF token is read through the session the route pipeline bound to the request's coroutine. */
+    #[Test]
+    public function a_provider_reads_the_requests_csrf_token(): void
+    {
+        $this->probeSlots(['a_one' => 20, 'b_two' => 20]);
+        $token = new CsrfToken();
+        $token->setValue('token-of-the-request');
+        $session = $this->createStub(SessionInterface::class);
+        $session->method('getPayload')->willReturn($token);
+        $container = $this->container;
+        TimedSlotProvider::$look = static fn (): array => ['csrf' => CsrfField::token()];
+        $parent = null;
+
+        $this->renderInCoroutine(static function () use ($container, $session, &$parent): void {
+            $parent = Coroutine::getCid();
+            $container->setExecutionContext(new ExecutionContext(session: $session));
+        });
+
+        self::assertCount(2, TimedSlotProvider::$ranIn, 'not every slot resolved');
+        self::assertNotContains($parent, TimedSlotProvider::$ranIn);
+        self::assertSame('token-of-the-request', TimedSlotProvider::$saw['a_one']['csrf'] ?? null);
+        self::assertSame('token-of-the-request', TimedSlotProvider::$saw['b_two']['csrf'] ?? null);
+    }
+
+    /**
+     * Work a provider leaves for after the response is not lost in a coroutine
+     * that is not the request's: AfterResponse runs it there at once, as it
+     * does in any such coroutine. (Holding it until the response is out would
+     * need a way to hand it to the request's queue, which core does not give.)
+     */
+    #[Test]
+    public function work_a_provider_schedules_for_after_the_response_is_run(): void
+    {
+        $this->probeSlots(['a_one' => 20, 'b_two' => 20]);
+        /** @var list<int> $ranIn */
+        $ranIn = [];
+        TimedSlotProvider::$look = static function () use (&$ranIn): array {
+            AfterResponse::schedule(static function () use (&$ranIn): void {
+                $ranIn[] = Row::asInt(Coroutine::getCid());
+            });
+
+            return [];
+        };
+
+        [$rendered] = $this->renderInCoroutine();
+
+        self::assertSame(['a_one', 'b_two'], array_keys($rendered));
+        self::assertSame(array_values(TimedSlotProvider::$ranIn), $ranIn, 'each provider\'s work runs once, in the coroutine that scheduled it');
+    }
+
+    /**
      * The cap is per request, so two such requests on one worker can want more
      * database connections (16) than the pool holds (DB_POOL_SIZE 10). A query
      * that finds the pool empty waits for a connection to come back
@@ -420,11 +514,11 @@ final class HugFallbackResolvesSlotsAtOnceTest extends TestCase
     }
 
     /** @param array<string, int> $waits slot id => how long its data takes, ms; in the page's slot order */
-    private function probeSlots(array $waits, string $page = self::PAGE): void
+    private function probeSlots(array $waits, string $page = self::PAGE, string $template = 'hug-probe.twig'): void
     {
         $priority = 0;
         foreach ($waits as $slot => $ms) {
-            LayoutSlotRegistry::register(handle: $page, slot: $slot, template: 'hug-probe.twig', priority: ++$priority, deferred: true);
+            LayoutSlotRegistry::register(handle: $page, slot: $slot, template: $template, priority: ++$priority, deferred: true);
             DataProviderRegistry::register($slot, TimedSlotProvider::class);
         }
         TimedSlotProvider::$waits += $waits;
@@ -436,7 +530,9 @@ final class HugFallbackResolvesSlotsAtOnceTest extends TestCase
         (new \ReflectionProperty(DeferredBlockOrchestrator::class, 'sseServer'))->setValue($orchestrator, AsyncResourceSseServer::instance());
         (new \ReflectionProperty(DeferredBlockOrchestrator::class, 'dataProviderRegistry'))->setValue($orchestrator, new DataProviderRegistry());
         (new \ReflectionProperty(DeferredBlockOrchestrator::class, 'logger'))->setValue($orchestrator, $this->createStub(LoggerInterface::class));
-        (new \ReflectionProperty(DeferredBlockOrchestrator::class, 'kissVisitor'))->setValue($orchestrator, new KissVisitor());
+        $visitor = new KissVisitor();
+        (new \ReflectionProperty(KissVisitor::class, 'container'))->setValue($visitor, $this->container);
+        (new \ReflectionProperty(DeferredBlockOrchestrator::class, 'kissVisitor'))->setValue($orchestrator, $visitor);
 
         return $orchestrator;
     }

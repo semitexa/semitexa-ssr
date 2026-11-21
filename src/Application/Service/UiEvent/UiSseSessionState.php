@@ -85,8 +85,54 @@ final class UiSseSessionState
     public static function current(): ?string
     {
         $id = CoroutineLocal::get(self::CTX_KEY);
+        if ($id instanceof UiSseSessionCell) {
+            return $id->id;
+        }
 
         return is_string($id) ? $id : null;
+    }
+
+    /**
+     * This request's id in a cell other coroutines can be given
+     * ({@see adopt()}): the slots of a HUG fallback resolve each in a coroutine
+     * of its own, and an id one of their providers minted stayed in that
+     * coroutine — the others minted their own, and the template rendered
+     * afterwards saw none. With the cell they all read and write one id, as
+     * they did when they ran one after another in the request's coroutine.
+     */
+    public static function shared(): UiSseSessionCell
+    {
+        $held = CoroutineLocal::get(self::CTX_KEY);
+        if ($held instanceof UiSseSessionCell) {
+            return $held;
+        }
+        $cell = new UiSseSessionCell();
+        $cell->id = is_string($held) ? $held : null;
+        CoroutineLocal::set(self::CTX_KEY, $cell);
+
+        return $cell;
+    }
+
+    /** Read and write the id of $cell in this coroutine from now on. */
+    public static function adopt(UiSseSessionCell $cell): void
+    {
+        CoroutineLocal::set(self::CTX_KEY, $cell);
+    }
+
+    private static function write(?string $id): void
+    {
+        $held = CoroutineLocal::get(self::CTX_KEY);
+        if ($held instanceof UiSseSessionCell) {
+            $held->id = $id;
+
+            return;
+        }
+        if ($id === null) {
+            CoroutineLocal::remove(self::CTX_KEY);
+
+            return;
+        }
+        CoroutineLocal::set(self::CTX_KEY, $id);
     }
 
     /**
@@ -102,14 +148,14 @@ final class UiSseSessionState
             return $existing;
         }
         $id = self::PREFIX . bin2hex(random_bytes(self::ENTROPY_BYTES));
-        CoroutineLocal::set(self::CTX_KEY, $id);
+        self::write($id);
 
         return $id;
     }
 
     public static function reset(): void
     {
-        CoroutineLocal::remove(self::CTX_KEY);
+        self::write(null);
     }
 
     /**
@@ -135,7 +181,7 @@ final class UiSseSessionState
         if (preg_match(self::SAFE_ID_PATTERN, $id) !== 1) {
             return;
         }
-        CoroutineLocal::set(self::CTX_KEY, $id);
+        self::write($id);
     }
 
     /**
@@ -151,6 +197,6 @@ final class UiSseSessionState
                 'UiSseSessionState::setForTesting() id must match ' . self::SAFE_ID_PATTERN,
             );
         }
-        CoroutineLocal::set(self::CTX_KEY, $id);
+        self::write($id);
     }
 }

@@ -506,7 +506,7 @@ final class DeferredBlockOrchestrator
         };
         $resolve = fn (DeferredSlotDefinition $slot): \Closure => $step($slot, fn (): array => $this->resolveSlotData($slot, $pageHandle, $pageContext, $requestSnapshot));
         $result = [];
-        foreach ((new DeferredSlotDataFanOut($this->sseServer))->answers(array_map($resolve, $slots)) as $index => $data) {
+        foreach ((new DeferredSlotDataFanOut($this->sseServer, $this->kissVisitor))->answers(array_map($resolve, $slots)) as $index => $data) {
             $slot = $slots[$index];
             $html = is_array($data) ? $step($slot, static fn (): string => ModuleTemplateRegistry::getTwig()->render($slot->templateName, $data))() : null;
             if (is_string($html)) {

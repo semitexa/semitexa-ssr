@@ -4,9 +4,13 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service;
 
+use Semitexa\Core\Auth\GuestAuthContext;
+use Semitexa\Core\Csrf\CsrfField;
+use Semitexa\Core\Http\CspNonce;
 use Semitexa\Core\Lifecycle\CurrentRequestStore;
 use Semitexa\Core\Support\Row;
 use Semitexa\Core\Tenant\DefaultTenantContextStore;
+use Semitexa\Ssr\Application\Service\Asset\AssetCollectorStore;
 use Semitexa\Ssr\Application\Service\Async\SseServer;
 use Semitexa\Ssr\Application\Service\Async\SseSessionCoroutines;
 use Semitexa\Ssr\Application\Service\UiEvent\UiSseSessionState;
@@ -25,10 +29,8 @@ use Swoole\Coroutine\Channel;
  * and locale the stores keep beside it. The stream's coroutines get the rest
  * from {@see KissVisitor::establish()}, which authenticates again; here the
  * route pipeline already has, so what it left in this coroutine alone is
- * handed over as it is ({@see adopt()}): the request, the tenant of core's own
- * store, the page's UI SSE session. Other coroutine-local state (memo caches,
- * what a provider queues for after the response) is not shared, as it is not
- * on the stream. At most {@see MAX_AT_ONCE} run at a time for one request; the
+ * handed over, and what a provider writes for the request to read afterwards
+ * is written to the request's own ({@see adopt()}). At most {@see MAX_AT_ONCE} run at a time for one request; the
  * rest wait their turn.
  *
  * Only the resolving is spread out. What is done with the answers (the Twig
@@ -58,7 +60,8 @@ final class DeferredSlotDataFanOut
     /** What Swoole allows when nothing set max_coroutine. */
     private const SWOOLE_DEFAULT_MAX_COROUTINE = 100000;
 
-    public function __construct(private readonly SseServer $sseServer)
+    /** @param KissVisitor|null $visitor knows the session of the request these slots are resolved for */
+    public function __construct(private readonly SseServer $sseServer, private readonly ?KissVisitor $visitor = null)
     {
     }
 
@@ -124,7 +127,7 @@ final class DeferredSlotDataFanOut
         $finished = new Channel($workers);
         // Tracked like a stream's coroutines, under a name no stream has.
         $owner = 'hug-slots-' . SseSessionCoroutines::currentCid();
-        $adopt = self::adopt();
+        $adopt = $this->adopt();
 
         $started = 0;
         for ($i = 0; $i < $workers; $i++) {
@@ -154,35 +157,62 @@ final class DeferredSlotDataFanOut
     }
 
     /**
-     * What the route pipeline left in the request's coroutine that
+     * The request's coroutine-local state that
      * {@see \Semitexa\Core\Lifecycle\CarriedContext} does not name, read now
-     * and put into the coroutine the returned closure runs in. Without the
-     * request there, a policy that reads it saw "no request" and decided as
-     * for none (OsAuthPolicy::isRequired() answered false), and the RBAC
-     * decision cache emptied itself on every call.
+     * and put into the coroutine the returned closure runs in.
+     *
+     * What a provider only reads is handed over as it is: the request (a
+     * policy that found none decided as for none: OsAuthPolicy::isRequired()
+     * answered false; the RBAC decision cache emptied itself on every call),
+     * the tenant of core's own store, the session behind the CSRF token, the
+     * script nonce, a guest's auth result. Not the request's tracer: spans
+     * opened by coroutines running at once would close one another's.
+     *
+     * What a provider writes and the request reads afterwards is the
+     * request's own object, shared: the asset collector (a slot's client
+     * modules, read when its template renders) and the UI SSE session (one id
+     * for every provider and the templates, whoever mints it).
+     *
+     * Not handed over, and not read by the request afterwards: per-coroutine
+     * memo caches (settings, translations, RBAC decisions) are filled again.
+     * Work a provider schedules with AfterResponse runs at once in its own
+     * coroutine, as in any coroutine that is not the request's: it is not
+     * lost, but it is not held back until the response is out either.
      *
      * Nothing to take back afterwards: a new coroutine's context starts empty
-     * and goes with it, and the request's own coroutine is not written to.
+     * and goes with it.
      *
      * @return \Closure(): void
      */
-    private static function adopt(): \Closure
+    private function adopt(): \Closure
     {
         $request = CurrentRequestStore::get();
         // Core's store; semitexa/tenancy's own names its keys to CarriedContext.
         $tenant = (new DefaultTenantContextStore())->tryGet();
-        $uiSseSession = UiSseSessionState::current();
+        $session = $this->visitor?->currentSession();
+        $nonce = CspNonce::value();
+        $guest = GuestAuthContext::getInstance()->getLastResult();
+        $assets = AssetCollectorStore::get();
+        $uiSseSession = UiSseSessionState::shared();
 
-        return static function () use ($request, $tenant, $uiSseSession): void {
+        return static function () use ($request, $tenant, $session, $nonce, $guest, $assets, $uiSseSession): void {
             if ($request !== null) {
                 CurrentRequestStore::set($request);
             }
             if ($tenant !== null) {
                 (new DefaultTenantContextStore())->set($tenant);
             }
-            if ($uiSseSession !== null) {
-                UiSseSessionState::restore($uiSseSession);
+            if ($session !== null) {
+                CsrfField::bind($session);
             }
+            if ($nonce !== '') {
+                CspNonce::set($nonce);
+            }
+            if ($guest !== null) {
+                GuestAuthContext::getInstance()->setAuthResult($guest);
+            }
+            AssetCollectorStore::share($assets);
+            UiSseSessionState::adopt($uiSseSession);
         };
     }
 

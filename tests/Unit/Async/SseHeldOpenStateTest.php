@@ -251,6 +251,25 @@ final class SseHeldOpenStateTest extends TestCase
     }
 
     #[Test]
+    public function an_idle_streams_renewals_are_never_further_apart_than_a_third_of_the_ttl(): void
+    {
+        // The held loop is the only thing renewing the page's deferred request
+        // (TTL 120 s) since the deferred live loop stopped ticking. Worst case:
+        // a pass just short of the 15 s the renewal waits for, then nothing
+        // until the heartbeat, 20 s after that pass's write.
+        $state = new SseHeldOpenState('user-1', self::T0);
+        self::assertTrue($state->claimKeepAlive(self::T0));
+
+        $state->markWritten(self::T0 + 14);
+        self::assertFalse($state->claimKeepAlive(self::T0 + 14));
+        $wait = $state->nextWaitSeconds(self::T0 + 14, 20, 30, 0);
+
+        self::assertSame(16.0, $wait, 'the auth refresh at +30 comes first; without it the heartbeat at +34 would');
+        self::assertTrue($state->claimKeepAlive(self::T0 + 14 + (int) $wait), 'the pass an idle stream wakes for did not renew');
+        self::assertLessThanOrEqual(40, 14 + (int) $wait, 'two renewals further apart than a third of the 120 s TTL');
+    }
+
+    #[Test]
     public function the_age_cap_is_a_wait_deadline_too(): void
     {
         $state = new SseHeldOpenState('user-1', self::T0);

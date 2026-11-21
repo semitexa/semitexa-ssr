@@ -154,7 +154,7 @@ final class DeferredBlockOrchestrator
                 'reconnect' => $channelStaysOpen,
             ]);
             if ($liveEnabled) {
-                $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale, $requestSnapshot, $visitor, $deferredRequestId);
+                $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale, $requestSnapshot, $visitor);
             }
             return;
         }
@@ -218,7 +218,7 @@ final class DeferredBlockOrchestrator
                 'reconnect' => $channelStaysOpen,
             ]);
             if ($liveEnabled) {
-                $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale, $requestSnapshot, $visitor, $deferredRequestId);
+                $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale, $requestSnapshot, $visitor);
             }
             return;
         }
@@ -335,7 +335,7 @@ final class DeferredBlockOrchestrator
             ]);
         }
         if ($liveEnabled) {
-            $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale, $requestSnapshot, $visitor, $deferredRequestId);
+            $this->runLiveLoop($sessionId, $pageHandle, $pageContext, $liveSlots, $locale, $requestSnapshot, $visitor);
         }
     }
 
@@ -527,6 +527,7 @@ final class DeferredBlockOrchestrator
 
     /**
      * After initial SSE delivery, keep pushing live slots (refreshInterval > 0) until the client disconnects.
+     * Asleep until the nearest slot is due, not waking each second: the stream's close cancels it there, and the held-open loop renews the deferred request.
      *
      * @param DeferredSlotDefinition[] $liveSlots
      * @param array<string, mixed>|null $requestSnapshot the stored snapshot, read
@@ -542,7 +543,6 @@ final class DeferredBlockOrchestrator
         ?string $locale = null,
         ?array $requestSnapshot = null,
         ?Request $visitor = null,
-        ?string $deferredRequestId = null,
     ): void
     {
         if ($liveSlots === []) {
@@ -557,11 +557,12 @@ final class DeferredBlockOrchestrator
         }
 
         while ($this->sseServer->isSessionActive($sessionId)) {
-            // Sleep 1 second ticks — fine-grained enough for any reasonable interval
+            // A hair past the deadline (woken a millisecond early, the slot would wait a whole sleep more), never under the old 1 s tick.
+            $sleep = max(1.0, min(array_map(static fn (DeferredSlotDefinition $s): float => ($lastDelivered[$s->slotId] ?? 0.0) + $s->refreshInterval, $liveSlots)) - microtime(true) + 0.01);
             if (class_exists(Coroutine::class, false) && Coroutine::getCid() > 0) {
-                Coroutine::sleep(1.0);
+                Coroutine::sleep($sleep);
             } else {
-                usleep(1_000_000);
+                usleep((int) ($sleep * 1_000_000));
             }
 
             if (!$this->sseServer->isSessionActive($sessionId)) {
@@ -569,7 +570,6 @@ final class DeferredBlockOrchestrator
             }
 
             $now = microtime(true);
-            DeferredRequestRegistry::keepAlive($deferredRequestId);
             foreach ($liveSlots as $slot) {
                 if (($now - ($lastDelivered[$slot->slotId] ?? 0)) < $slot->refreshInterval) {
                     continue;

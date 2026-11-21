@@ -18,6 +18,9 @@ use Semitexa\Ssr\Application\Service\Async\SseSessionRegistry;
 use Semitexa\Ssr\Application\Service\Async\SseWakeSubscriber;
 use Semitexa\Ssr\Application\Service\Async\SseWorkerTables;
 use Semitexa\Ssr\Application\Service\Async\SwooleSseTransport;
+use Semitexa\Ssr\Application\Service\Isomorphic\DeferredBindCookie;
+use Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry;
+use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Semitexa\Ssr\Domain\Contract\SseSessionQueueInterface;
 use Semitexa\Ssr\Tests\Unit\Async\Fixture\CountingSessionQueue;
 use Swoole\Coroutine;
@@ -51,6 +54,12 @@ final class HeldOpenLoopIdleRedisTest extends TestCase
     /** @var array<int, true> the in-flight request set as this class found it */
     private array $inFlightBefore = [];
 
+    /** What {@see DeferredRequestRegistry} held when this class found it: process-wide, restored and not reset. */
+    private const REGISTRY_STATE = ['table', 'deliveredLock', 'contextColumnSize', 'snapshotColumnSize'];
+
+    /** @var array<string, mixed> */
+    private array $registryBefore = [];
+
     /** Worker 1's view of the tables {@see wiredServer()} gives worker 0. */
     private SseWorkerTables $otherWorker;
 
@@ -68,12 +77,14 @@ final class HeldOpenLoopIdleRedisTest extends TestCase
         $inFlight = (new \ReflectionProperty(InFlightRequests::class, 'cids'))->getValue();
         $this->inFlightBefore = $inFlight;
         WorkerDrainSignal::reset();
+        $this->registryBefore = self::registryState();
     }
 
     protected function tearDown(): void
     {
         $this->wasDraining ? WorkerDrainSignal::begin() : WorkerDrainSignal::reset();
         (new \ReflectionProperty(InFlightRequests::class, 'cids'))->setValue(null, $this->inFlightBefore);
+        self::restoreRegistry($this->registryBefore);
         foreach ($this->saved as $name => $value) {
             (new \ReflectionProperty(SseServer::class, $name))->setValue(AsyncResourceSseServer::instance(), $value);
         }
@@ -559,6 +570,128 @@ final class HeldOpenLoopIdleRedisTest extends TestCase
         self::assertSame(1, substr_count(implode('', $written), 'refused-once'), 'the frame was written twice');
         // The first pass, the subscriber's own scan for whom to wake, the refused pass and the retry.
         self::assertSame(4, $scans, 'the loop went on scanning the table after the row was out');
+    }
+
+    /**
+     * The deferred page's live loop no longer renews its request (it sleeps
+     * until a slot is due, an hour if that is the slot's interval), so this
+     * loop is the only thing that does. It has to be the SAME record: the id
+     * from the stream's query, vouched for with the page's bind cookie.
+     */
+    #[Test]
+    public function the_held_loop_keeps_its_pages_deferred_request_alive_past_the_ttl(): void
+    {
+        [$server, $registry, , , $subscriber, $loop] = $this->wiredServer();
+        $subscriber->onSubscribed();
+        $response = $this->createStub(Response::class);
+        $response->method('write')->willReturn(true);
+        $stranger = $this->createStub(Response::class);
+        $stranger->method('write')->willReturn(true);
+        $request = $this->createStub(Request::class);
+        $request->get = ['deferred_request_id' => 'dr_held'];
+        $request->cookie = [DeferredBindCookie::nameFor('dr_held') => 'token'];
+        // The same id from a browser that does not hold the page's cookie.
+        $noCookie = $this->createStub(Request::class);
+        $noCookie->get = ['deferred_request_id' => 'dr_not_mine'];
+        $noCookie->cookie = [];
+
+        try {
+            self::freshRegistry();
+            DeferredRequestRegistry::store('dr_held', 'page', [], ['slot'], 'token', 'en');
+            DeferredRequestRegistry::store('dr_not_mine', 'page', [], ['slot'], 'token', 'en');
+            $table = DeferredRequestRegistry::getTable();
+            self::assertNotNull($table);
+            // Minted 100 s ago: inside the 120 s TTL when the streams open.
+            $table->set('dr_held', ['created_at' => time() - 100]);
+            $table->set('dr_not_mine', ['created_at' => time() - 100]);
+
+            Coroutine\run(function () use ($server, $registry, $loop, $response, $stranger, $request, $noCookie): void {
+                $registry->open('sse_held', $response, '', '');
+                $registry->open('sse_stranger', $stranger, '', '');
+                $ended = new Channel(2);
+                Coroutine::create(static function () use ($server, $loop, $response, $request, $ended): void {
+                    $loop->invoke($server, 'sse_held', $request, $response, '');
+                    $ended->push(true);
+                });
+                Coroutine::create(static function () use ($server, $loop, $stranger, $noCookie, $ended): void {
+                    $loop->invoke($server, 'sse_stranger', $noCookie, $stranger, '');
+                    $ended->push(true);
+                });
+
+                Coroutine::sleep(0.25);
+
+                $registry->close('sse_held');
+                $registry->close('sse_stranger');
+                $ended->pop(2.0);
+                $ended->pop(2.0);
+            });
+
+            // Now both are far past the TTL by their minting time alone.
+            $table->set('dr_held', ['created_at' => time() - 500]);
+            $table->set('dr_not_mine', ['created_at' => time() - 500]);
+
+            self::assertNotNull(DeferredRequestRegistry::consume('dr_held'), 'the held stream did not renew its page\'s deferred request: a reconnect past the TTL is refused for ever');
+            self::assertNull(DeferredRequestRegistry::consume('dr_not_mine'), 'a stream without the page\'s bind cookie renewed a request that is not its own');
+        } finally {
+            self::restoreRegistry($this->registryBefore);
+        }
+    }
+
+    /**
+     * Review of semitexa-ssr#193. The test above replaced the process-wide
+     * registry and left it reset: whatever the process held before was gone.
+     */
+    #[Test]
+    public function the_deferred_registry_a_test_replaced_is_put_back_as_it_was_found(): void
+    {
+        // What "the process held before" looks like: a table with a page's request in it.
+        self::freshRegistry();
+        DeferredRequestRegistry::store('dr_before', 'page', [], ['slot'], 'token', 'en');
+        $before = self::registryState();
+        $tableBefore = DeferredRequestRegistry::getTable();
+
+        // What the test above does to it.
+        self::freshRegistry();
+        DeferredRequestRegistry::store('dr_of_the_test', 'page', [], ['slot'], 'token', 'en');
+        self::assertNotSame($tableBefore, DeferredRequestRegistry::getTable(), 'the test wrote into the table it found');
+        self::assertNull(DeferredRequestRegistry::consume('dr_before'));
+
+        self::restoreRegistry($before);
+
+        self::assertSame($tableBefore, DeferredRequestRegistry::getTable(), 'the registry was left on the test\'s table, or with none');
+        self::assertNotNull(DeferredRequestRegistry::consume('dr_before'), 'what the registry held before the test is gone');
+        self::assertNull(DeferredRequestRegistry::consume('dr_of_the_test'), 'the test\'s request leaked into the registry it restored');
+        self::assertSame($before, self::registryState());
+    }
+
+    /** @return array<string, mixed> */
+    private static function registryState(): array
+    {
+        $state = [];
+        foreach (self::REGISTRY_STATE as $name) {
+            $state[$name] = (new \ReflectionProperty(DeferredRequestRegistry::class, $name))->getValue();
+        }
+
+        return $state;
+    }
+
+    /** @param array<string, mixed> $state */
+    private static function restoreRegistry(array $state): void
+    {
+        foreach ($state as $name => $value) {
+            (new \ReflectionProperty(DeferredRequestRegistry::class, $name))->setValue(null, $value);
+        }
+    }
+
+    /**
+     * A registry table of the test's own. Not reset(): that also clears the
+     * GC timer, which a restore of the fields could not arm again; the timer
+     * is left as it is and collects from whichever table is current.
+     */
+    private static function freshRegistry(): void
+    {
+        (new \ReflectionProperty(DeferredRequestRegistry::class, 'table'))->setValue(null, null);
+        DeferredRequestRegistry::initialize(new IsomorphicConfig(enabled: true, deferredContextSize: 8192, requestSnapshotSize: 4096));
     }
 
     #[Test]

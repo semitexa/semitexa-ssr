@@ -18,6 +18,9 @@ use Semitexa\Ssr\Application\Service\Async\SseSessionRegistry;
 use Semitexa\Ssr\Application\Service\Async\SseWakeSubscriber;
 use Semitexa\Ssr\Application\Service\Async\SseWorkerTables;
 use Semitexa\Ssr\Application\Service\Async\SwooleSseTransport;
+use Semitexa\Ssr\Application\Service\Isomorphic\DeferredBindCookie;
+use Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry;
+use Semitexa\Ssr\Configuration\IsomorphicConfig;
 use Semitexa\Ssr\Domain\Contract\SseSessionQueueInterface;
 use Semitexa\Ssr\Tests\Unit\Async\Fixture\CountingSessionQueue;
 use Swoole\Coroutine;
@@ -559,6 +562,72 @@ final class HeldOpenLoopIdleRedisTest extends TestCase
         self::assertSame(1, substr_count(implode('', $written), 'refused-once'), 'the frame was written twice');
         // The first pass, the subscriber's own scan for whom to wake, the refused pass and the retry.
         self::assertSame(4, $scans, 'the loop went on scanning the table after the row was out');
+    }
+
+    /**
+     * The deferred page's live loop no longer renews its request (it sleeps
+     * until a slot is due, an hour if that is the slot's interval), so this
+     * loop is the only thing that does. It has to be the SAME record: the id
+     * from the stream's query, vouched for with the page's bind cookie.
+     */
+    #[Test]
+    public function the_held_loop_keeps_its_pages_deferred_request_alive_past_the_ttl(): void
+    {
+        [$server, $registry, , , $subscriber, $loop] = $this->wiredServer();
+        $subscriber->onSubscribed();
+        $response = $this->createStub(Response::class);
+        $response->method('write')->willReturn(true);
+        $stranger = $this->createStub(Response::class);
+        $stranger->method('write')->willReturn(true);
+        $request = $this->createStub(Request::class);
+        $request->get = ['deferred_request_id' => 'dr_held'];
+        $request->cookie = [DeferredBindCookie::nameFor('dr_held') => 'token'];
+        // The same id from a browser that does not hold the page's cookie.
+        $noCookie = $this->createStub(Request::class);
+        $noCookie->get = ['deferred_request_id' => 'dr_not_mine'];
+        $noCookie->cookie = [];
+
+        DeferredRequestRegistry::reset();
+        try {
+            DeferredRequestRegistry::initialize(new IsomorphicConfig(enabled: true, deferredContextSize: 8192, requestSnapshotSize: 4096));
+            DeferredRequestRegistry::store('dr_held', 'page', [], ['slot'], 'token', 'en');
+            DeferredRequestRegistry::store('dr_not_mine', 'page', [], ['slot'], 'token', 'en');
+            $table = DeferredRequestRegistry::getTable();
+            self::assertNotNull($table);
+            // Minted 100 s ago: inside the 120 s TTL when the streams open.
+            $table->set('dr_held', ['created_at' => time() - 100]);
+            $table->set('dr_not_mine', ['created_at' => time() - 100]);
+
+            Coroutine\run(function () use ($server, $registry, $loop, $response, $stranger, $request, $noCookie): void {
+                $registry->open('sse_held', $response, '', '');
+                $registry->open('sse_stranger', $stranger, '', '');
+                $ended = new Channel(2);
+                Coroutine::create(static function () use ($server, $loop, $response, $request, $ended): void {
+                    $loop->invoke($server, 'sse_held', $request, $response, '');
+                    $ended->push(true);
+                });
+                Coroutine::create(static function () use ($server, $loop, $stranger, $noCookie, $ended): void {
+                    $loop->invoke($server, 'sse_stranger', $noCookie, $stranger, '');
+                    $ended->push(true);
+                });
+
+                Coroutine::sleep(0.25);
+
+                $registry->close('sse_held');
+                $registry->close('sse_stranger');
+                $ended->pop(2.0);
+                $ended->pop(2.0);
+            });
+
+            // Now both are far past the TTL by their minting time alone.
+            $table->set('dr_held', ['created_at' => time() - 500]);
+            $table->set('dr_not_mine', ['created_at' => time() - 500]);
+
+            self::assertNotNull(DeferredRequestRegistry::consume('dr_held'), 'the held stream did not renew its page\'s deferred request: a reconnect past the TTL is refused for ever');
+            self::assertNull(DeferredRequestRegistry::consume('dr_not_mine'), 'a stream without the page\'s bind cookie renewed a request that is not its own');
+        } finally {
+            DeferredRequestRegistry::reset();
+        }
     }
 
     #[Test]

@@ -38,6 +38,21 @@ final class AssetCollectorStore
     }
 
     /**
+     * Use $collector in this coroutine: for one doing a request's work beside
+     * it (a HUG fallback's slots resolving at once), so that what it requires
+     * is in the request's own collector when its templates render. Without it
+     * a slot's client modules were required in a collector that went with the
+     * coroutine. Outside a coroutine there is one collector already.
+     */
+    public static function share(AssetCollector $collector): void
+    {
+        $context = self::inCoroutine() ? \Swoole\Coroutine::getContext() : null;
+        if ($context instanceof \ArrayObject) {
+            $context[self::KEY] = $collector;
+        }
+    }
+
+    /**
      * Reset the collector for the current request.
      * Should be called at the start of each request in the Swoole handler.
      */

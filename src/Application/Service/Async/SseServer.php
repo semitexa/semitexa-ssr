@@ -716,13 +716,13 @@ final class SseServer implements FeedStreamSinkInterface
             $this->refreshAuthIfDue($sessionId, $request, $response, $state);
             $this->drainSameWorkerQueue($sessionId, $response, $state);
 
-            if (!$state->isClosed()) {
+            $wakeHealthy = $this->runtime()->wakeSubscriber?->isHealthy() ?? false;
+            if (!$state->isClosed() && (!$wakeHealthy || $state->takeTableRetry() || $this->sessionRegistry()->takeTableDirty($sessionId, $response))) { // healthy: only a session the subscriber's timer marked, a new one, or a row left unwritten
                 $this->drainCrossWorkerTable($sessionId, $response, $state);
             }
 
-            $wakeHealthy = $this->runtime()->wakeSubscriber?->isHealthy() ?? false;
             // The wake flag is taken BEFORE the pop: one landing during it stays set for the wait below.
-            if (!$state->isClosed() && $state->claimRedisPoll(time(), $this->sessionRegistry()->takeRedisDirty($sessionId), $wakeHealthy)) {
+            if (!$state->isClosed() && $state->isRedisPollDue($this->sessionRegistry()->takeRedisDirty($sessionId), $wakeHealthy)) {
                 // Asked again: a wake is also how a superseded loop is told, and Redis then holds the new connection's frames.
                 if ($this->workerTables()->supersededAt($sessionId, $response) !== null || $this->drainRedisQueueForSession($sessionId, $response)) {
                     $state->close();
@@ -741,7 +741,7 @@ final class SseServer implements FeedStreamSinkInterface
                 break;
             }
 
-            \Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry::keepAlive($state->claimKeepAlive(time()) ? $deferredRequestId : null, $bindToken); // every 15 s; a null id is "not this pass"
+            \Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry::keepAlive($state->claimKeepAlive(time()) ? $deferredRequestId : null, $bindToken); // due after 15 s, so an idle stream renews on its heartbeat pass; a null id is "not this pass"
             if (!$this->sessionRegistry()->waitForWork($sessionId, $wakeHealthy ? $state->nextWaitSeconds(time(), self::HEARTBEAT_INTERVAL_SECONDS, SseAuthSessionMap::TOUCH_INTERVAL_SECONDS, $maxAgeSeconds) : self::HELD_OPEN_TICK_SECONDS, $response)) {
                 break; // cancelled (the exit drain): end here, never park again
             }
@@ -845,9 +845,8 @@ final class SseServer implements FeedStreamSinkInterface
                 continue;
             }
 
-            if ($this->writeSse($response, $data)) {
+            if ($state->recordTableWrite($this->writeSse($response, $data), time())) { // refused: the row stays, read again a tick from now
                 $consumed[] = $row['key'];
-                $state->markWritten(time());
                 if ($this->shouldCloseAfterPayload($data)) {
                     $state->close();
                     break;
@@ -1702,7 +1701,7 @@ final class SseServer implements FeedStreamSinkInterface
     /** Wired per worker by WireSseWakeSubscriberListener; it connects with the first held stream. Unwired, streams keep the tick. */
     public function wireWakeSubscriber(RedisSubscribeConnectionFactory $connectionFactory): void
     {
-        $this->runtime()->wakeSubscriber ??= new SseWakeSubscriber($this->sessionRegistry(), $connectionFactory, null, $this->workerTables());
+        $this->runtime()->wakeSubscriber ??= new SseWakeSubscriber($this->sessionRegistry(), $connectionFactory, null, $this->workerTables(), new SsePendingSweep($this->sessionRegistry(), $this->redisSessionQueue(), $this->workerTables()));
     }
 
     /**

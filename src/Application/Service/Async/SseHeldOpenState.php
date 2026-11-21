@@ -32,22 +32,19 @@ final class SseHeldOpenState
 
     private int $lastAuthTouchAt;
 
-    /**
-     * How long a clean session goes without asking Redis anyway. A wake is a
-     * publish, and a publish can be lost (a subscriber that is reconnecting, a
-     * connection that died without saying so); the frame itself stays in the
-     * list, so this is the most a lost wake can cost.
-     */
-    public const REDIS_SAFETY_POLL_SECONDS = 5;
-
     /** How often a held stream renews its page's deferred request (its TTL is 120 s). */
     public const KEEP_ALIVE_INTERVAL_SECONDS = 15;
 
     /** The shortest wait handed out: a deadline that is already due must not turn the loop into a spin. */
     public const MIN_WAIT_SECONDS = 0.2;
 
-    /** Seeded from the connect-time drain the caller ran just before the loop. */
-    private int $lastRedisPollAt;
+    /**
+     * A deliver-table frame could not be written and stays in its row. Nothing
+     * will wake the loop for it again (its signal has been read), so the loop
+     * reads the table once more a tick from now: not at once, which against a
+     * socket that keeps refusing would be a spin.
+     */
+    private bool $tableRetry = false;
 
     /** Null until the first renewal, which is due at once: the loop's first pass vouches for its page. */
     private ?int $lastKeepAliveAt = null;
@@ -58,7 +55,6 @@ final class SseHeldOpenState
     ) {
         $this->lastWriteAt = $startedAt;
         $this->lastAuthTouchAt = $startedAt;
-        $this->lastRedisPollAt = $startedAt;
     }
 
     public function isClosed(): bool
@@ -124,31 +120,41 @@ final class SseHeldOpenState
     /**
      * Should this pass ask Redis for the session's frames?
      *
-     * Yes when a wake said so (`$dirty`), when nothing is listening for wakes
-     * (`$wakeHealthy` false: no Redis, no subscriber, or one that is
-     * reconnecting, where every pass polls as it always did), or when the
-     * safety interval has passed. An idle stream with a live subscriber costs
-     * one LPOP per interval instead of one per tick.
+     * Yes when a wake said so (`$dirty`), or when nothing is listening for
+     * wakes (`$wakeHealthy` false: no Redis, no subscriber, or one that is
+     * reconnecting, where every pass polls as it always did). Never on a clock
+     * of the stream's own: a lost wake is the worker's to catch, once for all
+     * its streams ({@see SsePendingSweep}), and an idle stream asks nothing.
      */
-    public function isRedisPollDue(int $now, bool $dirty, bool $wakeHealthy): bool
+    public function isRedisPollDue(bool $dirty, bool $wakeHealthy): bool
     {
-        return $dirty || !$wakeHealthy || ($now - $this->lastRedisPollAt) >= self::REDIS_SAFETY_POLL_SECONDS;
+        return $dirty || !$wakeHealthy;
     }
 
-    public function markRedisPolled(int $now): void
+    /**
+     * The outcome of writing one deliver-table frame: out, it counts as a
+     * write; refused, its row is to be read again ({@see self::takeTableRetry()}).
+     *
+     * @return bool `$written`, so the caller consumes the row only when it is out
+     */
+    public function recordTableWrite(bool $written, int $now): bool
     {
-        $this->lastRedisPollAt = $now;
-    }
-
-    /** {@see self::isRedisPollDue()}, and when it is, the poll counts as made now: the loop's one call. */
-    public function claimRedisPoll(int $now, bool $dirty, bool $wakeHealthy): bool
-    {
-        $due = $this->isRedisPollDue($now, $dirty, $wakeHealthy);
-        if ($due) {
-            $this->markRedisPolled($now);
+        if ($written) {
+            $this->lastWriteAt = $now;
+        } else {
+            $this->tableRetry = true;
         }
 
-        return $due;
+        return $written;
+    }
+
+    /** Read the retry mark and clear it: the pass that takes it scans the deliver table. */
+    public function takeTableRetry(): bool
+    {
+        $retry = $this->tableRetry;
+        $this->tableRetry = false;
+
+        return $retry;
     }
 
     public function isKeepAliveDue(int $now): bool
@@ -174,18 +180,23 @@ final class SseHeldOpenState
 
     /**
      * How long the loop may park when nothing wakes it: until the earliest of
-     * the heartbeat, the auth refresh, the age cap and the safety poll. Each of
-     * them used to be noticed by a 0.2 s tick; now each is a deadline.
+     * the heartbeat, the auth refresh and the age cap. Each of them used to be
+     * noticed by a 0.2 s tick; now each is a deadline. The deferred request's
+     * renewal has none of its own: it rides the heartbeat's pass (20 s against
+     * a TTL of 120 s).
      *
      * Never below {@see self::MIN_WAIT_SECONDS}: the clock here is whole
-     * seconds, so a deadline can read as due for the rest of its second.
+     * seconds, so a deadline can read as due for the rest of its second. And
+     * exactly that long while a table row waits to be written again.
      */
     public function nextWaitSeconds(int $now, int $heartbeatIntervalSeconds, int $authTouchIntervalSeconds, int $maxAgeSeconds): float
     {
+        if ($this->tableRetry) {
+            return self::MIN_WAIT_SECONDS;
+        }
         $deadline = min(
             $this->lastWriteAt + $heartbeatIntervalSeconds,
             $this->lastAuthTouchAt + $authTouchIntervalSeconds,
-            $this->lastRedisPollAt + self::REDIS_SAFETY_POLL_SECONDS,
         );
         if ($maxAgeSeconds > 0) {
             $deadline = min($deadline, $this->startedAt + $maxAgeSeconds);

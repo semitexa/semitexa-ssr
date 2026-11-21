@@ -169,6 +169,39 @@ final class SseSessionRegistryTest extends TestCase
         self::assertFalse($registry->takeRedisDirty('sess-1'), 'the frame is not in Redis: the loop must not be sent there');
     }
 
+    /**
+     * The deliver table is 8192 slots, and a loop scans it only when its
+     * session is marked: tk-idle-sse-stream-polls-redis, second cut.
+     */
+    #[Test]
+    public function the_table_mark_is_set_on_open_and_by_a_table_wake_and_taken_only_by_the_holder(): void
+    {
+        $registry = new SseSessionRegistry();
+        $connection = new \stdClass();
+        $registry->open('sess-1', $connection, '', '');
+
+        self::assertFalse($registry->takeTableDirty('sess-1', new \stdClass()), 'a replaced connection spent its successor\'s mark');
+        self::assertTrue($registry->takeTableDirty('sess-1', $connection), 'a session opens marked: a frame parked before its entry existed woke nobody');
+        self::assertFalse($registry->takeTableDirty('sess-1', $connection));
+
+        $registry->wake('sess-1');
+        self::assertFalse($registry->takeTableDirty('sess-1', $connection), 'a Redis wake is not a reason to scan the table');
+
+        $registry->wake('sess-1', false);
+        self::assertTrue($registry->takeTableDirty('sess-1', $connection));
+
+        // Read from the map itself: takeTableDirty() answers false for a session
+        // with no entry whether or not a mark was left behind (review of semitexa-ssr#192).
+        $marks = new \ReflectionProperty(SseSessionRegistry::class, 'tableDirty');
+        $registry->wake('held-by-another-worker', false);
+        self::assertSame([], $marks->getValue($registry), 'a stranger was remembered');
+
+        $registry->wake('sess-1', false);
+        self::assertSame(['sess-1' => true], $marks->getValue($registry));
+        $registry->close('sess-1');
+        self::assertSame([], $marks->getValue($registry), 'the mark outlived its session');
+    }
+
     #[Test]
     public function wake_all_reaches_every_session_held_here(): void
     {

@@ -190,13 +190,16 @@ final class SseSessionRegistryTest extends TestCase
         $registry->wake('sess-1', false);
         self::assertTrue($registry->takeTableDirty('sess-1', $connection));
 
+        // Read from the map itself: takeTableDirty() answers false for a session
+        // with no entry whether or not a mark was left behind (review of semitexa-ssr#192).
+        $marks = new \ReflectionProperty(SseSessionRegistry::class, 'tableDirty');
         $registry->wake('held-by-another-worker', false);
-        self::assertFalse($registry->takeTableDirty('held-by-another-worker', $connection), 'a stranger was remembered');
+        self::assertSame([], $marks->getValue($registry), 'a stranger was remembered');
 
         $registry->wake('sess-1', false);
+        self::assertSame(['sess-1' => true], $marks->getValue($registry));
         $registry->close('sess-1');
-        $registry->open('sess-2', $connection, '', '');
-        self::assertFalse($registry->takeTableDirty('sess-1', $connection), 'the mark outlived its session');
+        self::assertSame([], $marks->getValue($registry), 'the mark outlived its session');
     }
 
     #[Test]

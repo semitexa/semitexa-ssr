@@ -27,7 +27,10 @@ use Semitexa\Ssr\Domain\Contract\SseSessionQueueInterface;
  *    wake causes, and one pushed after it marks the session again;
  *  - a session held here but owned by a newer connection elsewhere is woken
  *    (its loop stands down) and NOT removed: the mark belongs to the worker
- *    that holds the new connection.
+ *    that holds the new connection;
+ *  - a session taken over (or closed) WHILE its mark was being removed is
+ *    marked again and its wake published: the removal is Redis I/O, and the
+ *    mark it took may have been the new connection's (review of semitexa-ssr#192).
  *  - when the set cannot be read, nothing is known, so every session is woken:
  *    each asks Redis itself and, while that keeps failing, retries on its tick.
  *
@@ -92,6 +95,12 @@ final class SsePendingSweep
             }
 
             $this->queue->clearPending($owned);
+            // The removal yielded. A session that changed hands meanwhile gets its mark back, for its new holder's sweep.
+            foreach ($owned as $sessionId) {
+                if (!$this->sessions->isOpen($sessionId) || !$this->tables->ownedHere($sessionId)) {
+                    $this->queue->publishWake($sessionId);
+                }
+            }
 
             $woken = 0;
             foreach ($held as $sessionId) {

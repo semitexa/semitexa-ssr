@@ -64,6 +64,33 @@ final class SsePendingSweepTest extends TestCase
         self::assertSame(['sess-1'], $queue->pending, 'the mark was taken from the worker that holds the new connection');
     }
 
+    /**
+     * Review of semitexa-ssr#192. Ownership is read before the removal, and
+     * the removal is Redis I/O: a reconnect on another worker in that window
+     * drains, a frame is pushed for it (marked; its wake lost), and this
+     * worker's removal then took that mark with nobody left to find the frame.
+     */
+    #[Test]
+    public function a_session_taken_over_while_its_mark_was_being_removed_gets_the_mark_back(): void
+    {
+        [$sweep, $registry, $queue, $tables, $otherWorker] = $this->sweep();
+        $old = new \stdClass();
+        $registry->open('sess-1', $old, '', '');
+        $registry->open('sess-2', new \stdClass(), '', '');
+        $registry->takeRedisDirty('sess-2');
+        $tables->recordOwnership('sess-1', $old);
+        $queue->pending = ['sess-1', 'sess-2'];
+        $queue->duringClearPending = static function () use ($otherWorker): void {
+            $otherWorker->recordOwnership('sess-1', new \stdClass());
+        };
+
+        self::assertSame(2, $sweep->run());
+
+        self::assertSame(['sess-1'], $queue->pending, 'the mark of a session that changed hands during the removal was lost, or a kept session\'s mark was put back');
+        self::assertSame(['sess-1'], $queue->wakes, 'the new holder was not told');
+        self::assertTrue($registry->takeRedisDirty('sess-2'));
+    }
+
     #[Test]
     public function a_set_that_cannot_be_read_wakes_every_session(): void
     {

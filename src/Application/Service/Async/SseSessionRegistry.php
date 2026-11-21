@@ -168,15 +168,17 @@ final class SseSessionRegistry
 
     /**
      * Wake every session held here: the subscriber just (re)subscribed, and
-     * what was published while it was not listening is unknown.
+     * what was published while it was not listening is unknown. With `$only`,
+     * every session held here that it accepts.
      *
+     * @param (\Closure(string): bool)|null $only
      * @return int how many sessions were woken
      */
-    public function wakeAll(): int
+    public function wakeAll(?\Closure $only = null): int
     {
         $woken = 0;
         foreach (array_keys($this->sessions) as $sessionId) {
-            $woken += $this->wake((string) $sessionId) ? 1 : 0;
+            $woken += ($only === null || $only((string) $sessionId)) && $this->wake((string) $sessionId) ? 1 : 0;
         }
 
         return $woken;

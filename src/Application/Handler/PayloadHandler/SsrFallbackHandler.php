@@ -14,6 +14,7 @@ use Semitexa\Core\Request;
 use Semitexa\Ssr\Application\Payload\Request\SsrFallbackPayload;
 use Semitexa\Ssr\Application\Service\DeferredBlockOrchestrator;
 use Semitexa\Ssr\Application\Service\DeferredComponentFallbackRenderer;
+use Semitexa\Ssr\Application\Service\DeferredSlotAccessGate;
 use Semitexa\Ssr\Application\Service\Isomorphic\DeferredBindCookie;
 use Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry;
 
@@ -25,6 +26,9 @@ final class SsrFallbackHandler implements TypedHandlerInterface
 
     #[InjectAsReadonly]
     protected DeferredComponentFallbackRenderer $components;
+
+    #[InjectAsReadonly]
+    protected DeferredSlotAccessGate $access;
 
     #[InjectAsMutable]
     protected Request $request;
@@ -43,6 +47,28 @@ final class SsrFallbackHandler implements TypedHandlerInterface
             throw new NotFoundException('Page handle', '(empty)');
         }
 
+        // The deferred request is optional: the fallback also answers long after
+        // it expired. When it is there it must be this browser's and this page's.
+        $pageContext = [];
+        $served = false;
+        $requestId = $payload->getDeferredRequestId();
+        if ($requestId !== '') {
+            $entry = DeferredRequestRegistry::consume($requestId);
+            if ($entry !== null) {
+                $bindToken = DeferredBindCookie::tokenIn($this->request->cookies, $requestId);
+                if ($bindToken === '' || !hash_equals($entry->bindToken, $bindToken)
+                    || strcasecmp($entry->pageHandle, $handle) !== 0) {
+                    throw new NotFoundException('Deferred request', $requestId);
+                }
+                $pageContext = $entry->pageContext;
+                $served = true;
+            }
+        }
+
+        // This route is public and a slot handler sees no request: the page's
+        // own access policy is asked here, before a slot is named or drawn.
+        $this->access->admit($handle, $this->request, $served);
+
         $slotNames = self::idList($payload->getSlots());
 
         $registeredSlots = $this->orchestrator->getDeferredSlots($handle);
@@ -51,19 +77,6 @@ final class SsrFallbackHandler implements TypedHandlerInterface
 
         if ($invalid !== []) {
             throw new NotFoundException('Deferred slot', implode(', ', $invalid));
-        }
-
-        $pageContext = [];
-        $requestId = $payload->getDeferredRequestId();
-        if ($requestId !== '') {
-            $entry = DeferredRequestRegistry::consume($requestId);
-            if ($entry !== null) {
-                $bindToken = DeferredBindCookie::tokenIn($this->request->cookies, $requestId);
-                if ($bindToken === '' || !hash_equals($entry->bindToken, $bindToken)) {
-                    throw new NotFoundException('Deferred request', $requestId);
-                }
-                $pageContext = $entry->pageContext;
-            }
         }
 
         $rendered = $this->orchestrator->renderDeferredBlocksSync($handle, $slotNames, $pageContext);

@@ -144,14 +144,17 @@ final class SseControlRouter
         }
 
         $context = SubscriptionDtoRegistry::get($streamingId);
-        if ($context !== null && $context->getSessionId() !== $sessionId) {
-            // Before the pending mark: it is the owner's, and so is its re-run.
-            return $this->refuseForeign($sessionId, $streamingId, SseControlFrame::RERUN);
-        }
         if ($context === null || $this->runtime->reRunner === null) {
             $this->clearPending($streamingId);
 
             return SseControlFrame::HANDLED_CONTINUE;
+        }
+        if ($context->getSessionId() !== $sessionId) {
+            // This control is the one its pending mark waits for: refused with
+            // the mark left set, no later mutation would signal the owner.
+            $this->clearPending($streamingId);
+
+            return $this->refuseForeign($sessionId, $streamingId, SseControlFrame::RERUN);
         }
 
         // Cleared BEFORE the re-run reads anything: cleared after, a mutation
@@ -188,20 +191,22 @@ final class SseControlRouter
             return SseControlFrame::HANDLED_CONTINUE;
         }
 
-        $context = SubscriptionDtoRegistry::get($streamingId);
-        if ($context !== null && $context->getSessionId() !== $sessionId) {
-            // Before consume(): the pending view is the owner's, not the caller's.
-            return $this->refuseForeign($sessionId, $streamingId, SseControlFrame::VIEWCHANGE);
-        }
-
+        // Consumed whoever asks. A control exists only for the command that
+        // armed the mark, so one refused below would leave it armed for good
+        // (a command sent before the owner subscribed arms it), and every
+        // later view of the owner would coalesce into a control never sent.
         $override = $this->runtime->viewChangeCoalescer?->consume($streamingId);
         if ($override === null) {
             $inline = $data['params'] ?? null;
             $override = is_array($inline) ? Row::keyedByName($inline) : [];
         }
 
+        $context = SubscriptionDtoRegistry::get($streamingId);
         if ($context === null || $this->runtime->reRunner === null) {
             return SseControlFrame::HANDLED_CONTINUE;
+        }
+        if ($context->getSessionId() !== $sessionId) {
+            return $this->refuseForeign($sessionId, $streamingId, SseControlFrame::VIEWCHANGE);
         }
 
         // A view admitted through HUG names the feed it was admitted against;
@@ -308,6 +313,15 @@ final class SseControlRouter
             return $this->deny($response, $streamingId, 'subscribe_denied', $attachment->errorEventType);
         }
 
+        // The re-run yielded: another session may have subscribed the id since
+        // the check above, and attaching now would take its routing row.
+        $owner = $this->ownerOf($streamingId);
+        if ($owner !== null && $owner !== $sessionId) {
+            $this->refuseForeign($sessionId, $streamingId, SseControlFrame::SUBSCRIBE);
+
+            return $this->deny($response, $streamingId, 'subscribe_denied', UiSseEventType::UiError->value);
+        }
+
         // Authorized: register both tiers, THEN push the initial frame.
         $this->attach($attachment->record, $attachment->context);
         $this->diff()->accept($streamingId, ($data['patches'] ?? false) === true);
@@ -387,9 +401,10 @@ final class SseControlRouter
      *
      * Answered exactly as an unknown id is — consumed, nothing written, the
      * stream kept — so the caller cannot tell "exists, not yours" from "does
-     * not exist". Nothing of the subscription is touched: its pending marks,
-     * its view and its rows stay the owner's. Logged, because a client only
-     * ever names ids it minted itself.
+     * not exist". Nothing of the subscription runs or is detached; a pending
+     * mark the refused control answered for is cleared by its handler, so the
+     * owner's next signal enqueues. Logged, because a client only ever names
+     * ids it minted itself.
      */
     private function refuseForeign(string $sessionId, string $streamingId, string $kind): int
     {

@@ -158,20 +158,34 @@ final class SubscriptionControlOwnershipTest extends TestCase
     // -- session B naming A's id gets nothing and changes nothing -------------
 
     #[Test]
-    public function a_foreign_viewchange_runs_nothing_writes_nothing_and_leaves_the_owners_pending_view(): void
+    public function a_foreign_viewchange_runs_nothing_and_writes_nothing(): void
     {
-        $this->views->submit(self::SUB, ['page' => 7]);
-
         $outcome = $this->router->handle(self::B, self::B_SOCKET, SseControlFrame::viewChange(self::SUB, ['page' => 99]));
 
         self::assertSame(SseControlFrame::HANDLED_CONTINUE, $outcome);
         self::assertSame([], $this->reRuns(), "A's re-run state was not executed for B");
         self::assertSame([], $this->written(), "nothing of A's feed reached B's socket");
-        self::assertSame(['page' => 7], $this->views->peek(self::SUB), "A's pending view is still A's");
     }
 
     #[Test]
-    public function a_foreign_rerun_runs_nothing_writes_nothing_and_leaves_the_owners_pending_mark(): void
+    public function a_view_armed_before_the_owner_subscribed_does_not_freeze_the_owners_views(): void
+    {
+        // B named the id while nobody held it: the command armed the mark and
+        // queued B a control. A subscribed the id before that control drained.
+        $this->router->handle(self::A, self::A_SOCKET, SseControlFrame::unsubscribe(self::SUB));
+        self::assertTrue($this->router->submitView(self::B, self::SUB, ['page' => 99]));
+        $this->router->attach(new SubscriptionRecord(self::SUB, self::A, 'default', ['leads'], 'blob'), self::context(self::A));
+
+        $this->router->handle(self::B, self::B_SOCKET, SseControlFrame::viewChange(self::SUB, ['page' => 99]));
+
+        self::assertSame([], $this->reRuns());
+        self::assertSame([], $this->written());
+        self::assertFalse($this->views->isPending(self::SUB), 'the refused control took its mark with it');
+        self::assertTrue($this->router->submitView(self::A, self::SUB, ['page' => 2]), "A's next view enqueues its control");
+    }
+
+    #[Test]
+    public function a_foreign_rerun_runs_nothing_writes_nothing_and_re_arms_the_owners_signal(): void
     {
         $this->reruns->requestRerun(self::SUB);
 
@@ -180,7 +194,7 @@ final class SubscriptionControlOwnershipTest extends TestCase
         self::assertSame(SseControlFrame::HANDLED_CONTINUE, $outcome);
         self::assertSame([], $this->reRuns());
         self::assertSame([], $this->written());
-        self::assertTrue($this->reruns->isPending(self::SUB), "A's coalesced re-run is still pending");
+        self::assertTrue($this->reruns->requestRerun(self::SUB), "the next mutation enqueues A's re-run");
     }
 
     #[Test]
@@ -227,6 +241,60 @@ final class SubscriptionControlOwnershipTest extends TestCase
             self::assertStringContainsString('subscribe_denied', $wires[0]);
             self::assertStringNotContainsString(self::A, $wires[0]);
         }
+    }
+
+    #[Test]
+    public function an_id_subscribed_while_the_first_frame_was_being_built_is_not_taken(): void
+    {
+        // B subscribes a free id; A attaches the same id while B's first re-run runs.
+        $this->runtime->reRunner = new class(function (): void {
+            $this->router->attach(new SubscriptionRecord(self::GHOST, self::A, 'default', ['leads'], 'blob'), self::context(self::A));
+        }) implements ReRunnerInterface {
+            /** @param \Closure(): void $meanwhile */
+            public function __construct(private \Closure $meanwhile) {}
+
+            public function reRun(ReRunContext $context, array $filterOverride = []): ReRunResult
+            {
+                ($this->meanwhile)();
+
+                return ReRunResult::frame(HttpResponse::json(['owner' => $context->getSessionId()]));
+            }
+        };
+
+        $this->router->handle(self::B, self::B_SOCKET, $this->subscribeFrame(self::GHOST));
+
+        self::assertSame(self::A, $this->table->get(self::GHOST)?->sessionId);
+        self::assertSame(self::A, SubscriptionDtoRegistry::get(self::GHOST)?->getSessionId());
+        $wires = array_column($this->written(), 1);
+        self::assertCount(1, $wires);
+        self::assertStringContainsString('subscribe_denied', $wires[0]);
+    }
+
+    // -- a feed kept across a navigation: a new session, a new id -------------
+
+    #[Test]
+    public function a_rehomed_feed_is_live_under_its_new_id_while_the_old_pages_subscription_still_stands(): void
+    {
+        // The page navigated: the browser now holds session B, and A's stream is
+        // closed but not yet seen closed, so A's subscription still stands.
+        $outcome = $this->router->handle(self::B, self::B_SOCKET, $this->subscribeFrame(self::GHOST));
+
+        self::assertSame(SseControlFrame::HANDLED_CONTINUE, $outcome);
+        self::assertSame(self::B, $this->table->get(self::GHOST)?->sessionId);
+        self::assertSame([self::B_SOCKET], array_column($this->written(), 0));
+        self::assertStringContainsString('"owner":"' . self::B . '"', implode('', array_column($this->written(), 1)), "the feed's first frame, not a denial");
+
+        $this->forget();
+        $this->router->handle(self::B, self::B_SOCKET, SseControlFrame::rerun(self::GHOST, 'leads'));
+        self::assertSame([[self::B, []]], $this->reRuns(), 'and it keeps receiving its re-runs');
+        self::assertSame([self::B_SOCKET], array_column($this->written(), 0));
+
+        // The old page's id, presented by the new session, is still someone else's.
+        $this->forget();
+        $this->router->handle(self::B, self::B_SOCKET, SseControlFrame::rerun(self::SUB, 'leads'));
+        $this->router->handle(self::B, self::B_SOCKET, SseControlFrame::viewChange(self::SUB, ['page' => 2]));
+        self::assertSame([], $this->reRuns());
+        self::assertSame([], $this->written());
     }
 
     #[Test]

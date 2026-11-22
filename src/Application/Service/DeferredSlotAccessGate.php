@@ -68,9 +68,10 @@ final class DeferredSlotAccessGate
     {
         $routes = $this->owners()[strtolower($pageHandle)] ?? [];
         if ($routes === []) {
-            // A handle no route declares (set in a handler, or a page drawn
-            // without a route) has no policy to ask: the bind cookie is the
-            // only proof left that somebody was let onto that page.
+            // Only a handle no route answers with (set in a handler, or a page
+            // drawn without a route) has no policy to ask: the bind cookie is
+            // the only proof left that somebody was let onto that page. A
+            // resource naming no handle is owned under its derived one.
             if ($served) {
                 return;
             }
@@ -132,21 +133,23 @@ final class DeferredSlotAccessGate
         $handlers = $this->attributeDiscovery->getHandlerRegistry();
         $owners = [];
         foreach ($this->routeRegistry->getAll() as $raw) {
-            $requestClass = is_string($raw['class'] ?? null) ? $raw['class'] : '';
-            $responseClass = is_string($raw['responseClass'] ?? null) ? $raw['responseClass'] : null;
-            // A listener may read the route's handlers (a tenant-isolated one).
-            $raw['handlers'] = $handlers->findHandlers($requestClass, $responseClass);
-            $route = DiscoveredRoute::fromArray($raw);
-
-            $handles = [];
-            foreach ([$route->responseClass, ...array_values($route->responsesByProfile ?? [])] as $class) {
-                $handle = is_string($class) ? self::handleOf($class) : null;
-                if ($handle !== null) {
-                    $handles[$handle] = true;
+            $base = DiscoveredRoute::fromArray($raw);
+            // The default response first: of two of a route's responses under
+            // one handle, the one a plain request is answered with is asked.
+            $admitted = [];
+            foreach ([$base->responseClass, ...array_values($base->responsesByProfile ?? [])] as $class) {
+                if (!is_string($class)) {
+                    continue;
                 }
-            }
-            foreach (array_keys($handles) as $handle) {
-                $owners[$handle][] = $route;
+                $handle = $this->handleOf($class);
+                if ($handle === null || isset($admitted[$handle])) {
+                    continue;
+                }
+                $admitted[$handle] = true;
+                // As dispatch does for the response it selected: the route with
+                // that response's handlers, which a listener may read (a
+                // tenant-isolated handler of an HTML profile).
+                $owners[$handle][] = $this->routeRegistry->rebindHandlersForResponse($base, $class, $handlers);
             }
         }
         foreach ($owners as &$routes) {
@@ -158,9 +161,18 @@ final class DeferredSlotAccessGate
         return $this->owners = $owners;
     }
 
-    /** The #[AsResource] handle of a resource class or of one it extends, lower-cased as the slot registry keys it. */
-    private static function handleOf(string $class): ?string
+    /**
+     * The handle a page of this resource renders under, lower-cased as the slot
+     * registry keys it: the one discovery resolved, which is derived from the
+     * class name when #[AsResource] names none (`orders` for OrdersResponse).
+     * A class discovery never saw is read by its own attribute.
+     */
+    private function handleOf(string $class): ?string
     {
+        $handle = $this->attributeDiscovery->getResolvedResponseAttributes($class)['handle'] ?? null;
+        if (is_string($handle) && $handle !== '') {
+            return strtolower($handle);
+        }
         if (!class_exists($class)) {
             return null;
         }

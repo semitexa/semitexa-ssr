@@ -11,7 +11,9 @@ use Semitexa\Core\Discovery\AttributeDiscovery;
 use Semitexa\Core\Discovery\ClassDiscovery;
 use Semitexa\Core\Discovery\DiscoveredRoute;
 use Semitexa\Core\Discovery\PayloadPartRegistry;
+use Semitexa\Core\Discovery\ResourceAttributeSchema;
 use Semitexa\Core\Discovery\RouteRegistry;
+use Semitexa\Core\Exception\AccessDeniedException;
 use Semitexa\Core\Exception\NotFoundException;
 use Semitexa\Core\Http\Response\ResourceResponse;
 use Semitexa\Core\Log\LoggerInterface;
@@ -20,6 +22,7 @@ use Semitexa\Core\Pipeline\Exception\AuthenticationRequiredException;
 use Semitexa\Core\Pipeline\PipelineListenerRegistry;
 use Semitexa\Core\Pipeline\RequestPipelineContext;
 use Semitexa\Core\Request;
+use Semitexa\Core\Tenant\TenantContextStoreInterface;
 use Semitexa\Ssr\Application\Handler\PayloadHandler\SsrFallbackHandler;
 use Semitexa\Ssr\Application\Payload\Request\SsrFallbackPayload;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
@@ -33,14 +36,21 @@ use Semitexa\Ssr\Application\Service\Layout\LayoutSlotRegistry;
 use Semitexa\Ssr\Application\Service\Template\ModuleTemplateCatalog;
 use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
 use Semitexa\Ssr\Configuration\IsomorphicConfig;
+use Semitexa\Ssr\Tests\Unit\Application\Handler\PayloadHandler\Fixture\HugAccountResponse;
 use Semitexa\Ssr\Tests\Unit\Application\Handler\PayloadHandler\Fixture\HugArrayContainer;
+use Semitexa\Ssr\Tests\Unit\Application\Handler\PayloadHandler\Fixture\HugIsolatedHtmlHandler;
 use Semitexa\Ssr\Tests\Unit\Application\Handler\PayloadHandler\Fixture\HugListenerRegistry;
+use Semitexa\Ssr\Tests\Unit\Application\Handler\PayloadHandler\Fixture\HugOrdersResponse;
 use Semitexa\Ssr\Tests\Unit\Application\Handler\PayloadHandler\Fixture\HugPagePolicyListener;
+use Semitexa\Ssr\Tests\Unit\Application\Handler\PayloadHandler\Fixture\HugProfiledHtmlResource;
+use Semitexa\Ssr\Tests\Unit\Application\Handler\PayloadHandler\Fixture\HugProfiledJsonResource;
+use Semitexa\Ssr\Tests\Unit\Application\Handler\PayloadHandler\Fixture\HugProfiledPagePayload;
 use Semitexa\Ssr\Tests\Unit\Application\Handler\PayloadHandler\Fixture\HugProtectedPagePayload;
 use Semitexa\Ssr\Tests\Unit\Application\Handler\PayloadHandler\Fixture\HugProtectedPageResource;
 use Semitexa\Ssr\Tests\Unit\Application\Handler\PayloadHandler\Fixture\HugPublicPagePayload;
 use Semitexa\Ssr\Tests\Unit\Application\Handler\PayloadHandler\Fixture\HugPublicPageResource;
 use Semitexa\Ssr\Tests\Unit\Async\Fixture\TimedSlotProvider;
+use Semitexa\Tenancy\Pipeline\TenantIsolatedListener;
 use Twig\Environment;
 use Twig\Loader\ArrayLoader;
 
@@ -61,6 +71,15 @@ final class SsrFallbackSlotAccessTest extends TestCase
     /** What a request id reads as once its 120 seconds are over: the registry does not hold it. */
     private const EXPIRED = 'dr_expired_long_ago';
     private const OWNER = ['session' => 'owner'];
+    private const PROFILED_PAGE = 'hug_profiled_page';
+    /** The handles discovery derives for {@see HugOrdersResponse} and {@see HugAccountResponse}. */
+    private const IMPLICIT_PUBLIC_PAGE = 'hug-orders';
+    private const IMPLICIT_PROTECTED_PAGE = 'hug-account';
+    /** Every class whose static state a test here replaces: put back as it was, timer and lock included. */
+    private const STATEFUL = [DeferredRequestRegistry::class, TimedSlotProvider::class, HugPagePolicyListener::class];
+
+    /** @var array<class-string, array<string, mixed>> */
+    private array $statics = [];
 
     private mixed $slots = [];
 
@@ -82,14 +101,29 @@ final class SsrFallbackSlotAccessTest extends TestCase
         (new \ReflectionProperty(ModuleTemplateCatalog::class, 'initialized'))->setValue($fresh, true);
         ModuleTemplateRegistry::setCatalog($fresh);
 
-        TimedSlotProvider::reset();
-        foreach ([self::PUBLIC_PAGE => 'open_news', self::PROTECTED_PAGE => 'owner_orders'] as $page => $slot) {
+        // Set aside, not reset(): that would clear a timer and a lock this test does not own.
+        foreach (self::STATEFUL as $class) {
+            $reflection = new \ReflectionClass($class);
+            $this->statics[$class] = $reflection->getStaticProperties();
+            foreach ($reflection->getDefaultProperties() as $name => $default) {
+                if (array_key_exists($name, $this->statics[$class])) {
+                    $reflection->setStaticPropertyValue($name, $default);
+                }
+            }
+        }
+
+        $slots = [
+            self::PUBLIC_PAGE => 'open_news',
+            self::PROTECTED_PAGE => 'owner_orders',
+            self::PROFILED_PAGE => 'tenant_stock',
+            self::IMPLICIT_PUBLIC_PAGE => 'open_orders',
+            self::IMPLICIT_PROTECTED_PAGE => 'owner_account',
+        ];
+        foreach ($slots as $page => $slot) {
             LayoutSlotRegistry::register(handle: $page, slot: $slot, template: 'hug-access.twig', priority: 1, deferred: true);
             DataProviderRegistry::register($slot, TimedSlotProvider::class);
         }
 
-        HugPagePolicyListener::$asked = [];
-        DeferredRequestRegistry::reset();
         DeferredRequestRegistry::initialize(new IsomorphicConfig(enabled: true, deferredContextSize: 8192));
     }
 
@@ -98,8 +132,14 @@ final class SsrFallbackSlotAccessTest extends TestCase
         (new \ReflectionProperty(LayoutSlotRegistry::class, 'slots'))->setValue(null, $this->slots);
         (new \ReflectionProperty(DataProviderRegistry::class, 'providerMap'))->setValue(null, $this->providers);
         (new \ReflectionProperty(ModuleTemplateRegistry::class, 'catalog'))->setValue(null, $this->catalog);
-        TimedSlotProvider::reset();
+        // What this test's own registry started is cleared; then everything is as it was found.
         DeferredRequestRegistry::reset();
+        foreach ($this->statics as $class => $values) {
+            $reflection = new \ReflectionClass($class);
+            foreach ($values as $name => $value) {
+                $reflection->setStaticPropertyValue($name, $value);
+            }
+        }
     }
 
     #[Test]
@@ -219,6 +259,48 @@ final class SsrFallbackSlotAccessTest extends TestCase
         self::assertSame([HugPublicPagePayload::class], array_column(HugPagePolicyListener::$asked, 'payload'), 'the public page was not asked first');
     }
 
+    #[Test]
+    public function a_tenant_isolated_handler_of_the_pages_own_profile_refuses_a_tenantless_request(): void
+    {
+        // The route's default response is JSON with a plain handler: the page is its html profile.
+        $this->expectException(AccessDeniedException::class);
+        $this->expectExceptionMessage('This route needs a tenant.');
+
+        $this->ask(self::PROFILED_PAGE, 'tenant_stock', '');
+    }
+
+    #[Test]
+    public function a_public_page_whose_resource_names_no_handle_still_renders_unbound(): void
+    {
+        self::assertSame(['open_orders' => '<b>data of open_orders</b>'], $this->ask(self::IMPLICIT_PUBLIC_PAGE, 'open_orders', ''));
+        self::assertSame(['open_orders' => '<b>data of open_orders</b>'], $this->ask(self::IMPLICIT_PUBLIC_PAGE, 'open_orders', self::EXPIRED));
+        self::assertSame(
+            [HugPublicPagePayload::class, HugPublicPagePayload::class],
+            array_column(HugPagePolicyListener::$asked, 'payload'),
+            'the page\'s policy was not asked: the derived handle has no owner',
+        );
+    }
+
+    #[Test]
+    public function a_protected_page_whose_resource_names_no_handle_still_asks_who_is_there_behind_a_live_bind_cookie(): void
+    {
+        DeferredRequestRegistry::store('dr_account', self::IMPLICIT_PROTECTED_PAGE, [], [], self::BIND_TOKEN);
+        $bound = [DeferredBindCookie::nameFor('dr_account') => self::BIND_TOKEN];
+
+        self::assertSame(
+            ['owner_account' => '<b>data of owner_account</b>'],
+            $this->ask(self::IMPLICIT_PROTECTED_PAGE, 'owner_account', 'dr_account', $bound + self::OWNER),
+        );
+
+        // Signed out since: the bind cookie alone is not the page's policy.
+        try {
+            $this->ask(self::IMPLICIT_PROTECTED_PAGE, 'owner_account', 'dr_account', $bound);
+            self::fail('a live bind cookie drew a protected page\'s slot for a signed-out browser');
+        } catch (AuthenticationRequiredException) {
+            self::assertSame(['owner_account'], array_keys(TimedSlotProvider::$ranIn), 'the refused request resolved the slot again');
+        }
+    }
+
     /** What the protected page's own AuthCheck answers an anonymous GET to it. */
     private function refusalOfThePageItself(): AuthenticationRequiredException
     {
@@ -253,12 +335,13 @@ final class SsrFallbackSlotAccessTest extends TestCase
         // The real admission: a bare payload, then the AuthCheck phase's listeners.
         $container = new HugArrayContainer([
             PayloadPartRegistry::class => new PayloadPartRegistry(),
-            PipelineListenerRegistry::class => new HugListenerRegistry([HugPagePolicyListener::class]),
+            PipelineListenerRegistry::class => new HugListenerRegistry([HugPagePolicyListener::class, TenantIsolatedListener::class]),
             HugPagePolicyListener::class => new HugPagePolicyListener(),
+            TenantIsolatedListener::class => $this->tenancyListenerWithNoTenant(),
         ]);
         $gate = (new DeferredSlotAccessGate())->withCollaborators(
             $routes ?? $this->routes(),
-            new AttributeDiscovery(new ClassDiscovery(), new ModuleRegistry(), new RouteRegistry()),
+            $this->discovery(),
             null,
             $container,
         );
@@ -288,7 +371,57 @@ final class SsrFallbackSlotAccessTest extends TestCase
             'accessType' => PayloadAccessType::Public,
         ]);
 
+        $routes->register([
+            'path' => '/hug/profiled', 'methods' => ['GET'], 'name' => 'hug.profiled',
+            'class' => HugProfiledPagePayload::class, 'responseClass' => HugProfiledJsonResource::class,
+            'responsesByProfile' => ['html' => HugProfiledHtmlResource::class],
+            'accessType' => PayloadAccessType::Public,
+        ]);
+        $routes->register([
+            'path' => '/hug/orders', 'methods' => ['GET'], 'name' => 'hug.orders',
+            'class' => HugPublicPagePayload::class, 'responseClass' => HugOrdersResponse::class,
+            'accessType' => PayloadAccessType::Public,
+        ]);
+        $routes->register([
+            'path' => '/hug/account', 'methods' => ['GET'], 'name' => 'hug.account',
+            'class' => HugProtectedPagePayload::class, 'responseClass' => HugAccountResponse::class,
+            'accessType' => PayloadAccessType::Protected,
+        ]);
+
         return $routes;
+    }
+
+    /**
+     * What discovery knows of the probe pages: the tenant-isolated handler of
+     * the html profile, and the handles it derived for the resources naming none.
+     */
+    private function discovery(): AttributeDiscovery
+    {
+        $discovery = new AttributeDiscovery(new ClassDiscovery(), new ModuleRegistry(), new RouteRegistry());
+        foreach ([HugProfiledHtmlResource::class => HugIsolatedHtmlHandler::class, HugProfiledJsonResource::class => \stdClass::class] as $resource => $handler) {
+            $discovery->getHandlerRegistry()->register(HugProfiledPagePayload::class, $resource, [
+                'class' => $handler, 'payload' => HugProfiledPagePayload::class, 'resource' => $resource, 'execution' => 'sync', 'transport' => null, 'queue' => null, 'priority' => 0,
+            ]);
+        }
+
+        $resolved = [];
+        foreach ([HugOrdersResponse::class, HugAccountResponse::class] as $class) {
+            $resolved[$class] = ['handle' => ResourceAttributeSchema::defaultLayoutHandleFromShortName((new \ReflectionClass($class))->getShortName())];
+        }
+        (new \ReflectionProperty(AttributeDiscovery::class, 'resolvedResponseAttrs'))->setValue($discovery, $resolved);
+
+        return $discovery;
+    }
+
+    /** The tenancy package's own AuthCheck listener, in a request no tenant was resolved for. */
+    private function tenancyListenerWithNoTenant(): TenantIsolatedListener
+    {
+        $tenants = $this->createStub(TenantContextStoreInterface::class);
+        $tenants->method('tryGet')->willReturn(null);
+        $listener = new TenantIsolatedListener();
+        (new \ReflectionProperty(TenantIsolatedListener::class, 'tenants'))->setValue($listener, $tenants);
+
+        return $listener;
     }
 
     /** @param array<string, string> $cookies */

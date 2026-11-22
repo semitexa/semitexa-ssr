@@ -293,11 +293,14 @@ final class SsrFallbackSlotAccessTest extends TestCase
         );
 
         // Signed out since: the bind cookie alone is not the page's policy.
+        // Cleared first, so a second resolution of the same slot cannot hide
+        // behind the entry the owner's call left (review semitexa-ssr#196).
+        TimedSlotProvider::$ranIn = [];
         try {
             $this->ask(self::IMPLICIT_PROTECTED_PAGE, 'owner_account', 'dr_account', $bound);
             self::fail('a live bind cookie drew a protected page\'s slot for a signed-out browser');
         } catch (AuthenticationRequiredException) {
-            self::assertSame(['owner_account'], array_keys(TimedSlotProvider::$ranIn), 'the refused request resolved the slot again');
+            self::assertSame([], TimedSlotProvider::$ranIn, 'the refused request resolved the slot');
         }
     }
 

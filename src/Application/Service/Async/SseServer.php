@@ -1606,7 +1606,7 @@ final class SseServer implements FeedStreamSinkInterface
         // submit()), and stay out when they do not encode, or the frame would not
         // be delivered and the pending mark never clear. Coalescing is per
         // streaming_id, so distinct subscriptions on one session never collide.
-        if ($this->runtime()->viewChangeCoalescer->submit($streamingId, $params)) {
+        if ($this->controlRouter()->submitView($sessionId, $streamingId, $params)) {
             $inline = json_encode($params) === false ? null : $params;
             $this->deliver($sessionId, SseControlFrame::viewChange($streamingId, $inline));
         }

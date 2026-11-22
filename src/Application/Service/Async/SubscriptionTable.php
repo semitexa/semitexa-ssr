@@ -140,6 +140,14 @@ final class SubscriptionTable
         return $this->hydrate($row);
     }
 
+    /** The owning session alone: one column, no record hydrated. */
+    public function sessionOf(string $streamingId): ?string
+    {
+        $session = $this->table->get($this->key($streamingId), 'session_id');
+
+        return is_string($session) && $session !== '' ? $session : null;
+    }
+
     public function has(string $streamingId): bool
     {
         return $this->table->exist($this->key($streamingId));

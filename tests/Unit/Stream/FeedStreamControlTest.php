@@ -77,7 +77,9 @@ final class FeedStreamControlTest extends TestCase
         [$status] = $this->control()->control($this->fields('view', ['q' => 'b']), $this->hugRequest());
 
         self::assertSame(202, $status);
-        self::assertSame(['view', [self::SESSION, ['q' => 'b'], self::SUB]], $this->sink->calls[0]);
+        // Stamped with the feed it was admitted against: the owning worker
+        // applies it only to a subscription bound to that feed.
+        self::assertSame(['view', [self::SESSION, ['__feed' => 'leads.feed', 'q' => 'b'], self::SUB]], $this->sink->calls[0]);
     }
 
     #[Test]

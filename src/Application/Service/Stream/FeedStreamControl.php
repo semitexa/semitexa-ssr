@@ -17,6 +17,7 @@ use Semitexa\Core\Discovery\RouteRegistry;
 use Semitexa\Core\Exception\ValidationException;
 use Semitexa\Core\Pipeline\RouteExecutor;
 use Semitexa\Core\Request;
+use Semitexa\Ssr\Application\Service\Async\SseControlFrame;
 use Semitexa\Ssr\Application\Service\Async\SseServer;
 use Semitexa\Ssr\Domain\Contract\FeedStreamSinkInterface;
 use Semitexa\Ssr\Domain\Contract\SseFeedPayloadInterface;
@@ -112,7 +113,11 @@ final class FeedStreamControl
             return false;
         }
 
-        return $this->sse()->submitViewChange($control['session'], $payload->toViewParams(), $control['subscriptionId']);
+        // Admitted against the feed the caller named; the owning worker applies
+        // the view only to a subscription bound to that same feed.
+        $params = [SseControlFrame::VIEW_FEED => (string) $route->name] + $payload->toViewParams();
+
+        return $this->sse()->submitViewChange($control['session'], $params, $control['subscriptionId']);
     }
 
     /**

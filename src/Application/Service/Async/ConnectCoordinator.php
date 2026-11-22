@@ -95,6 +95,16 @@ final class ConnectCoordinator
     }
 
     /**
+     * The session that owns `$streamingId` on ANY worker (tier 1), or null when
+     * no subscription holds the id. The ownership question a control answers
+     * before it acts on a subscription whose live state is not on this worker.
+     */
+    public function sessionOf(string $streamingId): ?string
+    {
+        return $this->subscriptions->sessionOf($streamingId);
+    }
+
+    /**
      * C3 — On disconnect: full teardown (no zombies, design §B.5).
      *
      *  - Remove the tier-1 row;

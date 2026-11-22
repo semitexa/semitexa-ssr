@@ -143,18 +143,19 @@ final class SseControlRouter
             return SseControlFrame::HANDLED_CONTINUE;
         }
 
+        // Before the pending mark, which is shared across workers: the owner
+        // may hold the subscription on another one, where its own control (the
+        // one the mark waits for; it is routed by the row's session) is queued.
+        $owner = $this->ownerOf($streamingId);
+        if ($owner !== null && $owner !== $sessionId) {
+            return $this->refuseForeign($sessionId, $streamingId, SseControlFrame::RERUN);
+        }
+
         $context = SubscriptionDtoRegistry::get($streamingId);
         if ($context === null || $this->runtime->reRunner === null) {
             $this->clearPending($streamingId);
 
             return SseControlFrame::HANDLED_CONTINUE;
-        }
-        if ($context->getSessionId() !== $sessionId) {
-            // This control is the one its pending mark waits for: refused with
-            // the mark left set, no later mutation would signal the owner.
-            $this->clearPending($streamingId);
-
-            return $this->refuseForeign($sessionId, $streamingId, SseControlFrame::RERUN);
         }
 
         // Cleared BEFORE the re-run reads anything: cleared after, a mutation
@@ -191,10 +192,14 @@ final class SseControlRouter
             return SseControlFrame::HANDLED_CONTINUE;
         }
 
-        // Consumed whoever asks. A control exists only for the command that
-        // armed the mark, so one refused below would leave it armed for good
-        // (a command sent before the owner subscribed arms it), and every
-        // later view of the owner would coalesce into a control never sent.
+        // Before consume(): the slot is shared across workers and holds the
+        // owner's latest view, wherever the owner's subscription lives. This
+        // control never armed it: submitView() arms only for the owner.
+        $owner = $this->ownerOf($streamingId);
+        if ($owner !== null && $owner !== $sessionId) {
+            return $this->refuseForeign($sessionId, $streamingId, SseControlFrame::VIEWCHANGE);
+        }
+
         $override = $this->runtime->viewChangeCoalescer?->consume($streamingId);
         if ($override === null) {
             $inline = $data['params'] ?? null;
@@ -204,9 +209,6 @@ final class SseControlRouter
         $context = SubscriptionDtoRegistry::get($streamingId);
         if ($context === null || $this->runtime->reRunner === null) {
             return SseControlFrame::HANDLED_CONTINUE;
-        }
-        if ($context->getSessionId() !== $sessionId) {
-            return $this->refuseForeign($sessionId, $streamingId, SseControlFrame::VIEWCHANGE);
         }
 
         // A view admitted through HUG names the feed it was admitted against;
@@ -367,17 +369,25 @@ final class SseControlRouter
      * store its view as the stream's latest and say whether a control must be
      * enqueued for it ({@see ViewChangeCoalescer::submit()}).
      *
-     * A command naming another session's subscription stores nothing and
-     * enqueues nothing: the slot and its pending mark are keyed by
-     * streaming_id alone and belong to the owner. The caller answers it as it
-     * answers a command for an id nobody holds.
+     * The slot and its pending mark are keyed by streaming_id alone and belong
+     * to the subscription's owner, so only the owner writes them:
+     *  - another session's subscription: nothing stored, nothing enqueued. The
+     *    caller answers as it answers a command for an id nobody holds;
+     *  - an id nobody holds yet (a view sent right behind its own subscribe,
+     *    still queued): enqueued with its own params, uncoalesced, and the mark
+     *    left unarmed. Armed here, it would wait for a control queued to this
+     *    caller, which is refused if another session subscribes the id first —
+     *    and every later view of that owner would coalesce into it.
      *
      * @param array<string, mixed> $params
      */
     public function submitView(string $sessionId, string $streamingId, array $params): bool
     {
         $owner = $this->ownerOf($streamingId);
-        if ($owner !== null && $owner !== $sessionId) {
+        if ($owner === null) {
+            return true;
+        }
+        if ($owner !== $sessionId) {
             $this->refuseForeign($sessionId, $streamingId, SseControlFrame::VIEWCHANGE);
 
             return false;
@@ -401,10 +411,9 @@ final class SseControlRouter
      *
      * Answered exactly as an unknown id is — consumed, nothing written, the
      * stream kept — so the caller cannot tell "exists, not yours" from "does
-     * not exist". Nothing of the subscription runs or is detached; a pending
-     * mark the refused control answered for is cleared by its handler, so the
-     * owner's next signal enqueues. Logged, because a client only ever names
-     * ids it minted itself.
+     * not exist". Nothing of the subscription is touched, on this worker or
+     * in the shared tables: its pending marks, its view and its rows stay the
+     * owner's. Logged, because a client only ever names ids it minted itself.
      */
     private function refuseForeign(string $sessionId, string $streamingId, string $kind): int
     {

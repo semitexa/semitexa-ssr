@@ -25,6 +25,7 @@ use Semitexa\Ssr\Application\Service\Async\SseControlRouter;
 use Semitexa\Ssr\Application\Service\Async\SseFrameFactory;
 use Semitexa\Ssr\Application\Service\Async\SseReRunScope;
 use Semitexa\Ssr\Application\Service\Async\SseRuntime;
+use Semitexa\Ssr\Application\Service\Async\SseServer;
 use Semitexa\Ssr\Application\Service\Async\SseSessionRegistry;
 use Semitexa\Ssr\Application\Service\Async\SubscriptionDtoRegistry;
 use Semitexa\Ssr\Application\Service\Async\SubscriptionTable;
@@ -61,9 +62,21 @@ final class SubscriptionControlOwnershipTest extends TestCase
     /** @var list<array{0: string, 1: array<string, mixed>}> [owner session, override] */
     private array $reRuns = [];
     private int $factoryCalls = 0;
+    /** @var mixed the worker registry's entries as this test found them */
+    private mixed $registryBefore = null;
+    /** @var array{0: mixed, 1: ?ConnectCoordinator, 2: ?ViewChangeCoalescer} the facade's runtime holder and the two collaborators a test replaces */
+    private array $facadeBefore = [null, null, null];
 
     protected function setUp(): void
     {
+        // Put back in tearDown(), which also runs after a failed test: this
+        // process's registry and facade are other tests' too.
+        $this->registryBefore = self::registryEntries()->getValue();
+        $runtime = self::facadeRuntime()->getValue(AsyncResourceSseServer::instance());
+        $this->facadeBefore = $runtime instanceof SseRuntime
+            ? [$runtime, $runtime->connectCoordinator, $runtime->viewChangeCoalescer]
+            : [null, null, null];
+
         SubscriptionDtoRegistry::clear();
         $this->forget();
         $this->factoryCalls = 0;
@@ -150,42 +163,81 @@ final class SubscriptionControlOwnershipTest extends TestCase
 
     protected function tearDown(): void
     {
-        SubscriptionDtoRegistry::clear();
-        AsyncResourceSseServer::setConnectCoordinator(null);
-        AsyncResourceSseServer::setViewChangeCoalescer(null);
+        self::registryEntries()->setValue(null, $this->registryBefore);
+
+        [$runtime, $coordinator, $views] = $this->facadeBefore;
+        if ($runtime instanceof SseRuntime) {
+            $runtime->connectCoordinator = $coordinator;
+            $runtime->viewChangeCoalescer = $views;
+        }
+        self::facadeRuntime()->setValue(AsyncResourceSseServer::instance(), $runtime);
+    }
+
+    private static function registryEntries(): \ReflectionProperty
+    {
+        return new \ReflectionProperty(SubscriptionDtoRegistry::class, 'entries');
+    }
+
+    private static function facadeRuntime(): \ReflectionProperty
+    {
+        return new \ReflectionProperty(SseServer::class, 'runtime');
     }
 
     // -- session B naming A's id gets nothing and changes nothing -------------
 
     #[Test]
-    public function a_foreign_viewchange_runs_nothing_and_writes_nothing(): void
+    public function a_foreign_viewchange_runs_nothing_writes_nothing_and_leaves_the_owners_pending_view(): void
     {
+        $this->views->submit(self::SUB, ['page' => 7]);
+
         $outcome = $this->router->handle(self::B, self::B_SOCKET, SseControlFrame::viewChange(self::SUB, ['page' => 99]));
 
         self::assertSame(SseControlFrame::HANDLED_CONTINUE, $outcome);
         self::assertSame([], $this->reRuns(), "A's re-run state was not executed for B");
         self::assertSame([], $this->written(), "nothing of A's feed reached B's socket");
+        self::assertSame(['page' => 7], $this->views->peek(self::SUB), "A's pending view is still A's");
     }
 
     #[Test]
-    public function a_view_armed_before_the_owner_subscribed_does_not_freeze_the_owners_views(): void
+    public function a_foreign_control_on_another_worker_leaves_the_owners_shared_pending_state(): void
     {
-        // B named the id while nobody held it: the command armed the mark and
-        // queued B a control. A subscribed the id before that control drained.
+        // A's subscription lives on another worker: B's holds no live state for
+        // it, only the shared row, the shared view slot and the shared mark.
+        SubscriptionDtoRegistry::remove(self::SUB);
+        $this->views->submit(self::SUB, ['page' => 7]);
+        $this->reruns->requestRerun(self::SUB);
+
+        $this->router->handle(self::B, self::B_SOCKET, SseControlFrame::viewChange(self::SUB, ['page' => 99]));
+        $this->router->handle(self::B, self::B_SOCKET, SseControlFrame::rerun(self::SUB, 'leads'));
+
+        self::assertSame(['page' => 7], $this->views->peek(self::SUB), "A's latest view was not consumed");
+        self::assertTrue($this->reruns->isPending(self::SUB), "A's coalesced re-run is still pending");
+        self::assertSame([], $this->written());
+    }
+
+    #[Test]
+    public function a_view_sent_before_the_owner_subscribed_does_not_freeze_the_owners_views(): void
+    {
+        // B named the id while nobody held it: its control is queued, but it
+        // armed nothing. A subscribed the id before that control drained.
         $this->router->handle(self::A, self::A_SOCKET, SseControlFrame::unsubscribe(self::SUB));
-        self::assertTrue($this->router->submitView(self::B, self::SUB, ['page' => 99]));
+        self::assertTrue($this->router->submitView(self::B, self::SUB, ['page' => 99]), 'queued with its own params');
+        self::assertFalse($this->views->isPending(self::SUB), 'no mark waits for a control only B holds');
         $this->router->attach(new SubscriptionRecord(self::SUB, self::A, 'default', ['leads'], 'blob'), self::context(self::A));
 
+        self::assertTrue($this->router->submitView(self::A, self::SUB, ['page' => 2]), "A's view enqueues its control");
         $this->router->handle(self::B, self::B_SOCKET, SseControlFrame::viewChange(self::SUB, ['page' => 99]));
 
         self::assertSame([], $this->reRuns());
         self::assertSame([], $this->written());
-        self::assertFalse($this->views->isPending(self::SUB), 'the refused control took its mark with it');
-        self::assertTrue($this->router->submitView(self::A, self::SUB, ['page' => 2]), "A's next view enqueues its control");
+        self::assertSame(['page' => 2], $this->views->peek(self::SUB), "B's refused control left A's view");
+
+        $this->router->handle(self::A, self::A_SOCKET, SseControlFrame::viewChange(self::SUB));
+        self::assertSame([[self::A, ['page' => 2]]], $this->reRuns());
     }
 
     #[Test]
-    public function a_foreign_rerun_runs_nothing_writes_nothing_and_re_arms_the_owners_signal(): void
+    public function a_foreign_rerun_runs_nothing_writes_nothing_and_leaves_the_owners_pending_mark(): void
     {
         $this->reruns->requestRerun(self::SUB);
 
@@ -194,7 +246,7 @@ final class SubscriptionControlOwnershipTest extends TestCase
         self::assertSame(SseControlFrame::HANDLED_CONTINUE, $outcome);
         self::assertSame([], $this->reRuns());
         self::assertSame([], $this->written());
-        self::assertTrue($this->reruns->requestRerun(self::SUB), "the next mutation enqueues A's re-run");
+        self::assertTrue($this->reruns->isPending(self::SUB), "A's coalesced re-run is still pending");
     }
 
     #[Test]

@@ -33,6 +33,15 @@ final class SseControlFrame
     public const RERUN = 'rerun';
 
     /**
+     * The view param that names the feed a view change was admitted against
+     * ({@see \Semitexa\Ssr\Application\Service\Stream\FeedStreamControl}). It
+     * travels with the params, coalescer slot included, so the latest view
+     * keeps its own feed; the router checks it against the subscription's
+     * route and strips it before the re-run.
+     */
+    public const VIEW_FEED = '__feed';
+
+    /**
      * Re-run with a FILTER-ONLY parameter override — a new page / limit / sort /
      * filter pushed on the SAME open fd. Identity is never overridable: the
      * override is applied marker-gated in core's `reExecute`, which is the R2

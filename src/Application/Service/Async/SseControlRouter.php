@@ -144,6 +144,10 @@ final class SseControlRouter
         }
 
         $context = SubscriptionDtoRegistry::get($streamingId);
+        if ($context !== null && $context->getSessionId() !== $sessionId) {
+            // Before the pending mark: it is the owner's, and so is its re-run.
+            return $this->refuseForeign($sessionId, $streamingId, SseControlFrame::RERUN);
+        }
         if ($context === null || $this->runtime->reRunner === null) {
             $this->clearPending($streamingId);
 
@@ -184,14 +188,33 @@ final class SseControlRouter
             return SseControlFrame::HANDLED_CONTINUE;
         }
 
+        $context = SubscriptionDtoRegistry::get($streamingId);
+        if ($context !== null && $context->getSessionId() !== $sessionId) {
+            // Before consume(): the pending view is the owner's, not the caller's.
+            return $this->refuseForeign($sessionId, $streamingId, SseControlFrame::VIEWCHANGE);
+        }
+
         $override = $this->runtime->viewChangeCoalescer?->consume($streamingId);
         if ($override === null) {
             $inline = $data['params'] ?? null;
             $override = is_array($inline) ? Row::keyedByName($inline) : [];
         }
 
-        $context = SubscriptionDtoRegistry::get($streamingId);
         if ($context === null || $this->runtime->reRunner === null) {
+            return SseControlFrame::HANDLED_CONTINUE;
+        }
+
+        // A view admitted through HUG names the feed it was admitted against;
+        // it is applied only to a subscription bound to that feed, or one
+        // feed's admission would set the view of another.
+        $feed = $override[SseControlFrame::VIEW_FEED] ?? null;
+        unset($override[SseControlFrame::VIEW_FEED]);
+        if ($feed !== null && $feed !== $context->getRoute()->name) {
+            StaticLoggerBridge::warning('ssr', 'sse_view_feed_mismatch_refused', [
+                'session_id' => $sessionId,
+                'streaming_id' => $streamingId,
+            ]);
+
             return SseControlFrame::HANDLED_CONTINUE;
         }
 
@@ -217,6 +240,16 @@ final class SseControlRouter
         $streamingId = trim($frame->string('streaming_id'));
         if ($streamingId === '' || $this->runtime->subscriptionFactory === null || $this->runtime->reRunner === null) {
             return SseControlFrame::HANDLED_CONTINUE;
+        }
+
+        // An id another session's subscription holds, on this worker or any
+        // other, is never rebound: attaching would replace its routing row and
+        // send that session's re-runs here.
+        $owner = $this->ownerOf($streamingId);
+        if ($owner !== null && $owner !== $sessionId) {
+            $this->refuseForeign($sessionId, $streamingId, SseControlFrame::SUBSCRIBE);
+
+            return $this->deny($response, $streamingId, 'subscribe_denied', UiSseEventType::UiError->value);
         }
 
         // A subscription admitted on HUG carries the tenant its request resolved;
@@ -302,9 +335,69 @@ final class SseControlRouter
     {
         $streamingId = trim(Row::of($data)->string('streaming_id'));
         if ($streamingId !== '') {
+            // detach() also removes the cross-worker routing row, so the owner
+            // is asked of that row when the subscription lives on another worker.
+            $owner = $this->ownerOf($streamingId);
+            if ($owner !== null && $owner !== $sessionId) {
+                return $this->refuseForeign($sessionId, $streamingId, SseControlFrame::UNSUBSCRIBE);
+            }
             $this->detach($streamingId);
             PageTimeline::record($sessionId, 'unsubscribe', ['sub' => $streamingId]);
         }
+
+        return SseControlFrame::HANDLED_CONTINUE;
+    }
+
+    /**
+     * The intake half of a view change, on whichever worker took the command:
+     * store its view as the stream's latest and say whether a control must be
+     * enqueued for it ({@see ViewChangeCoalescer::submit()}).
+     *
+     * A command naming another session's subscription stores nothing and
+     * enqueues nothing: the slot and its pending mark are keyed by
+     * streaming_id alone and belong to the owner. The caller answers it as it
+     * answers a command for an id nobody holds.
+     *
+     * @param array<string, mixed> $params
+     */
+    public function submitView(string $sessionId, string $streamingId, array $params): bool
+    {
+        $owner = $this->ownerOf($streamingId);
+        if ($owner !== null && $owner !== $sessionId) {
+            $this->refuseForeign($sessionId, $streamingId, SseControlFrame::VIEWCHANGE);
+
+            return false;
+        }
+
+        return $this->runtime->viewChangeCoalescer?->submit($streamingId, $params) === true;
+    }
+
+    /**
+     * The session a subscription belongs to, or null when no worker holds it.
+     * The live context answers on its own worker without a table read.
+     */
+    private function ownerOf(string $streamingId): ?string
+    {
+        return SubscriptionDtoRegistry::get($streamingId)?->getSessionId()
+            ?? $this->runtime->connectCoordinator?->sessionOf($streamingId);
+    }
+
+    /**
+     * A control naming a subscription the calling session does not own.
+     *
+     * Answered exactly as an unknown id is — consumed, nothing written, the
+     * stream kept — so the caller cannot tell "exists, not yours" from "does
+     * not exist". Nothing of the subscription is touched: its pending marks,
+     * its view and its rows stay the owner's. Logged, because a client only
+     * ever names ids it minted itself.
+     */
+    private function refuseForeign(string $sessionId, string $streamingId, string $kind): int
+    {
+        StaticLoggerBridge::warning('ssr', 'sse_foreign_subscription_control_refused', [
+            'session_id' => $sessionId,
+            'streaming_id' => $streamingId,
+            'kind' => $kind,
+        ]);
 
         return SseControlFrame::HANDLED_CONTINUE;
     }

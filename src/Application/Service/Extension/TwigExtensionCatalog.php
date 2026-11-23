@@ -8,6 +8,7 @@ use Psr\Container\ContainerInterface;
 use Psr\Container\NotFoundExceptionInterface;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
+use Semitexa\Core\Attribute\WorkerState;
 use Semitexa\Core\Discovery\ClassDiscovery;
 use Semitexa\Ssr\Attribute\AsTwigExtension;
 use Semitexa\Core\Log\StaticLoggerBridge;
@@ -22,9 +23,11 @@ final class TwigExtensionCatalog
      *
      * @var array<string, array{callback: callable, options: array<string, mixed>}>
      */
+    #[WorkerState('Twig functions keyed by name, registered by discovered extensions while initialize() runs at boot; derived from code only.')]
     private array $functions = [];
 
     /** @var array<string, callable> */
+    #[WorkerState('Twig filters keyed by name, registered by discovered extensions while initialize() runs at boot; derived from code only.')]
     private array $filters = [];
 
     private bool $initialized = false;

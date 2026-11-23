@@ -9,6 +9,7 @@ use Psr\Container\ContainerInterface;
 use Semitexa\Core\Attribute\AsResource;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
+use Semitexa\Core\Attribute\WorkerState;
 use Semitexa\Core\Auth\AuthBootstrapperFactoryInterface;
 use Semitexa\Core\Auth\PayloadAccessType;
 use Semitexa\Core\Container\RequestScopedContainer;
@@ -57,6 +58,7 @@ final class DeferredSlotAccessGate
     private ?array $owners = null;
 
     /** @var (Closure(DiscoveredRoute, Request, bool): void)|null test seam */
+    #[WorkerState('Test seam; production never calls withCollaborators(), so the real admission runs on each call.')]
     private ?Closure $admitter = null;
 
     /**

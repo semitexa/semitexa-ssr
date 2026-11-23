@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service;
 
+use Semitexa\Core\Attribute\WorkerState;
 use Semitexa\Ssr\Application\Service\Async\SseServer;
 use Semitexa\Ssr\Application\Service\Async\SseSessionCoroutines;
 use Semitexa\Core\Attribute\AsService;
@@ -48,10 +49,7 @@ final class DeferredBlockOrchestrator
     #[InjectAsReadonly]
     protected KissVisitor $kissVisitor;
 
-    /**
-     * Set at worker boot when something registered a tracer; null in
-     * production, where nothing does.
-     */
+    #[WorkerState('The optional tracer service, set once at worker boot by WireCoreInstancesListener when one is registered; null in production.')]
     private ?RequestTracerInterface $tracer = null;
 
     public function setRequestTracer(?RequestTracerInterface $tracer): void

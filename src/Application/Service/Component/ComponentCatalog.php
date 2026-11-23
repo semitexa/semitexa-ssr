@@ -7,6 +7,7 @@ namespace Semitexa\Ssr\Application\Service\Component;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Attribute\TransportType;
+use Semitexa\Core\Attribute\WorkerState;
 use Semitexa\Ssr\Attribute\AsComponent;
 use Semitexa\Ssr\Attribute\WithDataProvider;
 use Semitexa\Ssr\Attribute\WithTransport;
@@ -22,6 +23,7 @@ use Semitexa\Core\Discovery\ClassDiscovery;
 final class ComponentCatalog
 {
     /** @var array<string, ComponentDefinition> */
+    #[WorkerState('Component definitions keyed by component name, filled from discovery at boot; register() is a test helper production never calls.')]
     private array $components = [];
     private bool $initialized = false;
     #[InjectAsReadonly]

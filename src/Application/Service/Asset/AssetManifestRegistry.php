@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Application\Service\Asset;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
+use Semitexa\Core\Attribute\WorkerState;
 use Semitexa\Core\ModuleRegistry;
 use Semitexa\Core\Log\StaticLoggerBridge;
 
@@ -30,6 +31,7 @@ final class AssetManifestRegistry
 {
     /** @worker-scoped Boot-time declarations keyed by canonical asset key. Immutable after boot(). */
     /** @var array<string, AssetEntry> */
+    #[WorkerState('Asset declarations keyed by asset key, read from module manifests at boot; production never calls declare().')]
     private array $declarations = [];
 
     /** @worker-scoped */

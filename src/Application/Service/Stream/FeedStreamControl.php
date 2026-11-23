@@ -9,6 +9,7 @@ use Psr\Container\ContainerInterface;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Attribute\TransportType;
+use Semitexa\Core\Attribute\WorkerState;
 use Semitexa\Core\Auth\AuthBootstrapperFactoryInterface;
 use Semitexa\Core\Container\RequestScopedContainer;
 use Semitexa\Core\Discovery\AttributeDiscovery;
@@ -55,8 +56,10 @@ final class FeedStreamControl
     protected SseServer $sseServer;
 
     /** @var (Closure(DiscoveredRoute, Request): object)|null test seam */
+    #[WorkerState('Test seam; production never calls withCollaborators(), so the real admission runs on each call.')]
     private ?Closure $admitter = null;
 
+    #[WorkerState('Test seam; production never calls withCollaborators(), so the injected SSE server is the sink.')]
     private ?FeedStreamSinkInterface $sink = null;
 
     /**

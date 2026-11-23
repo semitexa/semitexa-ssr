@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Template;
 
+use Semitexa\Core\Attribute\WorkerState;
 use Semitexa\Core\Environment;
 use Semitexa\Core\Attribute\AsService;
 use Semitexa\Core\Attribute\InjectAsReadonly;
@@ -64,6 +65,7 @@ final class ModuleTemplateCatalog
      *
      * @var \Closure(): list<string>|null
      */
+    #[WorkerState('One closure installed once per worker by the theme package; it captures no request data and reads the active theme chain on each call.')]
     private ?\Closure $chainResolver = null;
 
     public function setChainResolver(?\Closure $resolver): void

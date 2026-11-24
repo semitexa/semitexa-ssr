@@ -189,11 +189,15 @@ final class SseRequestGuardTest extends TestCase
         });
     }
 
-    /** TRUSTED_PROXIES is process state: set for the test, put back as it was. */
+    /**
+     * TRUSTED_PROXIES is process state: set for the test, put back as it was. "None"
+     * is an empty value, not an unset one: unset, Environment::getEnvValue() falls
+     * back to the project's .env, which may list a proxy (review semitexa-ssr#199).
+     */
     private function withTrustedProxies(?string $value, \Closure $test): void
     {
         $before = getenv('TRUSTED_PROXIES');
-        $value === null ? putenv('TRUSTED_PROXIES') : putenv('TRUSTED_PROXIES=' . $value);
+        putenv('TRUSTED_PROXIES=' . ($value ?? ''));
         try {
             $test();
         } finally {

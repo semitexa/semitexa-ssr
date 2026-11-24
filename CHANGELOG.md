@@ -5,6 +5,15 @@ Changes to `semitexa/ssr` that a consuming application can notice. Sections are
 next release tag. This file is machine-read by `update:changelog` and the OS
 "What's new" surface — keep entries short and operator-facing.
 
+## Unreleased
+
+### Changed
+- `SSE_MAX_CONN_GLOBAL` now caps the whole server at its value × `SWOOLE_WORKER_NUM`,
+  counted across the workers, instead of each worker at its value. Connections do
+  not spread evenly over the workers, so one worker reached its 500 and answered
+  429 while the server held about 900 of 2000. One worker may hold up to 2 × the
+  value. The refusal says which cap it was: "for this server" or "for this worker".
+
 ## 2026.11.24.1611 — 2026-11-24
 
 ### Fixed

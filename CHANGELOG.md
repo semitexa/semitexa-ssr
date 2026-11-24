@@ -5,7 +5,7 @@ Changes to `semitexa/ssr` that a consuming application can notice. Sections are
 next release tag. This file is machine-read by `update:changelog` and the OS
 "What's new" surface — keep entries short and operator-facing.
 
-## Unreleased
+## 2026.11.24.1611 — 2026-11-24
 
 ### Fixed
 - The SSE per-IP connection cap (`SSE_MAX_CONN_PER_IP`) counts the client, not the

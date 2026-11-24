@@ -15,6 +15,7 @@ use Semitexa\Ssr\Application\Service\Async\SseOrder;
 use Semitexa\Ssr\Application\Service\Server\Lifecycle\AsyncResourceSseTables;
 use Semitexa\Ssr\Application\Service\Server\Lifecycle\CreateAsyncResourceSseTablesListener;
 use Semitexa\Ssr\Application\Service\Server\Lifecycle\SsrBootstrapStateKey;
+use Swoole\Atomic\Long;
 
 /**
  * `SSE_MAX_CONN_GLOBAL` is enforced for the server, not for each worker.
@@ -31,22 +32,38 @@ final class SseServerWideConnectionCapTest extends TestCase
 {
     private const WORKERS = 4;
 
-    /** @var list<string> */
+    /** The limiter's process-wide binding, restored as it was found. */
+    private const LIMITER_STATICS = ['workerGauge', 'workerGaugeId', 'workerGaugePid'];
+
+    /** @var array<string, string|false> Each variable's value before the test first set it; false when it was unset. */
     private array $touchedEnv = [];
+
+    /** @var array<string, mixed> */
+    private array $limiterStatics = [];
 
     /** @var list<object> Held so no two connections share a `spl_object_id`. */
     private array $responses = [];
 
     private int $opened = 0;
 
+    protected function setUp(): void
+    {
+        foreach (self::LIMITER_STATICS as $name) {
+            $this->limiterStatics[$name] = (new \ReflectionProperty(SseConnectionLimiter::class, $name))->getValue();
+        }
+    }
+
     protected function tearDown(): void
     {
-        foreach ($this->touchedEnv as $key) {
-            putenv($key);
+        foreach ($this->touchedEnv as $key => $value) {
+            putenv($value === false ? $key : $key . '=' . $value);
         }
         $this->touchedEnv = [];
         $this->responses = [];
-        SseConnectionLimiter::shareAcrossWorkers(null);
+        // Set back directly: shareAcrossWorkers() would also claim, and reset, the row.
+        foreach ($this->limiterStatics as $name => $value) {
+            (new \ReflectionProperty(SseConnectionLimiter::class, $name))->setValue(null, $value);
+        }
     }
 
     #[Test]
@@ -118,10 +135,10 @@ final class SseServerWideConnectionCapTest extends TestCase
     }
 
     /**
-     * Swoole rounds a table up to a power of two and keeps 20% of it for
-     * collisions by default: with the keys "0".."N-1" some claims failed from
-     * 48 workers up, and a worker whose claim failed never published (review of
-     * this fix).
+     * Every worker has a row that counts. The first cut kept the rows in a
+     * Swoole table, and some claims failed there from 48 workers up (the
+     * table's collision pool), so a worker that never got its row never
+     * published (review of this fix).
      */
     #[Test]
     public function every_one_of_sixty_four_workers_gets_a_row_that_counts(): void
@@ -134,6 +151,46 @@ final class SseServerWideConnectionCapTest extends TestCase
 
         self::assertSame(64, $gauge->total());
         self::assertSame(1, $gauge->openOn(63));
+    }
+
+    /**
+     * The race a check-then-write left open (review of this fix): a draining
+     * worker reads its row, the new worker claims the row, and the old worker's
+     * write then lands on the new owner's count. The compare-and-set finds the
+     * word changed, the retry reads the new owner, and nothing lands.
+     */
+    #[Test]
+    public function a_write_that_read_the_row_before_a_claim_does_not_land_after_it(): void
+    {
+        $row = new class (0) extends Long {
+            public ?\Closure $afterNextRead = null;
+
+            public function get(): int
+            {
+                $value = parent::get();
+                if ($this->afterNextRead !== null) {
+                    $then = $this->afterNextRead;
+                    $this->afterNextRead = null;
+                    $then();
+                }
+
+                return $value;
+            }
+        };
+        $gauge = (new \ReflectionClass(SseConnectionGauge::class))->newInstanceWithoutConstructor();
+        (new \ReflectionMethod(SseConnectionGauge::class, '__construct'))->invoke($gauge, [$row]);
+        $gauge->claim(0, 100);
+        $gauge->publish(0, 100, 3);
+        self::assertSame(3, $gauge->openOn(0));
+
+        // The old worker (pid 100) publishes 2 while draining; between its read
+        // and its store the new worker (pid 200) claims the row.
+        $row->afterNextRead = static fn () => $gauge->claim(0, 200);
+        $gauge->publish(0, 100, 2);
+
+        self::assertSame(0, $gauge->openOn(0), "the old owner's write does not land on the new owner's row");
+        $gauge->publish(0, 200, 5);
+        self::assertSame(5, $gauge->openOn(0), 'the new owner still writes');
     }
 
     #[Test]
@@ -291,7 +348,9 @@ final class SseServerWideConnectionCapTest extends TestCase
 
     private function setEnv(string $key, string $value): void
     {
+        if (!\array_key_exists($key, $this->touchedEnv)) {
+            $this->touchedEnv[$key] = getenv($key);
+        }
         putenv($key . '=' . $value);
-        $this->touchedEnv[] = $key;
     }
 }

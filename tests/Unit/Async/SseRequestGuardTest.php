@@ -145,6 +145,62 @@ final class SseRequestGuardTest extends TestCase
         self::assertSame('', (new SseRequestGuard())->resolveClientIp(self::request([])));
     }
 
+    /**
+     * Behind a reverse proxy every visitor arrives from the proxy's address. The
+     * per-IP SSE cap keyed on that let a few idle anonymous streams answer 429
+     * to everyone (security audit, 24.11): the client a trusted proxy forwarded
+     * is the key now.
+     */
+    #[Test]
+    public function behind_a_trusted_proxy_the_forwarded_client_is_the_key(): void
+    {
+        $this->withTrustedProxies('10.0.0.1', function (): void {
+            $first = self::request(['x-forwarded-for' => '203.0.113.7']);
+            $first->server = ['remote_addr' => '10.0.0.1'];
+            $second = self::request(['x-forwarded-for' => '198.51.100.23']);
+            $second->server = ['remote_addr' => '10.0.0.1'];
+
+            self::assertSame('203.0.113.7', (new SseRequestGuard())->resolveClientIp($first));
+            self::assertSame('198.51.100.23', (new SseRequestGuard())->resolveClientIp($second), 'two clients of one proxy are two keys');
+        });
+    }
+
+    /** A client cannot choose its own bucket: without a trusted peer X-Forwarded-For is not read. */
+    #[Test]
+    public function without_a_trusted_proxy_x_forwarded_for_is_ignored(): void
+    {
+        $this->withTrustedProxies(null, function (): void {
+            $request = self::request(['x-forwarded-for' => '1.2.3.4']);
+            $request->server = ['remote_addr' => '203.0.113.9'];
+
+            self::assertSame('203.0.113.9', (new SseRequestGuard())->resolveClientIp($request));
+        });
+    }
+
+    /** A proxy on this host needs no TRUSTED_PROXIES: core trusts loopback as it is. */
+    #[Test]
+    public function a_proxy_on_loopback_forwards_the_client_without_trusted_proxies(): void
+    {
+        $this->withTrustedProxies(null, function (): void {
+            $request = self::request(['x-forwarded-for' => '203.0.113.7']);
+            $request->server = ['remote_addr' => '127.0.0.1'];
+
+            self::assertSame('203.0.113.7', (new SseRequestGuard())->resolveClientIp($request));
+        });
+    }
+
+    /** TRUSTED_PROXIES is process state: set for the test, put back as it was. */
+    private function withTrustedProxies(?string $value, \Closure $test): void
+    {
+        $before = getenv('TRUSTED_PROXIES');
+        $value === null ? putenv('TRUSTED_PROXIES') : putenv('TRUSTED_PROXIES=' . $value);
+        try {
+            $test();
+        } finally {
+            $before === false ? putenv('TRUSTED_PROXIES') : putenv('TRUSTED_PROXIES=' . $before);
+        }
+    }
+
     #[Test]
     public function auth_error_outranks_a_cross_origin_refusal(): void
     {

@@ -241,7 +241,7 @@ final class ModuleTemplateCatalog
 
         $cacheDir = $this->getWritableCacheDir();
 
-        $this->twig = $twig = new TwigEnvironment($effectiveLoader, [
+        $twig = new TwigEnvironment($effectiveLoader, [
             'cache' => $cacheDir ?? false,
             'auto_reload' => true,
             'strict_variables' => false,
@@ -251,14 +251,23 @@ final class ModuleTemplateCatalog
             'autoescape' => 'name',
         ]);
 
-        $this->registerFunctions();
-
+        // Built in full before anyone can see it. Twig refuses a new global or
+        // function once its extensions are initialised, and on a cold worker
+        // two coroutines could build at once: the first one done set
+        // `initialized` while $this->twig already held the second one's
+        // half-built environment, a request rendered with it, and the second
+        // one's addGlobal() then threw. The old catch called addGlobal() again,
+        // so the same LogicException escaped, and the error page fell back to
+        // its plain page during restart bursts.
         try {
-            $env = Environment::create();
-            $twig->addGlobal('sse_port', $env->swooleSsePort);
-        } catch (\Throwable $e) {
-            $twig->addGlobal('sse_port', 9503);
+            $ssePort = Environment::create()->swooleSsePort;
+        } catch (\Throwable) {
+            $ssePort = 9503;
         }
+        $twig->addGlobal('sse_port', $ssePort);
+        $this->registerFunctions($twig);
+
+        $this->twig = $twig;
     }
 
     private function aliasForModule(string $module): string
@@ -366,23 +375,18 @@ final class ModuleTemplateCatalog
         return null;
     }
 
-    private function registerFunctions(): void
+    private function registerFunctions(TwigEnvironment $twig): void
     {
-        if (!($this->twig instanceof TwigEnvironment)) {
-            return;
-        }
-
         // Custom Twig Extensions from modules
         \Semitexa\Ssr\Application\Service\Extension\TwigExtensionRegistry::initialize();
 
         foreach (\Semitexa\Ssr\Application\Service\Extension\TwigExtensionRegistry::getFunctions() as $name => $def) {
-            $this->twig->addFunction(new TwigFunction($name, $def['callback'], $def['options']));
+            $twig->addFunction(new TwigFunction($name, $def['callback'], $def['options']));
         }
 
         foreach (\Semitexa\Ssr\Application\Service\Extension\TwigExtensionRegistry::getFilters() as $name => $callback) {
-            $this->twig->addFilter(new \Twig\TwigFilter($name, $callback));
+            $twig->addFilter(new \Twig\TwigFilter($name, $callback));
         }
-
     }
 
     /**

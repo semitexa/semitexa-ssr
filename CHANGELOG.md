@@ -14,6 +14,14 @@ next release tag. This file is machine-read by `update:changelog` and the OS
   429 while the server held about 900 of 2000. One worker may hold up to 2 × the
   value. The refusal says which cap it was: "for this server" or "for this worker".
 
+### Fixed
+- The error page renders on a worker that has just started. During a restart burst,
+  a request could render with the template environment while it was still being
+  built. Twig then refused the build's `sse_port` global, and the error page fell
+  back to its plain version. The environment is now visible only once complete.
+  When the error page itself fails, the log names the error it was rendering for:
+  status, path, exception class and route.
+
 ## 2026.11.24.1611 — 2026-11-24
 
 ### Fixed

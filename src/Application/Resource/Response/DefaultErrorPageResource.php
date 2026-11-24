@@ -6,6 +6,7 @@ namespace Semitexa\Ssr\Application\Resource\Response;
 
 use Semitexa\Core\Attribute\AsResource;
 use Semitexa\Core\Contract\ResourceInterface;
+use Semitexa\Core\Error\ErrorPageContextStore;
 use Semitexa\Core\Log\StaticLoggerBridge;
 use Semitexa\Ssr\Application\Service\Http\Response\FallbackErrorPage;
 use Semitexa\Ssr\Application\Service\Http\Response\HtmlResponse;
@@ -85,9 +86,18 @@ final class DefaultErrorPageResource extends HtmlResponse implements ResourceInt
         try {
             return parent::renderTemplate($template, $extraContext);
         } catch (\Throwable $e) {
+            // The error the page was rendering for, too: the log named only the
+            // page's own failure, so the request's real error was lost with it.
+            // Its message is in the context only with debug on, by design.
+            $origin = ErrorPageContextStore::current();
             StaticLoggerBridge::error('ssr', 'Default error page template render failed; using fallback page', [
                 'exception' => $e::class,
                 'message' => $e->getMessage(),
+                'status' => $origin->statusCode ?? ($this->getStatusCode() ?: 500),
+                'path' => $origin?->requestPath,
+                'original_exception' => $origin?->exceptionClass,
+                'original_message' => $origin?->debugMessage,
+                'original_route' => $origin?->originalRouteName,
             ]);
 
             $status = $this->getStatusCode() ?: 500;

@@ -149,6 +149,8 @@ final class UiSseSessionState
         }
         $id = self::PREFIX . bin2hex(random_bytes(self::ENTROPY_BYTES));
         self::write($id);
+        // The page will open a stream under this id: see keepSession().
+        SignedContextBinding::keepSession();
 
         return $id;
     }

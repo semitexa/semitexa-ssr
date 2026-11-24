@@ -15,6 +15,10 @@ next release tag. This file is machine-read by `update:changelog` and the OS
   value. The refusal says which cap it was: "for this server" or "for this worker".
 
 ### Fixed
+- A guest's page that opens a stream (deferred slots, `ui_page_sse_session_meta()`)
+  keeps its session. `semitexa/core` now stores a guest session only once a request
+  uses it; such a page uses it, because the components rendered on its stream are
+  bound to the session the browser presents there.
 - The error page renders on a worker that has just started. During a restart burst,
   a request could render with the template environment while it was still being
   built. Twig then refused the build's `sse_port` global, and the error page fell

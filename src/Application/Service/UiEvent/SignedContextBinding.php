@@ -57,6 +57,24 @@ final class SignedContextBinding
     }
 
     /**
+     * Says the page being rendered opens a stream: its session has to reach
+     * the browser, because contexts minted on that stream (a deferred or
+     * re-rendered component) are bound to the session the stream's request
+     * presents. Core stores a guest's session only once something used it, and
+     * asking for its id is that use; on the stream it is too late, the
+     * response has started. Without this a guest's first page set no session
+     * cookie, the stream ran on a session of its own, and every context it
+     * minted was refused when the browser presented it.
+     */
+    public static function keepSession(): void
+    {
+        $session = self::snapshot()['session'] ?? null;
+        if ($session instanceof SessionInterface) {
+            $session->getId();
+        }
+    }
+
+    /**
      * The binding as held, for carrying into a coroutine a request spawns
      * ({@see restore()}); it keeps following the session there too.
      *

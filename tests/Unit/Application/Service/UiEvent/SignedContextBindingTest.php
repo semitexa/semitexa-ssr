@@ -10,7 +10,10 @@ use Semitexa\Core\Queue\QueuedOrigin;
 use Semitexa\Core\Session\Session;
 use Semitexa\Core\Session\SessionHandlerInterface;
 use Semitexa\Ssr\Application\Service\UiEvent\SignedContext;
+use Semitexa\Core\Session\SessionInterface;
 use Semitexa\Ssr\Application\Service\UiEvent\SignedContextBinding;
+use Semitexa\Ssr\Application\Service\UiEvent\UiSseSessionState;
+use Semitexa\Ssr\Context\IsomorphicContextStore;
 
 /**
  * tk-la-signed-context-binding: a signed UI context belongs to the session and
@@ -56,6 +59,57 @@ final class SignedContextBindingTest extends TestCase
         self::assertNotNull($claims);
         self::assertSame('acme', $claims['tn']);
         self::assertStringNotContainsString(self::SESSION_A, (string) json_encode($claims), 'the session id never travels in the clear');
+    }
+
+    /**
+     * Core stores a guest's session only once something asked for its id or
+     * wrote to it (idea-anonymous-error-responses-mint-session-cookies). A
+     * page that opens a stream asks: the contexts its deferred components mint
+     * on the stream are bound to the session the browser presents there.
+     */
+    #[Test]
+    public function a_page_that_opens_a_stream_asks_for_its_session_id(): void
+    {
+        $reads = static function (\Closure $declareStream): int {
+            $session = new class implements SessionHandlerInterface {
+                public function read(string $sessionId): array
+                {
+                    return [];
+                }
+
+                public function write(string $sessionId, array $data, int $lifetimeSeconds = 3600): void
+                {
+                }
+
+                public function destroy(string $sessionId): void
+                {
+                }
+            };
+            $counting = new IdReadsCountingSession(new Session(self::SESSION_A, $session, 'semitexa_session'));
+            SignedContextBinding::bind($counting, 'acme');
+            $declareStream();
+
+            return $counting->idReads;
+        };
+
+        UiSseSessionState::reset();
+        self::assertSame(1, $reads(static fn () => UiSseSessionState::mintIfAbsent()), 'a live page: ui_page_sse_session_meta()');
+        self::assertSame(0, $reads(static fn () => UiSseSessionState::mintIfAbsent()), 'the id is minted once a request, and asked for once');
+        UiSseSessionState::reset();
+
+        $before = IsomorphicContextStore::getSessionId();
+        try {
+            self::assertSame(1, $reads(static fn () => IsomorphicContextStore::setSessionId('sse_' . str_repeat('a', 32))), 'a page with deferred slots');
+            self::assertSame(0, $reads(static fn () => IsomorphicContextStore::setSessionId('')), 'clearing the id declares no stream');
+        } finally {
+            IsomorphicContextStore::setSessionId($before);
+        }
+
+        SignedContextBinding::bind(null, '');
+        SignedContextBinding::keepSession();
+        SignedContextBinding::clear();
+        SignedContextBinding::keepSession();
+        $this->addToAssertionCount(1);
     }
 
     /**
@@ -180,5 +234,77 @@ final class SignedContextBindingTest extends TestCase
 
         SignedContextBinding::bind(self::SESSION_A, 'acme');
         self::assertNull(SignedContext::verify($ctx), 'the pre-sign-in session cannot present it');
+    }
+}
+
+/** Counts getId(): the one call that tells core a session is in use by its id. */
+final class IdReadsCountingSession implements SessionInterface
+{
+    public int $idReads = 0;
+
+    public function __construct(private readonly SessionInterface $inner)
+    {
+    }
+
+    public function get(string $key, mixed $default = null): mixed
+    {
+        return $this->inner->get($key, $default);
+    }
+
+    public function set(string $key, mixed $value): void
+    {
+        $this->inner->set($key, $value);
+    }
+
+    public function has(string $key): bool
+    {
+        return $this->inner->has($key);
+    }
+
+    public function remove(string $key): void
+    {
+        $this->inner->remove($key);
+    }
+
+    public function clear(): void
+    {
+        $this->inner->clear();
+    }
+
+    public function getId(): string
+    {
+        $this->idReads++;
+
+        return $this->inner->getId();
+    }
+
+    public function regenerate(): void
+    {
+        $this->inner->regenerate();
+    }
+
+    public function flash(string $key, mixed $value): void
+    {
+        $this->inner->flash($key, $value);
+    }
+
+    public function getFlash(string $key, mixed $default = null): mixed
+    {
+        return $this->inner->getFlash($key, $default);
+    }
+
+    public function getPayload(string $payloadClass): object
+    {
+        return $this->inner->getPayload($payloadClass);
+    }
+
+    public function setPayload(object $payload): void
+    {
+        $this->inner->setPayload($payload);
+    }
+
+    public function save(): void
+    {
+        $this->inner->save();
     }
 }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Ssr\Context;
 
 use Semitexa\Core\Support\CoroutineLocal;
+use Semitexa\Ssr\Application\Service\UiEvent\SignedContextBinding;
 
 /**
  * The isomorphic page a request is rendering: its handle and its SSE session,
@@ -33,6 +34,10 @@ final class IsomorphicContextStore
 
     public static function setSessionId(string $sessionId): void
     {
+        // The page will open a stream under this id: see keepSession().
+        if ($sessionId !== '') {
+            SignedContextBinding::keepSession();
+        }
         CoroutineLocal::set(self::KEY_SESSION_ID, $sessionId);
     }
 

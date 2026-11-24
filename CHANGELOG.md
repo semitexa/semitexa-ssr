@@ -5,6 +5,14 @@ Changes to `semitexa/ssr` that a consuming application can notice. Sections are
 next release tag. This file is machine-read by `update:changelog` and the OS
 "What's new" surface — keep entries short and operator-facing.
 
+## Unreleased
+
+### Fixed
+- A guest's page that opens a stream (deferred slots, `ui_page_sse_session_meta()`)
+  keeps its session. `semitexa/core` now stores a guest session only once a request
+  uses it; such a page uses it, because the components rendered on its stream are
+  bound to the session the browser presents there.
+
 ## 2026.11.25.0522 — 2026-11-25
 
 ### Changed

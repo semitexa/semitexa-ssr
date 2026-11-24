@@ -5,6 +5,16 @@ Changes to `semitexa/ssr` that a consuming application can notice. Sections are
 next release tag. This file is machine-read by `update:changelog` and the OS
 "What's new" surface — keep entries short and operator-facing.
 
+## Unreleased
+
+### Fixed
+- The SSE per-IP connection cap (`SSE_MAX_CONN_PER_IP`) counts the client, not the
+  proxy in front of it: behind a trusted proxy (loopback, or an address in
+  `TRUSTED_PROXIES`) the key is the address it forwarded. Before, every visitor
+  behind a reverse proxy shared one count, and a few idle anonymous streams made
+  `/__semitexa_kiss` answer 429 to everyone. Behind a proxy that is not on
+  loopback, set `TRUSTED_PROXIES`.
+
 ## 2026.10.08.0620 — 2026-10-08
 
 ### Removed

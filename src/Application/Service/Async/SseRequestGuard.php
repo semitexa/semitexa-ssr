@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Semitexa\Ssr\Application\Service\Async;
 
+use Semitexa\Core\Http\ClientIp;
+use Semitexa\Core\Request as CoreRequest;
 use Semitexa\Core\Support\Row;
 use Swoole\Http\Request;
 use Swoole\Http\Response;
@@ -104,7 +106,23 @@ final class SseRequestGuard
     public function resolveClientIp(Request $request): string
     {
         $server = is_array($request->server) ? $request->server : [];
-        $ip = trim(Row::of($server)->string('remote_addr'));
+        $headers = is_array($request->header) ? $request->header : [];
+        $forwarded = $headers['x-forwarded-for'] ?? null;
+        // The client, not the peer: behind a reverse proxy the peer is every
+        // visitor at once, so SSE_MAX_CONN_PER_IP keyed on it let a few idle
+        // anonymous streams turn everyone away. ClientIp reads X-Forwarded-For
+        // only from a trusted peer (loopback, or an address in TRUSTED_PROXIES),
+        // so a client cannot pick its own bucket (security audit, 24.11). It
+        // reads nothing else, so it is handed nothing else.
+        $ip = trim(ClientIp::of(new CoreRequest(
+            'GET',
+            '/',
+            is_string($forwarded) ? ['x-forwarded-for' => $forwarded] : [],
+            [],
+            [],
+            ['remote_addr' => Row::of($server)->string('remote_addr')],
+            [],
+        )));
 
         return $ip !== '' ? strtolower($ip) : '';
     }

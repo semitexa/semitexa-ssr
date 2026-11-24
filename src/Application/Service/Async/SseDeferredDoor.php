@@ -104,20 +104,11 @@ final class SseDeferredDoor
         bool $keepChannelOpen,
         ?CoreRequest $visitor = null,
     ): bool {
-        if (!DeferredRequestRegistry::matchesBindToken($deferredRequestId, $bindToken)) {
-            // Written straight to the response rather than queued: the caller
-            // closes the connection immediately after, so a queued frame might
-            // never be flushed.
-            // The decision that ends the exchange, so it belongs in the trace.
-            // Without it a developer sees a connection that opened, said done and
-            // closed, with nothing saying which check refused it.
-            AsyncResourceSseServer::traceMark('deferred.refused', [
-                'reason' => 'bind token did not match, or no registry entry',
-                'deferred_request_id' => $deferredRequestId,
-                'had_token' => $bindToken !== '',
-            ]);
-
-            ($this->writeFrame)($response, self::TERMINAL_FRAME);
+        // Asked again here although {@see turnsAway()} already asked before the
+        // stream opened: the entry can expire in between, and this method is also
+        // reached without that first check.
+        if (!self::admits($deferredRequestId, $bindToken)) {
+            $this->refuse($response, $deferredRequestId, $bindToken);
 
             return false;
         }
@@ -132,6 +123,61 @@ final class SseDeferredDoor
         );
 
         return true;
+    }
+
+    /**
+     * Is this bind token the one the render issued for this deferred request?
+     *
+     * The whole admission rule, with no stream in it: false for an empty token,
+     * for a request that is unknown or expired, and for a token that differs.
+     */
+    public static function admits(string $deferredRequestId, string $bindToken): bool
+    {
+        return DeferredRequestRegistry::matchesBindToken($deferredRequestId, $bindToken);
+    }
+
+    /**
+     * Refuse a redeem BEFORE its stream opens, when its bind token does not hold.
+     *
+     * The session id comes from the query, so a request can name a session that
+     * is somebody else's. Opening the stream first let such a request take over
+     * that session's live connection and read its backlog and replay before
+     * {@see open()} refused it (security audit, 24.11). Here it gets the event
+     * stream's head, the terminal frame and the end, and nothing is registered:
+     * no session entry, no ownership claim, no queue, no connection slot.
+     *
+     * @param mixed $response the response of a request that has opened nothing yet
+     *
+     * @return bool true when the request was refused and its response ended
+     */
+    public function turnsAway(mixed $response, string $deferredRequestId, string $bindToken): bool
+    {
+        if (self::admits($deferredRequestId, $bindToken)) {
+            return false;
+        }
+
+        SseStreamHead::send($response);
+        $this->refuse($response, $deferredRequestId, $bindToken);
+        SseStreamHead::end($response);
+
+        return true;
+    }
+
+    private function refuse(mixed $response, string $deferredRequestId, string $bindToken): void
+    {
+        // Written straight to the response rather than queued: the caller
+        // closes the connection immediately after, so a queued frame might
+        // never be flushed.
+        // The decision that ends the exchange, so it belongs in the trace.
+        // Without it a developer sees a connection that opened, said done and
+        // closed, with nothing saying which check refused it.
+        AsyncResourceSseServer::traceMark('deferred.refused', [
+            'reason' => 'bind token did not match, or no registry entry',
+            'deferred_request_id' => $deferredRequestId,
+            'had_token' => $bindToken !== '',
+        ]);
+
+        ($this->writeFrame)($response, self::TERMINAL_FRAME);
     }
 
     private function stream(

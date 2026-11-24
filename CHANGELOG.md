@@ -14,6 +14,12 @@ next release tag. This file is machine-read by `update:changelog` and the OS
   429 while the server held about 900 of 2000. One worker may hold up to 2 × the
   value. The refusal says which cap it was: "for this server" or "for this worker".
 
+### Security
+- A deferred SSE stream checks its bind token before it opens. A request naming
+  another page's SSE session with a wrong or missing bind token used to take that
+  session over from its live connection and be sent its waiting frames before it
+  was refused. It is now refused first: it gets the closing frame and nothing else.
+
 ### Fixed
 - The error page renders on a worker that has just started. During a restart burst,
   a request could render with the template environment while it was still being

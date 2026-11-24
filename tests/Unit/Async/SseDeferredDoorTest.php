@@ -70,6 +70,43 @@ final class SseDeferredDoorTest extends TestCase
     }
 
     #[Test]
+    public function the_bind_token_rule_can_be_asked_without_a_stream(): void
+    {
+        $this->bootRegistry();
+        DeferredRequestRegistry::store('dr_rule', 'demo.home', ['k' => 'v'], ['slot-a'], 'the-real-token');
+
+        self::assertTrue(SseDeferredDoor::admits('dr_rule', 'the-real-token'));
+        self::assertFalse(SseDeferredDoor::admits('dr_rule', 'a-forged-token'));
+        self::assertFalse(SseDeferredDoor::admits('dr_rule', ''), 'no token is never the right token');
+        self::assertFalse(SseDeferredDoor::admits('dr_unknown', 'the-real-token'), 'a request that was never minted admits nobody');
+    }
+
+    #[Test]
+    public function a_wrong_bind_token_is_turned_away_before_the_stream_opens(): void
+    {
+        $this->bootRegistry();
+        DeferredRequestRegistry::store('dr_early', 'demo.home', ['k' => 'v'], ['slot-a'], 'the-real-token');
+
+        self::assertTrue($this->door()->turnsAway(null, 'dr_early', 'a-forged-token'));
+        self::assertSame([self::terminalFrame()], $this->written, 'the same terminal frame as a refusal at the door');
+        self::assertSame([], $this->delivered, 'nothing is queued for any session');
+        self::assertSame([], $this->streamed);
+        self::assertNotNull(DeferredRequestRegistry::consume('dr_early'), 'the legitimate holder can still redeem it');
+    }
+
+    #[Test]
+    public function the_right_bind_token_is_not_turned_away_and_nothing_is_written(): void
+    {
+        $this->bootRegistry();
+        DeferredRequestRegistry::store('dr_ok', 'demo.home', ['k' => 'v'], ['slot-a'], 'good-token');
+
+        self::assertFalse($this->door()->turnsAway(null, 'dr_ok', 'good-token'));
+        self::assertSame([], $this->written);
+        self::assertSame([], $this->delivered);
+        self::assertSame([], $this->streamed, 'the early check streams nothing: open() does, later');
+    }
+
+    #[Test]
     public function a_matching_bind_token_opens_the_door(): void
     {
         $this->bootRegistry();

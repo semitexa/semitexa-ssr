@@ -8,6 +8,7 @@ use Semitexa\Core\Attribute\AsServerLifecycleListener;
 use Semitexa\Core\Server\Lifecycle\ServerLifecycleContext;
 use Semitexa\Core\Server\Lifecycle\ServerLifecycleListenerInterface;
 use Semitexa\Core\Server\Lifecycle\ServerLifecyclePhase;
+use Semitexa\Ssr\Application\Service\Async\SseConnectionGauge;
 use Semitexa\Ssr\Application\Service\Async\SseOrder;
 use Swoole\Atomic\Long;
 use Swoole\Lock;
@@ -55,7 +56,15 @@ final class CreateAsyncResourceSseTablesListener implements ServerLifecycleListe
         $context->bootstrapState->set(
             SsrBootstrapStateKey::ASYNC_RESOURCE_SSE_TABLES,
             // The lock too is created before the fork, so every worker shares it.
-            new AsyncResourceSseTables($sessionWorkerTable, $deliverTable, $pendingDeliverTable, new Lock(\defined('SWOOLE_MUTEX') ? SWOOLE_MUTEX : 2)),
+            // The connection counts as well: one row per worker, summed for the
+            // server-wide SSE_MAX_CONN_GLOBAL cap.
+            new AsyncResourceSseTables(
+                $sessionWorkerTable,
+                $deliverTable,
+                $pendingDeliverTable,
+                new Lock(\defined('SWOOLE_MUTEX') ? SWOOLE_MUTEX : 2),
+                SseConnectionGauge::create($env->swooleWorkerNum),
+            ),
         );
     }
 }

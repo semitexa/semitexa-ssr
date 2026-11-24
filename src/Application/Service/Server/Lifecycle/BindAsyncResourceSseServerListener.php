@@ -9,6 +9,7 @@ use Semitexa\Core\Server\Lifecycle\ServerLifecycleContext;
 use Semitexa\Core\Server\Lifecycle\ServerLifecyclePhase;
 use Semitexa\Core\Server\Lifecycle\ServerLifecycleListenerInterface;
 use Semitexa\Ssr\Application\Service\Async\AsyncResourceSseServer;
+use Semitexa\Ssr\Application\Service\Async\SseConnectionLimiter;
 
 #[AsServerLifecycleListener(
     phase: ServerLifecyclePhase::WorkerStartAfterServerBindings->value,
@@ -35,6 +36,12 @@ final class BindAsyncResourceSseServerListener implements ServerLifecycleListene
                 $tables->pendingDeliverTable,
                 $tables->ownershipLock,
             );
+
+            // Every worker start, a respawn after a crash included: the worker
+            // takes its row of the shared connection counts and resets it.
+            if ($tables->connectionGauge !== null && $context->workerId !== null) {
+                SseConnectionLimiter::shareAcrossWorkers($tables->connectionGauge, $context->workerId, (int) getmypid());
+            }
         }
     }
 }

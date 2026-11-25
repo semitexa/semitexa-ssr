@@ -492,7 +492,7 @@ class HtmlResponse extends ResourceResponse
             // so a template that explicitly printed the deferred markers (belt) and
             // the framework fail-safe (braces) both stay no-ops on non-deferred
             // pages, even when applyIsomorphicContext pre-allocated the manifest.
-            $rendered = $renderedSlots !== [] || $renderedComponents !== [];
+            $rendered = \Semitexa\Ssr\Application\Service\UiEvent\SignedContextBinding::keepSessionIf($renderedSlots !== [] || $renderedComponents !== []);
             $preloadMarker = is_string($context['__ssr_preload_hints'] ?? null) ? $context['__ssr_preload_hints'] : '';
             $manifestMarker = is_string($context['__ssr_deferred_manifest'] ?? null) ? $context['__ssr_deferred_manifest'] : '';
             $runtimeMarker = is_string($context['__ssr_runtime_script'] ?? null) ? $context['__ssr_runtime_script'] : '';

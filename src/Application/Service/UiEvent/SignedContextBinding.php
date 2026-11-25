@@ -57,8 +57,9 @@ final class SignedContextBinding
     }
 
     /**
-     * Says the page being rendered opens a stream: its session has to reach
-     * the browser, because contexts minted on that stream (a deferred or
+     * Says the page being rendered opens a stream: it is sent a deferred
+     * manifest, or it asked for a live stream (ui_page_sse_session_meta()).
+     * Its session has to reach the browser, because contexts minted on that stream (a deferred or
      * re-rendered component) are bound to the session the stream's request
      * presents. Core stores a guest's session only once something used it, and
      * asking for its id is that use; on the stream it is too late, the
@@ -72,6 +73,22 @@ final class SignedContextBinding
         if ($session instanceof SessionInterface) {
             $session->getId();
         }
+    }
+
+    /**
+     * keepSession() for a page that rendered deferred content, and so is sent
+     * the manifest and opens the stream; returns what it was given. Asked
+     * after rendering, not where the stream id is minted: every page of an app
+     * that has a deferred component anywhere gets an id before it renders, an
+     * error page included, and kept there every one of them stored a session.
+     */
+    public static function keepSessionIf(bool $pageStreams): bool
+    {
+        if ($pageStreams) {
+            self::keepSession();
+        }
+
+        return $pageStreams;
     }
 
     /**

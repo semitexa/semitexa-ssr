@@ -14,6 +14,7 @@ use Semitexa\Ssr\Application\Service\Isomorphic\DeferredRequestRegistry;
 use Semitexa\Ssr\Application\Service\Isomorphic\DeferredTemplateRegistry;
 use Semitexa\Ssr\Application\Service\Isomorphic\PlaceholderRenderer;
 use Semitexa\Ssr\Application\Service\Template\ModuleTemplateRegistry;
+use Semitexa\Ssr\Application\Service\UiEvent\SignedContextBinding;
 
 class LayoutRenderer
 {
@@ -154,7 +155,7 @@ class LayoutRenderer
                     // gated on this so a template that explicitly printed the
                     // markers (belt) and the framework fail-safe (braces) both
                     // stay no-ops on non-deferred pages.
-                    $rendered = $renderedSlots !== [] || $renderedComponents !== [];
+                    $rendered = SignedContextBinding::keepSessionIf($renderedSlots !== [] || $renderedComponents !== []);
                     $preloadMarker = (string) ($baseContext['__ssr_preload_hints'] ?? '');
                     $manifestMarker = (string) ($baseContext['__ssr_deferred_manifest'] ?? '');
                     $runtimeMarker = (string) ($baseContext['__ssr_runtime_script'] ?? '');

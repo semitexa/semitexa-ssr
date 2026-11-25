@@ -64,8 +64,8 @@ final class SignedContextBindingTest extends TestCase
     /**
      * Core stores a guest's session only once something asked for its id or
      * wrote to it (idea-anonymous-error-responses-mint-session-cookies). A
-     * page that opens a stream asks: the contexts its deferred components mint
-     * on the stream are bound to the session the browser presents there.
+     * page that asks for a live stream asks for the id: the contexts minted on
+     * the stream are bound to the session the browser presents there.
      */
     #[Test]
     public function a_page_that_opens_a_stream_asks_for_its_session_id(): void
@@ -97,13 +97,16 @@ final class SignedContextBindingTest extends TestCase
         self::assertSame(0, $reads(static fn () => UiSseSessionState::mintIfAbsent()), 'the id is minted once a request, and asked for once');
         UiSseSessionState::reset();
 
+        // Not where the deferred stream id is minted: every HTML page of an app
+        // with a deferred component gets one before it renders, a 404 included
+        // (OnlyAPageThatStreamsKeepsItsGuestSessionTest has the page that is sent a stream).
         $before = IsomorphicContextStore::getSessionId();
         try {
-            self::assertSame(1, $reads(static fn () => IsomorphicContextStore::setSessionId('sse_' . str_repeat('a', 32))), 'a page with deferred slots');
-            self::assertSame(0, $reads(static fn () => IsomorphicContextStore::setSessionId('')), 'clearing the id declares no stream');
+            self::assertSame(0, $reads(static fn () => IsomorphicContextStore::setSessionId('sse_' . str_repeat('a', 32))), 'an id is not yet a stream');
         } finally {
             IsomorphicContextStore::setSessionId($before);
         }
+        self::assertSame(1, $reads(static fn () => SignedContextBinding::keepSession()), 'what a page that is sent the manifest calls');
 
         SignedContextBinding::bind(null, '');
         SignedContextBinding::keepSession();

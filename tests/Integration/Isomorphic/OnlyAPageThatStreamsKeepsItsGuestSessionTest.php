@@ -54,6 +54,27 @@ final class OnlyAPageThatStreamsKeepsItsGuestSessionTest extends TestCase
 {
     private const SLOTS = ['core.csrf_session', DefaultTenantContextStore::CONTEXT_KEY];
 
+    /**
+     * Process-global registries the fixture replaces, with the value each
+     * starts from in the test. The ones already there are set aside, never
+     * touched (their setters change the instance they hold), and put back,
+     * the same instances, after the test.
+     */
+    private const STATICS = [
+        [ComponentRegistry::class, 'catalog', null],
+        [ModuleTemplateRegistry::class, 'catalog', null],
+        [ModuleAssetRegistry::class, 'resolver', null],
+        [TwigExtensionRegistry::class, 'catalog', null],
+        [DeferredRequestRegistry::class, 'table', null],
+        [DeferredRequestRegistry::class, 'gcTimerId', 0],
+        [DeferredRequestRegistry::class, 'contextColumnSize', 0],
+        [DeferredRequestRegistry::class, 'snapshotColumnSize', 0],
+        [DeferredRequestRegistry::class, 'deliveredLock', null],
+    ];
+
+    /** @var list<array{\ReflectionProperty, mixed}> */
+    private array $staticsBefore = [];
+
     /** @var array<string, string|false> */
     private array $envBefore = [];
 
@@ -73,15 +94,21 @@ final class OnlyAPageThatStreamsKeepsItsGuestSessionTest extends TestCase
         putenv('REDIS_HOST=');
         putenv('SSR_ISOMORPHIC_ENABLED=true');
         $this->slotsBefore = [];
-        foreach (self::SLOTS as $slot) {
+        foreach (self::slots() as $slot) {
             if (CoroutineLocal::has($slot)) {
                 $this->slotsBefore[$slot] = CoroutineLocal::get($slot);
             }
         }
         $this->bindingBefore = SignedContextBinding::snapshot();
+        $this->staticsBefore = [];
+        foreach (self::STATICS as [$class, $name, $start]) {
+            $property = new \ReflectionProperty($class, $name);
+            $this->staticsBefore[] = [$property, $property->getValue()];
+            $property->setValue(null, $start);
+        }
+        SeoMeta::reset();
 
         ModuleTemplateRegistry::setModuleRegistry(new ModuleRegistry());
-        ModuleAssetRegistry::reset();
         ModuleAssetRegistry::setModuleRegistry(new ModuleRegistry());
         TwigExtensionRegistry::setClassDiscovery(new ClassDiscovery());
         // An app that has a deferred SSE component somewhere: every HTML page
@@ -114,12 +141,14 @@ final class OnlyAPageThatStreamsKeepsItsGuestSessionTest extends TestCase
     {
         (new \ReflectionProperty(DeferredTemplateRegistry::class, 'initialized'))->setValue(null, $this->templatesPublishedBefore);
         $this->resetRenderState();
-        ComponentRegistry::setCatalog(new ComponentCatalog());
-        ModuleAssetRegistry::reset();
+        // Stops a GC timer the test's renders started; only the test's own
+        // registry is in place at this point.
         DeferredRequestRegistry::reset();
-        SeoMeta::reset();
+        foreach ($this->staticsBefore as [$property, $value]) {
+            $property->setValue(null, $value);
+        }
         SignedContextBinding::restore($this->bindingBefore);
-        foreach (self::SLOTS as $slot) {
+        foreach (self::slots() as $slot) {
             if (array_key_exists($slot, $this->slotsBefore)) {
                 CoroutineLocal::set($slot, $this->slotsBefore[$slot]);
             } else {
@@ -232,6 +261,23 @@ final class OnlyAPageThatStreamsKeepsItsGuestSessionTest extends TestCase
         }
 
         return [$response->getContent(), $cookies];
+    }
+
+    /**
+     * The coroutine slots the fixture restores: the session and tenant ones,
+     * and SeoMeta's, which a render fills (read from the class, so a renamed
+     * key cannot slip past).
+     *
+     * @return list<string>
+     */
+    private static function slots(): array
+    {
+        $seo = [];
+        foreach (['KEY_META', 'KEY_TITLE', 'KEY_TITLE_SUFFIX', 'KEY_TITLE_PREFIX'] as $constant) {
+            $seo[] = (string) (new \ReflectionClassConstant(SeoMeta::class, $constant))->getValue();
+        }
+
+        return [...self::SLOTS, ...$seo];
     }
 
     private function resetRenderState(): void

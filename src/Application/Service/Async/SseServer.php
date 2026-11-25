@@ -291,11 +291,7 @@ final class SseServer implements FeedStreamSinkInterface
     private function beginSseResponse(Response $response, string $sessionId): void
     {
         \Semitexa\Core\Server\InFlightRequests::streaming(); // a stream from here: the exit drain cancels it at once
-        $response->status(200);
-        $response->header('Content-Type', 'text/event-stream');
-        $response->header('Cache-Control', 'no-cache');
-        $response->header('Connection', 'keep-alive');
-        $response->header('X-Accel-Buffering', 'no');
+        SseStreamHead::send($response);
 
         // Capture the tenant THIS connection resolved, in its own coroutine where
         // TenantContext is authoritative (TenancyPhase ran before route dispatch),
@@ -574,16 +570,17 @@ final class SseServer implements FeedStreamSinkInterface
     }
 
     /**
-     * Run the three admission gates in order and hand back the resolved transport
+     * Run the four admission gates in order and hand back the resolved transport
      * mode, or null when the request was turned away.
      *
      * Order is deliberate and not interchangeable:
      *  1. authorization + origin — never spend work on a request that may not stream;
      *  2. transport mode — an unknown `mode=` earns a clean 400 BEFORE any
      *     connection-cap accounting, so a typo cannot consume a client's quota;
-     *  3. connection caps — per-IP and global, applied to authenticated and
-     *     anonymous alike, since the resource being bounded is worker file
-     *     descriptors and those do not care who owns them.
+     *  3. a deferred request's bind token — a refused redeem holds no connection
+     *     slot, supersedes nobody and is sent nothing of the session's;
+     *  4. connection caps — per-IP and global, for authenticated and anonymous
+     *     alike: what is bounded is worker file descriptors, whoever owns them.
      *
      * Each gate writes its own rejection onto the response before returning.
      */
@@ -657,6 +654,10 @@ final class SseServer implements FeedStreamSinkInterface
         if ($resolvedMode === null) {
             $this->rejectBadRequest($response, 'Unknown SSE transport mode.');
 
+            return null;
+        }
+
+        if ($stream->hasDeferredRequest() && $this->deferredDoor()->turnsAway($response, $stream->deferredRequestId, $this->getSsrBindToken($request))) {
             return null;
         }
 
